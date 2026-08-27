@@ -1,6 +1,6 @@
 {
-  "name": "Sonic Lab",
-  "short_name": "Sonic Lab",
+  "name": "Sonic Messaging",
+  "short_name": "Sonic",
   "description": "Acoustic modulation and protocol test bed",
   "start_url": "./",
   "scope": "./",

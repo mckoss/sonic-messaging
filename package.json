@@ -1,7 +1,7 @@
 {
   "name": "sonic-messaging",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "node": ">=24.20.0 <25"
@@ -11,6 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check:version": "node tools/check-version.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

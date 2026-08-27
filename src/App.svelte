@@ -88,10 +88,10 @@
   });
 </script>
 
-<svelte:head><title>Sonic Lab · Acoustic Modem Test Bed</title><meta name="theme-color" content="#07101d" /></svelte:head>
+<svelte:head><title>Sonic Messaging · Acoustic Modem Test Bed</title><meta name="theme-color" content="#07101d" /></svelte:head>
 
 <header>
-  <a class="brand" href="/" aria-label="Sonic Lab home"><span class="mark">≋</span><span>Sonic <b>Lab</b></span></a>
+  <a class="brand" href={import.meta.env.BASE_URL} aria-label="Sonic Messaging home"><span class="mark">≋</span><span class="brand-copy"><span>Sonic <b>Messaging</b></span><small>v{__APP_VERSION__}</small></span></a>
   <nav aria-label="Workspace"><button class:active={activePanel === 'radio'} on:click={() => activePanel = 'radio'}>Radio</button><button class:active={activePanel === 'simulator'} on:click={() => activePanel = 'simulator'}>Simulator</button></nav>
   <div class="app-state">
     <span class:ready={offlineReady} class="dot"></span><span>{offlineReady ? 'Offline ready' : 'Online'}</span>
@@ -135,7 +135,7 @@
   </div>
 </main>
 
-<footer><span>Sonic Lab · local-first experiment</span><span>Microphone data stays on this device</span></footer>
+<footer><span>Sonic Messaging · local-first experiment</span><span>Microphone data stays on this device</span></footer>
 
 <style>
   :global(*) { box-sizing: border-box; }
@@ -144,7 +144,7 @@
   :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
   :global(button:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(textarea:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
   header { height: 64px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 max(20px, calc((100vw - 1320px)/2)); background: rgba(6,13,23,.84); backdrop-filter: blur(16px); position: sticky; top:0; z-index:10; }
-  .brand { display:flex; align-items:center; gap:10px; color:var(--text); text-decoration:none; font-weight:700; letter-spacing:-.02em; }.brand b{color:var(--accent)}.mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--accent);color:#06130f;font-size:25px;font-weight:900}
+  .brand { display:flex; align-items:center; gap:10px; color:var(--text); text-decoration:none; font-weight:700; letter-spacing:-.02em; }.brand b{color:var(--accent)}.brand-copy{display:grid;line-height:1.05}.brand-copy small{margin-top:3px;color:var(--dim);font:500 9px/1 ui-monospace,monospace;letter-spacing:.04em}.mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--accent);color:#06130f;font-size:25px;font-weight:900}
   nav { display:flex; gap:4px; padding:4px; border:1px solid var(--line); border-radius:10px; } nav button,.install,.text-button{border:0;background:transparent;color:var(--muted);cursor:pointer} nav button{padding:6px 14px;border-radius:7px;font-size:13px} nav button.active{background:#17263a;color:var(--text)}
   .app-state{justify-self:end;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:#f5b84b}.dot.ready{background:var(--accent)}.install{color:var(--accent);margin-left:8px}
   main { max-width:1320px; margin:auto; padding:56px 24px 72px; }.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:34px}.eyebrow{color:var(--accent)!important;font:700 11px ui-monospace,monospace;letter-spacing:.18em}.intro h1{font-size:clamp(34px,5vw,58px);line-height:1.04;letter-spacing:-.045em;margin:8px 0 15px}.intro h1 em{font-style:normal;color:#84b9ff}.intro p{color:var(--muted);max-width:680px;line-height:1.6;margin:0}.status-pill{display:flex;align-items:center;gap:9px;border:1px solid var(--line);padding:9px 12px;border-radius:99px;color:var(--muted);font-size:12px;white-space:nowrap}.status-pill span{width:8px;height:8px;border-radius:50%;background:#506078}.status-pill span.live{background:var(--accent);box-shadow:0 0 0 4px #4ee8b422}

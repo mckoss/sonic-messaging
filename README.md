@@ -1,6 +1,6 @@
-# Sonic Message
+# Sonic Messaging
 
-Sonic Message is a local-first PWA for nearby data-over-sound communication on desktop and mobile browsers. Its initial **Sonic Lab** workspace is a modulation and protocol test bed that will become the foundation for messaging.
+Sonic Messaging is a local-first PWA for nearby data-over-sound communication on desktop and mobile browsers. Its initial modulation and protocol test bed will become the foundation for messaging.
 
 Current experiments include:
 
@@ -33,6 +33,8 @@ npm run build
 ```
 
 The GitHub Pages workflow runs all three checks before deployment.
+
+Every push or merge to `main` must increase the semantic version in `package.json`. CI rejects a deployment when the version is unchanged or moves backward; choose a patch, minor, or major increase according to the compatibility impact.
 
 ## Architecture
 

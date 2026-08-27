@@ -19,11 +19,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm run check:version
+        env:
+          VERSION_BASE_SHA: ${{ github.event.before }}
       - run: npm test
       - run: npm run check
       - run: npm run build
