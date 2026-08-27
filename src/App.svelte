@@ -20,7 +20,6 @@
   let mode: Mode = 'FSK';
   let listening = false;
   let payload = 'SONIC TEST 001';
-  let activePanel: 'radio' | 'simulator' = 'radio';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
     FSK: { lowestFrequency: 3800, toneSpacing: 800, tones: 4, symbolRate: 100 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
@@ -92,7 +91,6 @@
 
 <header>
   <a class="brand" href={import.meta.env.BASE_URL} aria-label="Sonic Messaging home"><span class="mark">≋</span><span class="brand-copy"><span>Sonic <b>Messaging</b></span><small>v{__APP_VERSION__}</small></span></a>
-  <nav aria-label="Workspace"><button class:active={activePanel === 'radio'} on:click={() => activePanel = 'radio'}>Radio</button><button class:active={activePanel === 'simulator'} on:click={() => activePanel = 'simulator'}>Simulator</button></nav>
   <div class="app-state">
     <span class:ready={offlineReady} class="dot"></span><span>{offlineReady ? 'Offline ready' : 'Online'}</span>
     {#if installAvailable}<button class="install" on:click={onInstall}>Install app</button>{/if}
@@ -143,9 +141,9 @@
   :global(body) { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 70% -10%, #12345a 0, transparent 33%), #060d17; }
   :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
   :global(button:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(textarea:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
-  header { height: 64px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 max(20px, calc((100vw - 1320px)/2)); background: rgba(6,13,23,.84); backdrop-filter: blur(16px); position: sticky; top:0; z-index:10; }
+  header { height: 64px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; padding: 0 max(20px, calc((100vw - 1320px)/2)); background: rgba(6,13,23,.84); backdrop-filter: blur(16px); position: sticky; top:0; z-index:10; }
   .brand { display:flex; align-items:center; gap:10px; color:var(--text); text-decoration:none; font-weight:700; letter-spacing:-.02em; }.brand b{color:var(--accent)}.brand-copy{display:grid;line-height:1.05}.brand-copy small{margin-top:3px;color:var(--dim);font:500 9px/1 ui-monospace,monospace;letter-spacing:.04em}.mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--accent);color:#06130f;font-size:25px;font-weight:900}
-  nav { display:flex; gap:4px; padding:4px; border:1px solid var(--line); border-radius:10px; } nav button,.install,.text-button{border:0;background:transparent;color:var(--muted);cursor:pointer} nav button{padding:6px 14px;border-radius:7px;font-size:13px} nav button.active{background:#17263a;color:var(--text)}
+  .install,.text-button{border:0;background:transparent;color:var(--muted);cursor:pointer}
   .app-state{justify-self:end;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:#f5b84b}.dot.ready{background:var(--accent)}.install{color:var(--accent);margin-left:8px}
   main { max-width:1320px; margin:auto; padding:56px 24px 72px; }.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:34px}.eyebrow{color:var(--accent)!important;font:700 11px ui-monospace,monospace;letter-spacing:.18em}.intro h1{font-size:clamp(34px,5vw,58px);line-height:1.04;letter-spacing:-.045em;margin:8px 0 15px}.intro h1 em{font-style:normal;color:#84b9ff}.intro p{color:var(--muted);max-width:680px;line-height:1.6;margin:0}.status-pill{display:flex;align-items:center;gap:9px;border:1px solid var(--line);padding:9px 12px;border-radius:99px;color:var(--muted);font-size:12px;white-space:nowrap}.status-pill span{width:8px;height:8px;border-radius:50%;background:#506078}.status-pill span.live{background:var(--accent);box-shadow:0 0 0 4px #4ee8b422}
   .layout{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;align-items:start}.card{background:linear-gradient(145deg,rgba(15,29,48,.94),rgba(8,18,31,.96));border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 18px 40px #0003}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.section-head>div{display:flex;align-items:center;gap:10px}.section-head h2{font-size:16px;margin:0}.step{font:11px ui-monospace,monospace;color:var(--accent);border:1px solid #4ee8b444;border-radius:6px;padding:4px}.hint{font-size:11px;color:var(--dim)}
@@ -156,6 +154,6 @@
   .sim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sim-grid label,.interference{display:grid;gap:8px}.sim-grid select{background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:10px}.sim-grid input,.interference input{width:100%;accent-color:var(--accent)}output{font:12px ui-monospace,monospace;color:var(--accent)}.switch-row{display:flex;gap:12px;align-items:start;padding:15px;margin-top:18px;border:1px solid var(--line);border-radius:11px}.switch-row input{margin-top:3px;accent-color:var(--accent)}.switch-row b,.switch-row small{display:block}.switch-row b{font-size:13px}.switch-row small{color:var(--dim);margin-top:3px;line-height:1.35}.interference{margin-top:16px}
   .text-button{font-size:11px}.packet-list{margin-top:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}.packet-list article{display:grid;grid-template-columns:60px 55px 1fr auto;gap:9px;padding:10px 12px;align-items:center;color:var(--dim);font-size:11px}.packet-mode{color:var(--blue)}code{overflow:hidden;text-overflow:ellipsis;color:var(--muted)}.log{margin-top:12px;max-height:110px;overflow:auto;background:#06101c;padding:8px 12px;border-radius:10px;font:10px/1.5 ui-monospace,monospace;color:#7890ab}.log p{margin:3px 0}.empty{font-style:italic}
   footer{display:flex;justify-content:space-between;gap:20px;max-width:1320px;margin:auto;border-top:1px solid var(--line);padding:20px 24px 32px;color:var(--dim);font-size:11px}
-  @media(max-width:850px){header{grid-template-columns:1fr auto}header nav{display:none}.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}.status-pill{align-self:flex-start}main{padding-top:38px}.app-state>span:not(.dot){display:none}}
+  @media(max-width:850px){.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}.status-pill{align-self:flex-start}main{padding-top:38px}.app-state>span:not(.dot){display:none}}
   @media(max-width:520px){header{padding:0 15px}main{padding:28px 14px 56px}.card{padding:17px;border-radius:14px}.intro h1{font-size:36px}.readouts,.metrics{grid-template-columns:1fr 1fr}.sim-grid{grid-template-columns:1fr}.packet-list article{grid-template-columns:50px 45px 1fr}.packet-list article>:last-child{display:none}footer{padding-inline:15px;flex-direction:column}}
 </style>
