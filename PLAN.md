@@ -22,6 +22,9 @@
 
 - [x] Add configured FSK raw-symbol detection and a symbol-likelihood waterfall.
 - [x] Calibrate raw FSK likelihood against full-window energy so noise and partial-symbol matches are rejected.
+- [x] Add a configurable dBFS squelch for live FSK symbol detection and packet acquisition.
+- [x] Add a configurable winning-tone confidence threshold for live FSK detection.
+- [x] Scroll quartile-colored confidence history in lockstep with live FSK symbols.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

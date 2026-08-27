@@ -5,6 +5,27 @@ export interface FskSymbolDetection {
   powerDbfs: number;
 }
 
+/** Suppresses detector output below the configured full-window RMS threshold. */
+export function squelchFskDetection(result: FskSymbolDetection, thresholdDbfs: number): FskSymbolDetection {
+  if (result.powerDbfs >= thresholdDbfs) return result;
+  return { ...result, scores: new Float32Array(result.scores.length), symbol: -1, confidence: 0 };
+}
+
+/** Applies both absolute-power squelch and a user-selected winning-tone margin. */
+export function gateFskDetection(
+  result: FskSymbolDetection, squelchDbfs: number, confidenceThreshold: number
+): FskSymbolDetection {
+  const squelched = squelchFskDetection(result, squelchDbfs);
+  if (squelched.powerDbfs < squelchDbfs || squelched.confidence < confidenceThreshold) {
+    return { ...squelched, symbol: -1, confidence: squelched.confidence };
+  }
+  let symbol = -1, score = MIN_SYMBOL_SCORE;
+  for (let index = 0; index < squelched.scores.length; index++) {
+    if (squelched.scores[index] >= score) { score = squelched.scores[index]; symbol = index; }
+  }
+  return { ...squelched, symbol };
+}
+
 const MIN_SYMBOL_SCORE = 0.25;
 const MIN_SYMBOL_MARGIN = 0.15;
 

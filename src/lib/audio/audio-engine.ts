@@ -63,8 +63,11 @@ export class AudioEngine {
     this.receptionListeners.add(listener); return () => this.receptionListeners.delete(listener);
   }
 
-  configureFskDetector(frequencies: number[], symbolRate: number): void {
-    this.worker?.postMessage({ type: 'configure-detector', mode: 'FSK', fsk: { frequencies, symbolRate } } satisfies DspWorkerRequest);
+  configureFskDetector(
+    frequencies: number[], symbolRate: number, squelchDbfs: number, confidenceThreshold: number
+  ): void {
+    this.worker?.postMessage({ type: 'configure-detector', mode: 'FSK',
+      fsk: { frequencies, symbolRate, squelchDbfs, confidenceThreshold } } satisfies DspWorkerRequest);
   }
 
   disableDetector(): void {

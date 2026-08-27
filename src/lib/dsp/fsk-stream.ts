@@ -1,6 +1,6 @@
 import { bitsToBytes } from './bits';
 import { unframe } from './frame';
-import { detectFskSymbol } from './fsk-detector';
+import { detectFskSymbol, gateFskDetection } from './fsk-detector';
 import type { FskConfig } from './types';
 
 const SYNC = [0xd3, 0x91, 0xd3, 0x91];
@@ -28,7 +28,11 @@ export class FskStreamDecoder {
   private progress: FskStreamProgress[] = [];
   private reportedPayloadBytes = 0;
 
-  constructor(private readonly config: FskConfig) {
+  constructor(
+    private readonly config: FskConfig,
+    private readonly squelchDbfs = -Infinity,
+    private readonly confidenceThreshold = 0.15
+  ) {
     this.bitsPerSymbol = Math.log2(config.frequencies.length);
     if (!Number.isInteger(this.bitsPerSymbol) || this.bitsPerSymbol < 1) {
       throw new Error('FSK tone count must be a power of two');
@@ -125,11 +129,11 @@ export class FskStreamDecoder {
     let confidence = 0;
     for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
       const start = offset + symbolIndex * this.samplesPerSymbol;
-      const decision = detectFskSymbol(
+      const decision = gateFskDetection(detectFskSymbol(
         this.samples.subarray(start, start + this.samplesPerSymbol),
         this.config.sampleRate,
         this.config.frequencies
-      );
+      ), this.squelchDbfs, this.confidenceThreshold);
       confidence += decision.confidence;
       for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
         bits.push((decision.symbol >>> bit) & 1);

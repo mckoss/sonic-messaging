@@ -6,12 +6,13 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
+import { gateFskDetection } from '../lib/dsp/fsk-detector';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
 let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
-let detector: { frequencies: number[]; symbolRate: number } | undefined;
+let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number } | undefined;
 let detectorPending = new Float32Array(0);
 let detectorLength = 0;
 let detectorSequence = 0;
@@ -31,9 +32,12 @@ function configure(next: SpectrumOptions): void {
   pendingLength = 0;
 }
 
-function configureDetector(mode: 'off' | 'FSK', fsk?: { frequencies: number[]; symbolRate: number }): void {
+function configureDetector(mode: 'off' | 'FSK', fsk?: {
+  frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number
+}): void {
   detector = mode === 'FSK' && fsk && fsk.frequencies.length >= 2 && fsk.symbolRate > 0
-    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate }
+    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate,
+        squelchDbfs: fsk.squelchDbfs, confidenceThreshold: fsk.confidenceThreshold }
     : undefined;
   detectorPending = new Float32Array(0);
   detectorLength = 0;
@@ -56,7 +60,10 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
     detectorLength += count;
     offset += count;
     if (detectorLength === samplesPerSymbol) {
-      const result = detectFskSymbol(detectorPending, sampleRate, detector.frequencies);
+      const result = gateFskDetection(
+        detectFskSymbol(detectorPending, sampleRate, detector.frequencies),
+        detector.squelchDbfs, detector.confidenceThreshold
+      );
       send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++ },
         [result.scores.buffer as ArrayBuffer]);
       detectorLength = 0;
@@ -66,7 +73,10 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
   if (detector && detectorSampleRate !== sampleRate) {
-    fskStreamDecoder = new FskStreamDecoder({ sampleRate, ...detector });
+    fskStreamDecoder = new FskStreamDecoder(
+      { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies },
+      detector.squelchDbfs, detector.confidenceThreshold
+    );
     detectorSampleRate = sampleRate;
   }
   if (fskStreamDecoder) {

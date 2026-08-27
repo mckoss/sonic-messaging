@@ -25,6 +25,8 @@ export interface SpectrumOptions {
 export interface FskDetectorOptions {
   frequencies: number[];
   symbolRate: number;
+  squelchDbfs: number;
+  confidenceThreshold: number;
 }
 
 export type DspWorkerRequest =

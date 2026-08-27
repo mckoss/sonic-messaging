@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectFskSymbol } from './fsk-detector';
+import { detectFskSymbol, gateFskDetection, squelchFskDetection } from './fsk-detector';
 
 describe('FSK raw-symbol detector', () => {
   const sampleRate = 48_000, frequencies = [3800, 4600, 5400, 6200];
@@ -44,5 +44,24 @@ describe('FSK raw-symbol detector', () => {
     expect(result.symbol).toBe(1);
     expect(result.scores[1]).toBeCloseTo(0.5, 1);
     expect(result.confidence).toBeLessThan(0.55);
+  });
+
+  it('squelches a valid tone below the configured dBFS floor', () => {
+    const quiet = detectFskSymbol(tone(frequencies[0], 0.004), sampleRate, frequencies);
+    expect(quiet.symbol).toBe(0);
+    expect(quiet.powerDbfs).toBeLessThan(-45);
+    const result = squelchFskDetection(quiet, -45);
+    expect(result.symbol).toBe(-1);
+    expect(result.confidence).toBe(0);
+    expect([...result.scores]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('rejects an otherwise detected symbol below the selected confidence margin', () => {
+    const a = tone(frequencies[0], 0.5), b = tone(frequencies[1], 0.35);
+    const mixed = Float32Array.from(a, (value, i) => value + b[i]);
+    const detected = detectFskSymbol(mixed, sampleRate, frequencies);
+    expect(detected.symbol).toBe(0);
+    expect(gateFskDetection(detected, -80, detected.confidence + 0.01).symbol).toBe(-1);
+    expect(gateFskDetection(detected, -80, detected.confidence - 0.01).symbol).toBe(0);
   });
 });

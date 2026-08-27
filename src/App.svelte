@@ -30,7 +30,8 @@
   let listening = false;
   let payload = 'SONIC TEST 001';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { lowestFrequency: 3800, toneSpacing: 800, tones: 4, symbolRate: 100 },
+    FSK: { lowestFrequency: 3800, toneSpacing: 800, tones: 4, symbolRate: 100,
+      squelchDbfs: -45, confidencePercent: 15 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };
@@ -88,7 +89,7 @@
     const s = settings.FSK;
     audio.configureFskDetector(
       fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
-      Number(s.symbolRate)
+      Number(s.symbolRate), Number(s.squelchDbfs), Number(s.confidencePercent) / 100
     );
   }
   function selectMode(next: Mode) { mode = next; configureDetector(); }
@@ -161,10 +162,10 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
-          tokens={receivedTokens}
+          tokens={receivedTokens} confidence={symbolConfidence}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
-      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' && rawSymbol >= 0 ? `FSK · S${rawSymbol}` : mode : 'Standby'}</strong></div></div>
+      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · squelched' : mode : 'Standby'}</strong></div></div>
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
     </section>
 
