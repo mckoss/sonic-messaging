@@ -4,6 +4,7 @@ import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../li
 import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
   goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
+import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -14,6 +15,8 @@ let detector: { frequencies: number[]; symbolRate: number } | undefined;
 let detectorPending = new Float32Array(0);
 let detectorLength = 0;
 let detectorSequence = 0;
+let fskStreamDecoder: FskStreamDecoder | undefined;
+let detectorSampleRate = 0;
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
@@ -35,6 +38,8 @@ function configureDetector(mode: 'off' | 'FSK', fsk?: { frequencies: number[]; s
   detectorPending = new Float32Array(0);
   detectorLength = 0;
   detectorSequence = 0;
+  fskStreamDecoder = undefined;
+  detectorSampleRate = 0;
 }
 
 function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void {
@@ -60,6 +65,15 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  if (detector && detectorSampleRate !== sampleRate) {
+    fskStreamDecoder = new FskStreamDecoder({ sampleRate, ...detector });
+    detectorSampleRate = sampleRate;
+  }
+  if (fskStreamDecoder) {
+    for (const packet of fskStreamDecoder.push(samples)) {
+      send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
+    }
+  }
   acceptDetectorSamples(samples, sampleRate);
   let sourceOffset = 0;
   while (sourceOffset < samples.length) {
@@ -137,7 +151,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
-      case 'reset': pendingLength = 0; pending.fill(0); detectorLength = 0; detectorPending.fill(0); break;
+      case 'reset': pendingLength = 0; pending.fill(0); detectorLength = 0; detectorPending.fill(0); fskStreamDecoder?.reset(); break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

@@ -101,10 +101,21 @@
       symbolScores = event.scores; symbolSequence = event.sequence; rawSymbol = event.symbol;
       symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
     });
+    const offPackets = audio.onPackets(event => {
+      const decoded = new TextDecoder('utf-8', { fatal: true });
+      try {
+        const text = decoded.decode(event.payload);
+        packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
+          quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
+        logs = [`${new Date().toLocaleTimeString()} · Live FSK packet decoded (${event.payload.length} bytes, CRC valid)`, ...logs].slice(0, 10);
+      } catch {
+        logs = [`${new Date().toLocaleTimeString()} · Valid FSK frame rejected: payload is not UTF-8`, ...logs].slice(0, 10);
+      }
+    });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offSpectrum(); offSymbols(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offSpectrum(); offSymbols(); offPackets(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -134,7 +145,7 @@
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><span class="badge {receiverState}">{receiverState}</span></div>
       <SpectrumDisplay {spectrum} minFrequency={0} maxFrequency={24000} />
       {#if mode === 'FSK'}
-        <div class="detector-head"><span>Raw symbol likelihood</span><small>No packet framing or timing search</small></div>
+        <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}

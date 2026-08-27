@@ -22,13 +22,13 @@
 - [x] Add configured FSK raw-symbol detection and a symbol-likelihood waterfall.
 - [x] Calibrate raw FSK likelihood against full-window energy so noise and partial-symbol matches are rejected.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
-- [ ] Detect packet timing in the continuous microphone stream for the selected mode.
+- [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.
-- [ ] Decode live packets, verify CRC, and display acquisition/rejection metrics.
+- [x] Decode live FSK packets, verify CRC, and display valid UTF-8 payloads and confidence.
 - [ ] Add automatic multi-mode detection.
 - [ ] Add overlapping-user detection and successive decoding experiments.
 
-Live decoding requires acquisition and synchronization before the existing block decoders can process arbitrary microphone samples. Implement selected-mode acquisition first; add automatic mode classification only after each detector works independently.
+FSK now performs sync acquisition and CRC-validated live decoding. Add equivalent acquisition for CSS and DSSS before automatic mode classification.
 
 ## Messaging
 
