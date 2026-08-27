@@ -43,6 +43,9 @@ These instructions apply to the entire repository.
 ## Git and deployment
 
 - All repository work must be tracked in Git. Make focused, reviewable commits and preserve unrelated user changes.
+- Treat side conversations as discussion and read-only investigation by default because they share the main thread's workspace and Git branch.
+- A side conversation may modify code only when the user explicitly requests it after the side-conversation boundary. Before editing, verify that the worktree is clean and that the change will not overlap known main-thread work. If coordination is uncertain, leave the implementation to the main thread.
+- Keep side-conversation edits narrowly scoped. Recheck the worktree before committing or pushing, and do not overwrite, bundle, or publish unrelated main-thread changes.
 - Do not force-push or rewrite published `main` history.
 - Push completed, verified changes to `origin/main` unless the user requests a branch or pull-request workflow.
 - GitHub Pages is deployed by `.github/workflows/pages.yml`. Keep the Vite base path, manifest, service worker, workers, and worklets compatible with `/sonic-messaging/`.
