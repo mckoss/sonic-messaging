@@ -9,6 +9,7 @@ export interface UserPreferences {
   interferer: boolean;
   interfererPower: number;
   scrollSpeed: 'Slow' | 'Medium' | 'Fast';
+  inputDeviceId: string;
 }
 
 export const PREFERENCES_KEY = 'sonic-messaging:preferences:v1';
@@ -43,7 +44,8 @@ export function loadUserPreferences(storage: Pick<Storage, 'getItem'>, defaults:
       interfererPower: typeof value.interfererPower === 'number' && Number.isFinite(value.interfererPower)
         ? value.interfererPower : defaults.interfererPower,
       scrollSpeed: value.scrollSpeed === 'Slow' || value.scrollSpeed === 'Medium' || value.scrollSpeed === 'Fast'
-        ? value.scrollSpeed : defaults.scrollSpeed
+        ? value.scrollSpeed : defaults.scrollSpeed,
+      inputDeviceId: typeof value.inputDeviceId === 'string' ? value.inputDeviceId : defaults.inputDeviceId
     };
   } catch {
     return structuredClone(defaults);

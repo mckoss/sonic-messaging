@@ -47,6 +47,8 @@
   let interfererPower = -6;
   let preferencesReady = false;
   let scrollSpeed: 'Slow' | 'Medium' | 'Fast' = 'Medium';
+  let inputDeviceId = 'default';
+  let inputDevices: Array<{ deviceId: string; label: string }> = [];
   let packets = [
     { time: '—', mode: 'Waiting', payload: 'No packets decoded yet', quality: '—' }
   ];
@@ -66,7 +68,15 @@
 
   async function onListenToggle(next: boolean) {
     try {
-      if (next) await audio.startListening(); else { audio.stopListening(); audio.disableDetector(); }
+      if (next) {
+        try { await audio.startListening(inputDeviceId); }
+        catch (error) {
+          if (inputDeviceId === 'default') throw error;
+          logs = [`Saved microphone unavailable · using system default`, ...logs].slice(0, 10);
+          inputDeviceId = 'default'; persistPreferences(); await audio.startListening();
+        }
+      } else { audio.stopListening(); audio.disableDetector(); }
+      if (next) await refreshInputDevices(true);
       listening = next;
       configureDetector();
       receiverState = next ? 'listening' : 'idle';
@@ -93,12 +103,32 @@
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
   function currentPreferences(): UserPreferences {
-    return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed };
+    return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed, inputDeviceId };
   }
   function persistPreferences() {
     if (preferencesReady) saveUserPreferences(window.localStorage, currentPreferences());
   }
   function onSettingsChange() { configureDetector(); persistPreferences(); }
+  async function refreshInputDevices(validateSelection = false) {
+    try {
+      const devices = await audio.listInputDevices();
+      inputDevices = devices.filter(device => device.deviceId !== 'default').map((device, index) => ({
+        deviceId: device.deviceId, label: device.label || `Microphone ${index + 1}`
+      }));
+      if (validateSelection && inputDeviceId !== 'default' && !inputDevices.some(device => device.deviceId === inputDeviceId)) {
+        inputDeviceId = 'default'; persistPreferences();
+      }
+    } catch (error) {
+      logs = [`Microphone list error · ${error instanceof Error ? error.message : String(error)}`, ...logs].slice(0, 10);
+    }
+  }
+  async function onInputDeviceChange() {
+    persistPreferences();
+    if (listening) {
+      audio.stopListening(); listening = false;
+      await onListenToggle(true);
+    }
+  }
   function configureDetector() {
     if (!audio || !listening || mode !== 'FSK') { audio?.disableDetector(); return; }
     const s = settings.FSK;
@@ -116,17 +146,14 @@
     const restored = loadUserPreferences(window.localStorage, currentPreferences());
     mode = restored.mode; settings = restored.settings; snr = restored.snr; noiseType = restored.noiseType;
     interferer = restored.interferer; interfererPower = restored.interfererPower;
-    scrollSpeed = restored.scrollSpeed; preferencesReady = true;
+    scrollSpeed = restored.scrollSpeed; inputDeviceId = restored.inputDeviceId; preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
+    void refreshInputDevices(false);
     const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; spectrumSequence = event.sequence;
       spectrumSamplePosition = event.samplePosition; receiverState = 'signal'; });
     const offSymbols = audio.onSymbols(event => {
       symbolScores = event.scores; symbolSequence = event.sequence; rawSymbol = event.symbol;
       symbolSamplePosition = event.samplePosition; symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
-      if (event.symbol >= 0) {
-        receivedMarkers = [...receivedMarkers,
-          { id: receivedMarkerId++, label: `S${event.symbol}`, symbols: 1 }].slice(-128);
-      }
     });
     const offPackets = audio.onPackets(event => {
       const decoded = new TextDecoder('utf-8', { fatal: true });
@@ -199,7 +226,7 @@
     </section>
 
     <section class="card receiver">
-      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
+      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition}
         samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={0} maxFrequency={24000} />
       {#if mode === 'FSK'}
@@ -250,11 +277,11 @@
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
   .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
   .badge{font:10px ui-monospace,monospace;text-transform:uppercase;padding:5px 8px;border-radius:99px;background:#17263a;color:var(--dim)}.badge.listening,.badge.signal{color:var(--accent)}.readouts,.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.readouts div,.metrics div{padding:12px;background:#081321;border-radius:10px}.readouts span,.metrics span{display:block;color:var(--dim);font-size:10px}.readouts strong{font:600 12px ui-monospace,monospace}.metrics strong{display:block;font-size:22px;color:#d6e7fb;margin-bottom:3px}
-  .receiver-actions{display:flex!important;align-items:center;gap:8px!important}.receiver-actions label{display:flex;align-items:center;gap:5px;color:var(--dim);font:10px ui-monospace,monospace}.receiver-actions select{padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);font:10px ui-monospace,monospace}
+  .receiver-actions{display:flex!important;align-items:center;gap:8px!important}.receiver-actions label{display:flex;align-items:center;gap:5px;color:var(--dim);font:10px ui-monospace,monospace}.receiver-actions select{max-width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);font:10px ui-monospace,monospace}
   .detector-head{display:flex;justify-content:space-between;gap:10px;margin:14px 2px 7px;color:var(--muted);font-size:11px;font-weight:650}.detector-head small{color:var(--dim);font-weight:500}
   .sim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sim-grid label,.interference{display:grid;gap:8px}.sim-grid select{background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:10px}.sim-grid input,.interference input{width:100%;accent-color:var(--accent)}output{font:12px ui-monospace,monospace;color:var(--accent)}.switch-row{display:flex;gap:12px;align-items:start;padding:15px;margin-top:18px;border:1px solid var(--line);border-radius:11px}.switch-row input{margin-top:3px;accent-color:var(--accent)}.switch-row b,.switch-row small{display:block}.switch-row b{font-size:13px}.switch-row small{color:var(--dim);margin-top:3px;line-height:1.35}.interference{margin-top:16px}
   .text-button{font-size:11px}.packet-list{margin-top:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}.packet-list article{display:grid;grid-template-columns:60px 55px 1fr auto;gap:9px;padding:10px 12px;align-items:center;color:var(--dim);font-size:11px}.packet-mode{color:var(--blue)}code{overflow:hidden;text-overflow:ellipsis;color:var(--muted)}.log{margin-top:12px;max-height:110px;overflow:auto;background:#06101c;padding:8px 12px;border-radius:10px;font:10px/1.5 ui-monospace,monospace;color:#7890ab}.log p{margin:3px 0}.empty{font-style:italic}
   footer{display:flex;justify-content:space-between;gap:20px;max-width:1320px;margin:auto;border-top:1px solid var(--line);padding:20px 24px 32px;color:var(--dim);font-size:11px}
   @media(max-width:850px){.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}.status-pill{align-self:flex-start}main{padding-top:38px}.app-state>span:not(.dot){display:none}}
-  @media(max-width:520px){header{padding:0 15px}main{padding:28px 14px 56px}.card{padding:17px;border-radius:14px}.intro h1{font-size:36px}.readouts,.metrics{grid-template-columns:1fr 1fr}.sim-grid{grid-template-columns:1fr}.packet-list article{grid-template-columns:50px 45px 1fr}.packet-list article>:last-child{display:none}footer{padding-inline:15px;flex-direction:column}}
+  @media(max-width:520px){header{padding:0 15px}main{padding:28px 14px 56px}.card{padding:17px;border-radius:14px}.intro h1{font-size:36px}.receiver .section-head{align-items:flex-start}.receiver-actions{align-items:flex-end;flex-direction:column}.readouts,.metrics{grid-template-columns:1fr 1fr}.sim-grid{grid-template-columns:1fr}.packet-list article{grid-template-columns:50px 45px 1fr}.packet-list article>:last-child{display:none}footer{padding-inline:15px;flex-direction:column}}
 </style>

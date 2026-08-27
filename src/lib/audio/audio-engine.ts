@@ -120,12 +120,13 @@ export class AudioEngine {
     }
   }
 
-  async startListening(): Promise<void> {
+  async startListening(deviceId?: string): Promise<void> {
     await this.start();
     if (this.stream) return;
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { ...DEFAULT_CONSTRAINTS, ...this.options.constraints }, video: false
+        audio: { ...DEFAULT_CONSTRAINTS, ...this.options.constraints,
+          ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {}) }, video: false
       });
       this.source = this.context!.createMediaStreamSource(this.stream);
       this.capture = new AudioWorkletNode(this.context!, 'sonic-capture', { numberOfOutputs: 0 });
@@ -143,6 +144,11 @@ export class AudioEngine {
       this.stopListening();
       throw new Error(`Unable to access microphone: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  async listInputDevices(): Promise<MediaDeviceInfo[]> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    return (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput');
   }
 
   stopListening(): void {

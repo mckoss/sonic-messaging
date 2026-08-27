@@ -9,6 +9,7 @@ test('receiver waterfalls expose one shared captured-audio time scale', async ({
   await expect(spectrum).toHaveAttribute('data-samples-per-css-pixel', '256');
   await expect(symbols).toHaveAttribute('data-samples-per-css-pixel', '256');
   await expect(page.getByText('RX TIME', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Microphone')).toHaveValue('default');
 });
 
 test('restores user-defined modem settings after reload', async ({ page }) => {

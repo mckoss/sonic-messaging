@@ -30,12 +30,13 @@
 - [x] Add bracketed, character-centered RX timing spans and a compact decoded message line.
 - [x] Keep a continuous right-anchored history of CRC-valid messages in the RX bar.
 - [x] Tolerate limited FSK sync errors while retaining CRC-gated payload display.
-- [x] Show accepted physical FSK symbols in RX-Time before packet sync acquisition.
+- [x] Show decoded character extents in RX-Time while keeping physical FSK symbols in likelihood rows.
 - [x] Lock spectrum and symbol waterfall travel by source sequence delta, including coalesced UI updates.
 - [x] Gate waterfall time-scale behavior with unit and Playwright desktop/mobile coverage.
 - [x] Persist user-defined modem/channel settings locally and restore them on reload.
 - [x] Stream decoded characters into RX before CRC, then mark confirmation or rejection.
 - [x] Lock all receiver lanes to absolute sample positions with persisted Slow/Medium/Fast scaling.
+- [x] Add a persisted microphone device picker with live capture restart.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.
