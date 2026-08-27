@@ -4,7 +4,7 @@ import { loadUserPreferences, PREFERENCES_KEY, saveUserPreferences, type UserPre
 const defaults: UserPreferences = {
   mode: 'FSK',
   settings: { FSK: { frequency: 3800, tones: 4 }, CSS: { bandwidth: 6000 }, DSSS: { chipRate: 4000 } },
-  snr: 10, noiseType: 'White noise', interferer: false, interfererPower: -6
+  snr: 10, noiseType: 'White noise', interferer: false, interfererPower: -6, scrollSpeed: 'Medium'
 };
 
 describe('user preferences', () => {

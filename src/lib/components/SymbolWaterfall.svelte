@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSequenceSteps } from '../audio/waterfall';
+  import { intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSampleDelta } from '../audio/waterfall';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -11,6 +11,8 @@
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
+  export let samplePosition = -1;
+  export let samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL;
 
   $: recentEntries = currentMessage ? [...messages, currentMessage] : messages;
   $: recentMessages = recentEntries.length ? `| ${recentEntries.join(' | ')} |` : '';
@@ -22,11 +24,8 @@
   let width = 800, height = 150, lastSequence = -1, lastConfidenceSequence = -1;
   let symbolPixelRemainder = 0, confidencePixelRemainder = 0;
   let timelinePixelRemainder = 0, lastTimelineSequence = -1, lastMarkerId = -1;
+  let lastSymbolSamplePosition = -1, lastConfidenceSamplePosition = -1, lastTimelineSamplePosition = -1;
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
-
-  function pixelAdvance(ratio: number): number {
-    return waterfallPixelAdvance(sampleRate / Math.max(1, symbolRate), ratio);
-  }
 
   function draw() {
     if (!canvas || !scores.length || sequence === lastSequence) return;
@@ -41,10 +40,13 @@
     }
     if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
     for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
-    symbolPixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastSequence);
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastSymbolSamplePosition,
+      sampleRate / Math.max(1, symbolRate));
+    symbolPixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(symbolPixelRemainder);
     const columnWidth = Math.min(pixelWidth, elapsedPixels);
     lastSequence = sequence;
+    lastSymbolSamplePosition = samplePosition;
     if (columnWidth < 1) return;
     symbolPixelRemainder -= elapsedPixels;
     ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
@@ -80,10 +82,13 @@
       ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
     pendingConfidence = Math.max(pendingConfidence, confidence);
-    confidencePixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastConfidenceSequence);
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastConfidenceSamplePosition,
+      sampleRate / Math.max(1, symbolRate));
+    confidencePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(confidencePixelRemainder);
     const columnWidth = Math.min(pixelWidth, elapsedPixels);
     lastConfidenceSequence = sequence;
+    lastConfidenceSamplePosition = samplePosition;
     if (columnWidth < 1) return;
     confidencePixelRemainder -= elapsedPixels;
     ctx.drawImage(confidenceCanvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight,
@@ -112,10 +117,13 @@
     if (!ctx) return;
     const ratio = Math.max(1, window.devicePixelRatio || 1);
     const { pixelWidth, pixelHeight } = prepareTimeline(ctx, ratio);
-    timelinePixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastTimelineSequence);
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastTimelineSamplePosition,
+      sampleRate / Math.max(1, symbolRate));
+    timelinePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(timelinePixelRemainder);
     const advance = Math.min(pixelWidth, elapsedPixels);
     lastTimelineSequence = sequence;
+    lastTimelineSamplePosition = samplePosition;
     if (advance < 1) return;
     timelinePixelRemainder -= elapsedPixels;
     ctx.drawImage(timelineCanvas, advance, 0, pixelWidth - advance, pixelHeight,
@@ -150,9 +158,9 @@
     }
   }
 
-  $: scores, sequence, width, height, draw();
-  $: confidence, sequence, width, drawConfidence();
-  $: sequence, width, scrollTimeline();
+  $: scores, sequence, samplePosition, samplesPerCssPixel, width, height, draw();
+  $: confidence, sequence, samplePosition, samplesPerCssPixel, width, drawConfidence();
+  $: sequence, samplePosition, samplesPerCssPixel, width, scrollTimeline();
   $: markers, width, drawMarkers();
 
   onMount(() => {
@@ -162,7 +170,7 @@
   });
 </script>
 
-<div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={WATERFALL_SAMPLES_PER_CSS_PIXEL} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
+<div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
@@ -171,12 +179,12 @@
 
 <style>
   .figure { width:100%; }
-  .plot { display:grid; grid-template-columns:auto 1fr; gap:7px; }
+  .plot { display:grid; grid-template-columns:62px 1fr; gap:7px; }
   .detector { width:100%; min-width:0; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
   canvas { display:block; width:100%; height:150px; }
   .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
   .labels span { display:flex; align-items:center; justify-content:flex-end; }
-  .receive,.confidence,.timeline { display:grid; grid-template-columns:45px 1fr; gap:7px; margin-top:6px; min-width:0; }
+  .receive,.confidence,.timeline { display:grid; grid-template-columns:62px 1fr; gap:7px; margin-top:6px; min-width:0; }
   .channel { color:#8294aa; font:10px ui-monospace,monospace; text-align:right; padding-top:5px; }
   .confidence-history { height:22px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
   .confidence-history canvas { width:100%; height:22px; }

@@ -8,6 +8,7 @@ export interface UserPreferences {
   noiseType: string;
   interferer: boolean;
   interfererPower: number;
+  scrollSpeed: 'Slow' | 'Medium' | 'Fast';
 }
 
 export const PREFERENCES_KEY = 'sonic-messaging:preferences:v1';
@@ -40,7 +41,9 @@ export function loadUserPreferences(storage: Pick<Storage, 'getItem'>, defaults:
       noiseType: typeof value.noiseType === 'string' ? value.noiseType : defaults.noiseType,
       interferer: typeof value.interferer === 'boolean' ? value.interferer : defaults.interferer,
       interfererPower: typeof value.interfererPower === 'number' && Number.isFinite(value.interfererPower)
-        ? value.interfererPower : defaults.interfererPower
+        ? value.interfererPower : defaults.interfererPower,
+      scrollSpeed: value.scrollSpeed === 'Slow' || value.scrollSpeed === 'Medium' || value.scrollSpeed === 'Fast'
+        ? value.scrollSpeed : defaults.scrollSpeed
     };
   } catch {
     return structuredClone(defaults);

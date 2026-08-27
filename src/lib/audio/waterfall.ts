@@ -1,6 +1,7 @@
 export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
 export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 256;
+export const WATERFALL_SPEED_SAMPLES = { Slow: 512, Medium: 256, Fast: 128 } as const;
 
 export interface BinRange { start: number; end: number }
 
@@ -14,6 +15,10 @@ export function waterfallPixelAdvance(
 export function waterfallSequenceSteps(sequence: number, previousSequence: number): number {
   if (sequence < 0) return 0;
   return previousSequence >= 0 && sequence > previousSequence ? sequence - previousSequence : 1;
+}
+
+export function waterfallSampleDelta(position: number, previousPosition: number, initialSamples: number): number {
+  return previousPosition >= 0 && position > previousPosition ? position - previousPosition : Math.max(0, initialSamples);
 }
 
 /** Returns the half-open FFT-bin range covered by the requested frequencies. */

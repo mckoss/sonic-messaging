@@ -35,6 +35,7 @@
 - [x] Gate waterfall time-scale behavior with unit and Playwright desktop/mobile coverage.
 - [x] Persist user-defined modem/channel settings locally and restore them on reload.
 - [x] Stream decoded characters into RX before CRC, then mark confirmation or rejection.
+- [x] Lock all receiver lanes to absolute sample positions with persisted Slow/Medium/Fast scaling.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

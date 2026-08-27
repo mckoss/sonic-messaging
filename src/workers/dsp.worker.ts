@@ -13,10 +13,12 @@ let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 
 let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
 let spectrumSequence = 0;
+let spectrumSamplePosition = 0;
 let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number } | undefined;
 let detectorPending = new Float32Array(0);
 let detectorLength = 0;
 let detectorSequence = 0;
+let detectorSamplePosition = 0;
 let fskStreamDecoder: FskStreamDecoder | undefined;
 let detectorSampleRate = 0;
 
@@ -31,6 +33,8 @@ function configure(next: SpectrumOptions): void {
   options = { minDecibels: -110, maxDecibels: 0, ...next };
   pending = new Float32Array(options.fftSize);
   pendingLength = 0;
+  spectrumSequence = 0;
+  spectrumSamplePosition = 0;
 }
 
 function configureDetector(mode: 'off' | 'FSK', fsk?: {
@@ -43,6 +47,7 @@ function configureDetector(mode: 'off' | 'FSK', fsk?: {
   detectorPending = new Float32Array(0);
   detectorLength = 0;
   detectorSequence = 0;
+  detectorSamplePosition = 0;
   fskStreamDecoder = undefined;
   detectorSampleRate = 0;
 }
@@ -65,7 +70,9 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
         detectFskSymbol(detectorPending, sampleRate, detector.frequencies),
         detector.squelchDbfs, detector.confidenceThreshold
       );
-      send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++ },
+      detectorSamplePosition += samplesPerSymbol;
+      send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++,
+        samplePosition: detectorSamplePosition },
         [result.scores.buffer as ArrayBuffer]);
       detectorLength = 0;
     }
@@ -100,7 +107,9 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
       const bins = magnitudesToDecibels(
         realFftMagnitude(hannWindow(pending)), options.minDecibels, options.maxDecibels
       );
-      send({ type: 'spectrum', bins, sampleRate, fftSize: pending.length, sequence: spectrumSequence++ }, [bins.buffer as ArrayBuffer]);
+      spectrumSamplePosition += spectrumSamplePosition === 0 ? pending.length : pending.length / 2;
+      send({ type: 'spectrum', bins, sampleRate, fftSize: pending.length, sequence: spectrumSequence++,
+        samplePosition: spectrumSamplePosition }, [bins.buffer as ArrayBuffer]);
       // 50% overlap improves display responsiveness without changing AudioWorklet traffic.
       pending.copyWithin(0, pending.length / 2);
       pendingLength = pending.length / 2;
@@ -167,7 +176,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
-      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; detectorLength = 0; detectorPending.fill(0); fskStreamDecoder?.reset(); break;
+      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorLength = 0; detectorPending.fill(0); detectorSamplePosition = 0; fskStreamDecoder?.reset(); break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

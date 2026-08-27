@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { dbToIntensity, frequencyBinRange, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSequenceSteps } from '../audio/waterfall';
+  import { dbToIntensity, frequencyBinRange, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSampleDelta } from '../audio/waterfall';
 
   export let spectrum: number[] | Float32Array = [];
   export let sampleRate = 48_000;
@@ -8,6 +8,8 @@
   export let maxFrequency = 24_000;
   export let label = 'Live receiver spectrum';
   export let sequence = -1;
+  export let samplePosition = -1;
+  export let samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL;
 
   let canvas: HTMLCanvasElement;
   let host: HTMLDivElement;
@@ -15,7 +17,7 @@
   let height = 220;
   let lastPixelWidth = 0;
   let lastPixelHeight = 0;
-  let lastSequence = -1;
+  let lastSamplePosition = -1;
 
   function prepareCanvas(ctx: CanvasRenderingContext2D, pixelWidth: number, pixelHeight: number) {
     if (lastPixelWidth === pixelWidth && lastPixelHeight === pixelHeight) return;
@@ -36,9 +38,10 @@
     const pixelHeight = Math.max(1, Math.round(height * ratio));
     prepareCanvas(ctx, pixelWidth, pixelHeight);
 
-    const steps = waterfallSequenceSteps(sequence, lastSequence);
-    const columnWidth = Math.min(pixelWidth, Math.max(1, Math.round(waterfallPixelAdvance(steps * 1024, ratio))));
-    lastSequence = sequence;
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastSamplePosition, 1024);
+    const columnWidth = Math.min(pixelWidth, Math.max(1,
+      Math.round(waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel))));
+    lastSamplePosition = samplePosition;
     if (pixelWidth > columnWidth) {
       ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     }
@@ -67,7 +70,7 @@
     ctx.putImageData(column, pixelWidth - columnWidth, 0);
   }
 
-  $: spectrum, sequence, sampleRate, minFrequency, maxFrequency, width, height, draw();
+  $: spectrum, sequence, samplePosition, samplesPerCssPixel, sampleRate, minFrequency, maxFrequency, width, height, draw();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => {
@@ -79,13 +82,13 @@
   });
 </script>
 
-<div class="figure" bind:this={host} data-testid="spectrum-waterfall" data-samples-per-css-pixel={WATERFALL_SAMPLES_PER_CSS_PIXEL} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
+<div class="figure" bind:this={host} data-testid="spectrum-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
   <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
 </div>
 
 <style>
   .figure { width: 100%; }
-  .plot { display:grid; grid-template-columns:auto 1fr; gap:6px; }
+  .plot { display:grid; grid-template-columns:62px 1fr; gap:6px; }
   .spectrum { width: 100%; min-width:0; min-height:176px; overflow:hidden; border-radius:14px; background:#050a18; }
   canvas { display: block; width: 100%; height: 220px; }
   .axis { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
