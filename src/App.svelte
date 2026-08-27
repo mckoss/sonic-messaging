@@ -23,6 +23,8 @@
   let rawSymbol = -1;
   let symbolConfidence = 0;
   let symbolPower = -120;
+  let receivedTokens: string[] = [];
+  let receptionDecoder = new TextDecoder();
 
   let mode: Mode = 'FSK';
   let listening = false;
@@ -112,10 +114,22 @@
         logs = [`${new Date().toLocaleTimeString()} · Valid FSK frame rejected: payload is not UTF-8`, ...logs].slice(0, 10);
       }
     });
+    const offReception = audio.onReception(event => {
+      if (event.token === 'sync') {
+        receptionDecoder = new TextDecoder(); receivedTokens = ['<SYNC>'];
+      } else if (event.token === 'crc-confirm') {
+        receivedTokens = [...receivedTokens, '<CRC-Confirm>'].slice(-64);
+      } else if (event.token === 'crc-error') {
+        receivedTokens = [...receivedTokens, '<CRC-Error>'].slice(-64);
+      } else if (event.byte !== undefined) {
+        const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true });
+        if (text) receivedTokens = [...receivedTokens, ...text].slice(-64);
+      }
+    });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offSpectrum(); offSymbols(); offPackets(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offSpectrum(); offSymbols(); offPackets(); offReception(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -147,6 +161,7 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
+          tokens={receivedTokens}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
       <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' && rawSymbol >= 0 ? `FSK · S${rawSymbol}` : mode : 'Standby'}</strong></div></div>

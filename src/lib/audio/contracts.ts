@@ -38,6 +38,7 @@ export type DspWorkerResponse =
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number }
   | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; confidence: number }
+  | { type: 'fsk-reception'; token: 'sync' | 'byte' | 'crc-confirm' | 'crc-error'; byte?: number }
   | { type: 'decode-result'; requestId: string; modem: string; result?: unknown; error?: string }
   | { type: 'worker-error'; message: string };
 

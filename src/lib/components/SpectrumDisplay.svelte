@@ -34,32 +34,33 @@
     const pixelHeight = Math.max(1, Math.round(height * ratio));
     prepareCanvas(ctx, pixelWidth, pixelHeight);
 
-    const rowHeight = Math.max(1, Math.round(ratio));
-    if (pixelHeight > rowHeight) {
-      ctx.drawImage(canvas, 0, rowHeight, pixelWidth, pixelHeight - rowHeight, 0, 0, pixelWidth, pixelHeight - rowHeight);
+    const columnWidth = Math.max(1, Math.round(ratio));
+    if (pixelWidth > columnWidth) {
+      ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     }
 
     const { start, end } = frequencyBinRange(spectrum.length, sampleRate, minFrequency, maxFrequency);
     const span = end - start;
-    const row = ctx.createImageData(pixelWidth, rowHeight);
-    for (let x = 0; x < pixelWidth; x++) {
-      const binStart = start + Math.floor((x / pixelWidth) * span);
-      const binEnd = Math.max(binStart + 1, start + Math.ceil(((x + 1) / pixelWidth) * span));
+    const column = ctx.createImageData(columnWidth, pixelHeight);
+    for (let y = 0; y < pixelHeight; y++) {
+      const position = (pixelHeight - 1 - y) / pixelHeight;
+      const binStart = start + Math.floor(position * span);
+      const binEnd = Math.max(binStart + 1, start + Math.ceil((position + 1 / pixelHeight) * span));
       let peakDb = -110;
       for (let bin = binStart; bin < Math.min(end, binEnd); bin++) {
         const value = spectrum[bin];
         if (Number.isFinite(value)) peakDb = Math.max(peakDb, value);
       }
       const [red, green, blue] = intensityToRgb(dbToIntensity(peakDb));
-      for (let y = 0; y < rowHeight; y++) {
-        const offset = (y * pixelWidth + x) * 4;
-        row.data[offset] = red;
-        row.data[offset + 1] = green;
-        row.data[offset + 2] = blue;
-        row.data[offset + 3] = 255;
+      for (let x = 0; x < columnWidth; x++) {
+        const offset = (y * columnWidth + x) * 4;
+        column.data[offset] = red;
+        column.data[offset + 1] = green;
+        column.data[offset + 2] = blue;
+        column.data[offset + 3] = 255;
       }
     }
-    ctx.putImageData(row, 0, pixelHeight - rowHeight);
+    ctx.putImageData(column, pixelWidth - columnWidth, 0);
   }
 
   $: spectrum, sampleRate, minFrequency, maxFrequency, width, height, draw();
@@ -74,18 +75,18 @@
   });
 </script>
 
-<div class="figure" bind:this={host} aria-label={`${label}; waterfall display, newest samples at bottom`} role="img">
-  <div class="time">older ↑ · newest ↓</div>
-  <div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div>
-  <div class="axis"><span>{Math.round(minFrequency / 100) / 10} kHz</span><span>{Math.round(maxFrequency / 100) / 10} kHz</span></div>
+<div class="figure" bind:this={host} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
+  <div class="time">older ← · newest →</div>
+  <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
 </div>
 
 <style>
   .figure { width: 100%; }
-  .spectrum { width: 100%; min-height: 176px; overflow: hidden; border-radius: 14px; background: #050a18; }
+  .plot { display:grid; grid-template-columns:auto 1fr; gap:6px; }
+  .spectrum { width: 100%; min-width:0; min-height:176px; overflow:hidden; border-radius:14px; background:#050a18; }
   canvas { display: block; width: 100%; height: 220px; }
   .axis, .time { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
-  .axis { display: flex; justify-content: space-between; padding: 5px 2px 0; }
+  .axis { display:flex; flex-direction:column; justify-content:space-between; padding:1px 0; text-align:right; }
   .time { height: 17px; padding-right: 2px; text-align: right; }
   @media (max-width: 559px) { canvas { height: 176px; } }
 </style>

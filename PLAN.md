@@ -15,6 +15,7 @@
 - [x] Add simulated AWGN, attenuation, frequency-offset, and interference channels.
 - [x] Replace the line spectrum with a scrolling power waterfall.
 - [x] Keep waterfall time and axis labels outside the signal plots for legibility.
+- [x] Scroll spectrum and FSK symbol waterfalls right-to-left and show live sync/text acquisition.
 - [ ] Add saved experiment configurations and comparable benchmark results.
 
 ## Live receiver

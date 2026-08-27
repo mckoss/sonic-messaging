@@ -5,6 +5,7 @@
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
   export let sequence = -1;
+  export let tokens: string[] = [];
 
   let canvas: HTMLCanvasElement;
   let host: HTMLDivElement;
@@ -21,18 +22,18 @@
       canvas.width = pixelWidth; canvas.height = pixelHeight;
       ctx.fillStyle = 'rgb(5, 10, 24)'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
-    const rowHeight = Math.max(1, Math.round(2 * ratio));
-    ctx.drawImage(canvas, 0, rowHeight, pixelWidth, pixelHeight - rowHeight, 0, 0, pixelWidth, pixelHeight - rowHeight);
-    const row = ctx.createImageData(pixelWidth, rowHeight);
-    for (let x = 0; x < pixelWidth; x++) {
-      const symbol = Math.min(scores.length - 1, Math.floor(x * scores.length / pixelWidth));
+    const columnWidth = Math.max(1, Math.round(2 * ratio));
+    ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
+    const column = ctx.createImageData(columnWidth, pixelHeight);
+    for (let y = 0; y < pixelHeight; y++) {
+      const symbol = Math.min(scores.length - 1, Math.floor(y * scores.length / pixelHeight));
       const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, scores[symbol]))));
-      for (let y = 0; y < rowHeight; y++) {
-        const offset = (y * pixelWidth + x) * 4;
-        row.data[offset] = red; row.data[offset + 1] = green; row.data[offset + 2] = blue; row.data[offset + 3] = 255;
+      for (let x = 0; x < columnWidth; x++) {
+        const offset = (y * columnWidth + x) * 4;
+        column.data[offset] = red; column.data[offset + 1] = green; column.data[offset + 2] = blue; column.data[offset + 3] = 255;
       }
     }
-    ctx.putImageData(row, 0, pixelHeight - rowHeight);
+    ctx.putImageData(column, pixelWidth - columnWidth, 0);
     lastSequence = sequence;
   }
 
@@ -45,17 +46,22 @@
   });
 </script>
 
-<div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at bottom" role="img">
-  <div class="time">older ↑ · newest ↓</div>
-  <div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div>
-  <div class="labels">{#each labels as label}<span>{label}</span>{/each}</div>
+<div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
+  <div class="time">older ← · newest →</div>
+  <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
+  <div class="receive"><span class="channel">RX</span><div class="tokens">{#each tokens as token}<span class:confirm={token === '<SYNC>' || token === '<CRC-Confirm>'} class:error={token === '<CRC-Error>'}>{token === ' ' ? '␠' : token}</span>{/each}</div></div>
 </div>
 
 <style>
   .figure { width:100%; }
-  .detector { width:100%; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
+  .plot { display:grid; grid-template-columns:auto 1fr; gap:7px; }
+  .detector { width:100%; min-width:0; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
   canvas { display:block; width:100%; height:150px; }
-  .labels { display:grid; grid-template-columns:repeat(auto-fit,minmax(1px,1fr)); padding-top:5px; color:#8294aa; font:10px ui-monospace,monospace; }
-  .labels span { text-align:center; }
+  .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
+  .labels span { display:flex; align-items:center; justify-content:flex-end; }
   .time { height:17px; padding-right:2px; color:#8294aa; font:10px ui-monospace,monospace; text-align:right; }
+  .receive { display:grid; grid-template-columns:38px 1fr; gap:7px; margin-top:6px; min-width:0; }
+  .channel { color:#8294aa; font:10px ui-monospace,monospace; text-align:right; padding-top:5px; }
+  .tokens { height:27px; display:flex; align-items:center; justify-content:flex-end; gap:9px; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
+  .tokens span { flex:0 0 auto; }.tokens .confirm { color:#4ee8b4; font-weight:700; }.tokens .error { color:#ff8da8; font-weight:700; }
 </style>

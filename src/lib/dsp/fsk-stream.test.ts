@@ -19,6 +19,8 @@ describe('continuous FSK receiver', () => {
     expect(packets).toHaveLength(1);
     expect(packets[0].payload).toEqual(payload);
     expect(packets[0].confidence).toBeGreaterThan(0.5);
+    const progress = receiver.drainProgress();
+    expect(progress[progress.length - 1]).toEqual({ type: 'crc-confirm' });
   });
 
   it('decodes consecutive packets and ignores leading noise', () => {

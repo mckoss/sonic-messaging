@@ -12,6 +12,11 @@ export interface FskStreamPacket {
   confidence: number;
 }
 
+export type FskStreamProgress =
+  | { type: 'sync' }
+  | { type: 'byte'; byte: number }
+  | { type: 'crc-confirm' | 'crc-error' };
+
 /** Acquires framed FSK packets in an arbitrarily chunked continuous sample stream. */
 export class FskStreamDecoder {
   private samples = new Float32Array(0);
@@ -20,6 +25,8 @@ export class FskStreamDecoder {
   private readonly samplesPerSymbol: number;
   private readonly bitsPerSymbol: number;
   private readonly phaseStep: number;
+  private progress: FskStreamProgress[] = [];
+  private reportedPayloadBytes = 0;
 
   constructor(private readonly config: FskConfig) {
     this.bitsPerSymbol = Math.log2(config.frequencies.length);
@@ -47,7 +54,10 @@ export class FskStreamDecoder {
 
   reset(): void {
     this.samples = new Float32Array(0); this.searchOffset = 0; this.candidateOffset = undefined;
+    this.progress = []; this.reportedPayloadBytes = 0;
   }
+
+  drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }
 
   private findSync(): boolean {
     const syncSymbols = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
@@ -56,6 +66,8 @@ export class FskStreamDecoder {
       const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
       if (SYNC.every((byte, index) => decoded.bytes[index] === byte)) {
         this.candidateOffset = this.searchOffset;
+        this.reportedPayloadBytes = 0;
+        this.progress.push({ type: 'sync' });
         return true;
       }
       this.searchOffset += this.phaseStep;
@@ -72,23 +84,38 @@ export class FskStreamDecoder {
     const payloadLength = (header[4] << 8) | header[5];
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
+    const availableBytes = Math.floor(
+      (Math.floor((this.samples.length - start) / this.samplesPerSymbol) * this.bitsPerSymbol) / 8
+    );
+    const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - HEADER_BYTES));
+    if (reportThrough > this.reportedPayloadBytes) {
+      const partial = this.decodeBytes(start, HEADER_BYTES + reportThrough).bytes;
+      for (let index = this.reportedPayloadBytes; index < reportThrough; index++) {
+        this.progress.push({ type: 'byte', byte: partial[HEADER_BYTES + index] });
+      }
+      this.reportedPayloadBytes = reportThrough;
+    }
     if (start + frameSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
 
     const decoded = this.decodeBytes(start, frameBytes);
     const parsed = unframe(decoded.bytes);
     if (!parsed.payload) {
+      this.progress.push({ type: 'crc-error' });
       this.rejectCandidate();
       return null;
     }
+    this.progress.push({ type: 'crc-confirm' });
     const consumed = start + frameSymbols * this.samplesPerSymbol;
     this.samples = this.samples.slice(consumed);
     this.searchOffset = 0; this.candidateOffset = undefined;
+    this.reportedPayloadBytes = 0;
     return { payload: parsed.payload, confidence: decoded.confidence };
   }
 
   private rejectCandidate(): void {
     this.searchOffset = this.candidateOffset! + this.phaseStep;
     this.candidateOffset = undefined;
+    this.reportedPayloadBytes = 0;
   }
 
   private decodeBytes(offset: number, count: number): { bytes: Uint8Array; confidence: number } {

@@ -70,7 +70,11 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
     detectorSampleRate = sampleRate;
   }
   if (fskStreamDecoder) {
-    for (const packet of fskStreamDecoder.push(samples)) {
+    const packets = fskStreamDecoder.push(samples);
+    for (const progress of fskStreamDecoder.drainProgress()) {
+      send({ type: 'fsk-reception', token: progress.type, ...('byte' in progress ? { byte: progress.byte } : {}) });
+    }
+    for (const packet of packets) {
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
     }
   }
