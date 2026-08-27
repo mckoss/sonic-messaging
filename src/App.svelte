@@ -24,6 +24,8 @@
   let symbolConfidence = 0;
   let symbolPower = -120;
   let receivedTokens: string[] = [];
+  let receivedMarkers: Array<{ id: number; label: string; symbols: number }> = [];
+  let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
 
   let mode: Mode = 'FSK';
@@ -116,15 +118,32 @@
       }
     });
     const offReception = audio.onReception(event => {
+      const bitsPerSymbol = Math.log2(Number(settings.FSK.tones));
+      const addMarker = (label: string, byteCount: number) => {
+        receivedMarkers = [...receivedMarkers, {
+          id: receivedMarkerId++, label: label === ' ' ? '⎵' : label,
+          symbols: Math.ceil(byteCount * 8 / bitsPerSymbol)
+        }].slice(-64);
+      };
       if (event.token === 'sync') {
         receptionDecoder = new TextDecoder(); receivedTokens = ['<SYNC>'];
+        receivedMarkers = []; addMarker('<SYNC>', 4);
       } else if (event.token === 'crc-confirm') {
         receivedTokens = [...receivedTokens, '<CRC-Confirm>'].slice(-64);
+        addMarker('<CRC-Confirm>', 2);
       } else if (event.token === 'crc-error') {
         receivedTokens = [...receivedTokens, '<CRC-Error>'].slice(-64);
+        addMarker('<CRC-Error>', 2);
       } else if (event.byte !== undefined) {
         const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true });
-        if (text) receivedTokens = [...receivedTokens, ...text].slice(-64);
+        if (text) {
+          const characters = [...text];
+          for (const character of characters) {
+            const byteCount = new TextEncoder().encode(character).length;
+            addMarker(character, byteCount);
+          }
+          receivedTokens = [...receivedTokens, ...characters].slice(-64);
+        }
       }
     });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
@@ -162,7 +181,7 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
-          tokens={receivedTokens} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
+          tokens={receivedTokens} markers={receivedMarkers} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}

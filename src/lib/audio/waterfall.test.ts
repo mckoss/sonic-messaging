@@ -28,9 +28,9 @@ describe('waterfall mapping', () => {
     expect(intensityToRgb(2)).toEqual(intensityToRgb(1));
   });
 
-  it('maps modem windows onto the same 1024-sample waterfall time scale', () => {
-    expect(waterfallPixelAdvance(480)).toBeCloseTo(0.46875);
-    expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(0.9375);
-    expect(waterfallPixelAdvance(1024)).toBe(1);
+  it('maps modem and FFT windows onto the same captured-sample time scale', () => {
+    expect(waterfallPixelAdvance(480)).toBeCloseTo(1.875);
+    expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(3.75);
+    expect(waterfallPixelAdvance(1024)).toBe(4);
   });
 });

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { dbToIntensity, frequencyBinRange, intensityToRgb } from '../audio/waterfall';
+  import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance } from '../audio/waterfall';
 
   export let spectrum: number[] | Float32Array = [];
   export let sampleRate = 48_000;
@@ -34,7 +34,7 @@
     const pixelHeight = Math.max(1, Math.round(height * ratio));
     prepareCanvas(ctx, pixelWidth, pixelHeight);
 
-    const columnWidth = Math.max(1, Math.round(ratio));
+    const columnWidth = Math.max(1, Math.round(waterfallPixelAdvance(1024, ratio)));
     if (pixelWidth > columnWidth) {
       ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     }

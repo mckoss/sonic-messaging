@@ -6,15 +6,18 @@
   export let labels: string[] = [];
   export let sequence = -1;
   export let tokens: string[] = [];
+  export let markers: Array<{ id: number; label: string; symbols: number }> = [];
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
+  let timelineCanvas: HTMLCanvasElement;
   let host: HTMLDivElement;
   let width = 800, height = 150, lastSequence = -1, lastConfidenceSequence = -1;
   let symbolPixelRemainder = 0, confidencePixelRemainder = 0;
+  let timelinePixelRemainder = 0, lastTimelineSequence = -1, lastMarkerId = -1;
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
 
   function pixelAdvance(ratio: number): number {
@@ -87,8 +90,62 @@
     pendingConfidence = 0;
   }
 
+  function prepareTimeline(ctx: CanvasRenderingContext2D, ratio: number) {
+    const pixelWidth = Math.max(1, Math.round(width * ratio));
+    const pixelHeight = Math.max(1, Math.round(34 * ratio));
+    if (timelineCanvas.width !== pixelWidth || timelineCanvas.height !== pixelHeight) {
+      timelineCanvas.width = pixelWidth; timelineCanvas.height = pixelHeight;
+      ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
+    }
+    return { pixelWidth, pixelHeight };
+  }
+
+  function scrollTimeline() {
+    if (!timelineCanvas || sequence === lastTimelineSequence) return;
+    const ctx = timelineCanvas.getContext('2d', { alpha: false });
+    if (!ctx) return;
+    const ratio = Math.max(1, window.devicePixelRatio || 1);
+    const { pixelWidth, pixelHeight } = prepareTimeline(ctx, ratio);
+    timelinePixelRemainder += pixelAdvance(ratio);
+    const advance = Math.floor(timelinePixelRemainder);
+    lastTimelineSequence = sequence;
+    if (advance < 1) return;
+    timelinePixelRemainder -= advance;
+    ctx.drawImage(timelineCanvas, advance, 0, pixelWidth - advance, pixelHeight,
+      0, 0, pixelWidth - advance, pixelHeight);
+    ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - advance, 0, advance, pixelHeight);
+  }
+
+  function drawMarkers() {
+    if (!timelineCanvas || !markers.length) return;
+    const pending = markers.filter(marker => marker.id > lastMarkerId);
+    if (!pending.length) return;
+    const ctx = timelineCanvas.getContext('2d', { alpha: false });
+    if (!ctx) return;
+    const ratio = Math.max(1, window.devicePixelRatio || 1);
+    const { pixelWidth } = prepareTimeline(ctx, ratio);
+    for (const marker of pending) {
+      const span = Math.max(2 * ratio, waterfallPixelAdvance(
+        marker.symbols * sampleRate / Math.max(1, symbolRate), ratio
+      ));
+      const right = pixelWidth - ratio, left = Math.max(0, right - span);
+      const top = 5 * ratio, tickBottom = 11 * ratio;
+      ctx.strokeStyle = marker.label === '<CRC-Error>' ? '#ff5578' : '#ff718d';
+      ctx.lineWidth = Math.max(1, ratio);
+      ctx.beginPath(); ctx.moveTo(left, tickBottom); ctx.lineTo(left, top);
+      ctx.lineTo(right, top); ctx.lineTo(right, tickBottom); ctx.stroke();
+      ctx.fillStyle = marker.label === '<CRC-Error>' ? '#ff8da8' : '#dcecff';
+      ctx.font = `${Math.round(10 * ratio)}px ui-monospace, monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(marker.label, (left + right) / 2, 23 * ratio);
+      lastMarkerId = marker.id;
+    }
+  }
+
   $: scores, sequence, width, height, draw();
   $: confidence, sequence, width, drawConfidence();
+  $: sequence, width, scrollTimeline();
+  $: markers, width, drawMarkers();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => { width = Math.max(280, Math.floor(entry.contentRect.width)); });
@@ -100,7 +157,8 @@
 <div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
-  <div class="receive"><span class="channel">RX</span><div class="tokens">{#each tokens as token}<span class:confirm={token === '<SYNC>' || token === '<CRC-Confirm>'} class:error={token === '<CRC-Error>'}>{token === ' ' ? '␠' : token}</span>{/each}</div></div>
+  <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
+  <div class="receive"><span class="channel">RX</span><div class="tokens">{#each tokens as token}<span class:confirm={token === '<SYNC>' || token === '<CRC-Confirm>'} class:error={token === '<CRC-Error>'}>{token === ' ' ? '⎵' : token}</span>{/each}</div></div>
 </div>
 
 <style>
@@ -110,10 +168,12 @@
   canvas { display:block; width:100%; height:150px; }
   .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
   .labels span { display:flex; align-items:center; justify-content:flex-end; }
-  .receive,.confidence { display:grid; grid-template-columns:38px 1fr; gap:7px; margin-top:6px; min-width:0; }
+  .receive,.confidence,.timeline { display:grid; grid-template-columns:45px 1fr; gap:7px; margin-top:6px; min-width:0; }
   .channel { color:#8294aa; font:10px ui-monospace,monospace; text-align:right; padding-top:5px; }
   .confidence-history { height:22px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
   .confidence-history canvas { width:100%; height:22px; }
-  .tokens { height:27px; display:flex; align-items:center; justify-content:flex-end; gap:9px; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
+  .timeline-history { height:34px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
+  .timeline-history canvas { width:100%; height:34px; }
+  .tokens { height:27px; display:flex; align-items:center; justify-content:flex-end; gap:0; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
   .tokens span { flex:0 0 auto; }.tokens .confirm { color:#4ee8b4; font-weight:700; }.tokens .error { color:#ff8da8; font-weight:700; }
 </style>

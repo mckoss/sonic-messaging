@@ -1,9 +1,12 @@
 export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
+export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 256;
 
 export interface BinRange { start: number; end: number }
 
-export function waterfallPixelAdvance(samples: number, devicePixelRatio = 1, samplesPerCssPixel = 1024): number {
+export function waterfallPixelAdvance(
+  samples: number, devicePixelRatio = 1, samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL
+): number {
   return Math.max(0, samples) * Math.max(1, devicePixelRatio) / Math.max(1, samplesPerCssPixel);
 }
 
