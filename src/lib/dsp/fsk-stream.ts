@@ -6,6 +6,17 @@ import type { FskConfig } from './types';
 const SYNC = [0xd3, 0x91, 0xd3, 0x91];
 const HEADER_BYTES = 6;
 const TRAILER_BYTES = 2;
+const MAX_SYNC_BIT_ERRORS = 2;
+const MAX_LIVE_PAYLOAD_BYTES = 4096;
+
+function syncBitErrors(bytes: Uint8Array): number {
+  let errors = 0;
+  for (let index = 0; index < SYNC.length; index++) {
+    let difference = (bytes[index] ?? 0) ^ SYNC[index];
+    while (difference) { errors += difference & 1; difference >>>= 1; }
+  }
+  return errors;
+}
 
 export interface FskStreamPacket {
   payload: Uint8Array;
@@ -73,7 +84,7 @@ export class FskStreamDecoder {
         continue;
       }
       const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
-      if (SYNC.every((byte, index) => decoded.bytes[index] === byte)) {
+      if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS) {
         this.candidateOffset = this.searchOffset;
         this.reportedPayloadBytes = 0;
         this.progress.push({ type: 'sync' });
@@ -91,6 +102,10 @@ export class FskStreamDecoder {
     if (start + headerSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
     const header = this.decodeBytes(start, HEADER_BYTES).bytes;
     const payloadLength = (header[4] << 8) | header[5];
+    if (payloadLength > MAX_LIVE_PAYLOAD_BYTES) {
+      this.rejectCandidate();
+      return null;
+    }
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
     const availableBytes = Math.floor(
@@ -107,6 +122,7 @@ export class FskStreamDecoder {
     if (start + frameSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
 
     const decoded = this.decodeBytes(start, frameBytes);
+    decoded.bytes.set(SYNC, 0);
     const parsed = unframe(decoded.bytes);
     if (!parsed.payload) {
       this.progress.push({ type: 'crc-error' });

@@ -105,6 +105,10 @@
     const offSymbols = audio.onSymbols(event => {
       symbolScores = event.scores; symbolSequence = event.sequence; rawSymbol = event.symbol;
       symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
+      if (event.symbol >= 0) {
+        receivedMarkers = [...receivedMarkers,
+          { id: receivedMarkerId++, label: `S${event.symbol}`, symbols: 1 }].slice(-128);
+      }
     });
     const offPackets = audio.onPackets(event => {
       const decoded = new TextDecoder('utf-8', { fatal: true });
@@ -128,7 +132,8 @@
       };
       if (event.token === 'sync') {
         receptionDecoder = new TextDecoder();
-        receivedMarkers = []; addMarker('<SYNC>', 4);
+        addMarker('<SYNC>', 4);
+        logs = [`${new Date().toLocaleTimeString()} · FSK sync acquired`, ...logs].slice(0, 10);
       } else if (event.token === 'crc-confirm') {
         addMarker('<CRC-Confirm>', 2);
       } else if (event.token === 'crc-error') {

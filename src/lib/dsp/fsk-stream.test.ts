@@ -32,4 +32,16 @@ describe('continuous FSK receiver', () => {
     const packets = new FskStreamDecoder(config).push(samples);
     expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['one', 'two']);
   });
+
+  it('acquires through one damaged sync symbol while retaining CRC payload validation', () => {
+    const payload = new TextEncoder().encode('sync recovery');
+    const samples = encodeFsk(payload, config).samples;
+    const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
+    for (let index = 0; index < samplesPerSymbol; index++) {
+      samples[index] = 0.8 * Math.sin(2 * Math.PI * config.frequencies[2] * index / config.sampleRate);
+    }
+    const packets = new FskStreamDecoder(config).push(samples);
+    expect(packets).toHaveLength(1);
+    expect(packets[0].payload).toEqual(payload);
+  });
 });
