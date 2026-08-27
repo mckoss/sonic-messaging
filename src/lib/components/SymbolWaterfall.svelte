@@ -5,11 +5,13 @@
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
   export let sequence = -1;
-  export let tokens: string[] = [];
+  export let messages: string[] = [];
   export let markers: Array<{ id: number; label: string; symbols: number }> = [];
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
+
+  $: recentMessages = messages.length ? `| ${messages.join(' | ')} |` : '';
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
@@ -158,7 +160,7 @@
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
-  <div class="receive"><span class="channel">RX</span><div class="tokens">{#each tokens as token}<span class:confirm={token === '<SYNC>' || token === '<CRC-Confirm>'} class:error={token === '<CRC-Error>'}>{token === ' ' ? '⎵' : token}</span>{/each}</div></div>
+  <div class="receive"><span class="channel">RX</span><div class="messages"><span>{recentMessages}</span></div></div>
 </div>
 
 <style>
@@ -174,6 +176,6 @@
   .confidence-history canvas { width:100%; height:22px; }
   .timeline-history { height:34px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
   .timeline-history canvas { width:100%; height:34px; }
-  .tokens { height:27px; display:flex; align-items:center; justify-content:flex-end; gap:0; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
-  .tokens span { flex:0 0 auto; }.tokens .confirm { color:#4ee8b4; font-weight:700; }.tokens .error { color:#ff8da8; font-weight:700; }
+  .messages { height:27px; display:flex; align-items:center; justify-content:flex-end; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
+  .messages span { flex:0 0 auto; }
 </style>

@@ -28,6 +28,7 @@
 - [x] Keep live symbol visualization ahead of packet acquisition and optimize tone scoring latency.
 - [x] Align spectrum, symbol-likelihood, and confidence scrolling to one captured-audio time scale.
 - [x] Add bracketed, character-centered RX timing spans and a compact decoded message line.
+- [x] Keep a continuous right-anchored history of CRC-valid messages in the RX bar.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

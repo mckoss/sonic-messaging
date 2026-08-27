@@ -23,7 +23,7 @@
   let rawSymbol = -1;
   let symbolConfidence = 0;
   let symbolPower = -120;
-  let receivedTokens: string[] = [];
+  let receivedMessages: string[] = [];
   let receivedMarkers: Array<{ id: number; label: string; symbols: number }> = [];
   let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
@@ -112,6 +112,7 @@
         const text = decoded.decode(event.payload);
         packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
+        receivedMessages = [...receivedMessages, text].slice(-24);
         logs = [`${new Date().toLocaleTimeString()} · Live FSK packet decoded (${event.payload.length} bytes, CRC valid)`, ...logs].slice(0, 10);
       } catch {
         logs = [`${new Date().toLocaleTimeString()} · Valid FSK frame rejected: payload is not UTF-8`, ...logs].slice(0, 10);
@@ -126,13 +127,11 @@
         }].slice(-64);
       };
       if (event.token === 'sync') {
-        receptionDecoder = new TextDecoder(); receivedTokens = ['<SYNC>'];
+        receptionDecoder = new TextDecoder();
         receivedMarkers = []; addMarker('<SYNC>', 4);
       } else if (event.token === 'crc-confirm') {
-        receivedTokens = [...receivedTokens, '<CRC-Confirm>'].slice(-64);
         addMarker('<CRC-Confirm>', 2);
       } else if (event.token === 'crc-error') {
-        receivedTokens = [...receivedTokens, '<CRC-Error>'].slice(-64);
         addMarker('<CRC-Error>', 2);
       } else if (event.byte !== undefined) {
         const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true });
@@ -142,7 +141,6 @@
             const byteCount = new TextEncoder().encode(character).length;
             addMarker(character, byteCount);
           }
-          receivedTokens = [...receivedTokens, ...characters].slice(-64);
         }
       }
     });
@@ -181,7 +179,7 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
-          tokens={receivedTokens} markers={receivedMarkers} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
+          messages={receivedMessages} markers={receivedMarkers} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
