@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dbToIntensity, frequencyBinRange, intensityToRgb } from './waterfall';
+import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance } from './waterfall';
 
 describe('waterfall mapping', () => {
   it('maps a selected frequency span to a bounded half-open bin range', () => {
@@ -26,5 +26,11 @@ describe('waterfall mapping', () => {
     expect(intensityToRgb(1)).toEqual([255, 250, 220]);
     expect(intensityToRgb(-1)).toEqual(intensityToRgb(0));
     expect(intensityToRgb(2)).toEqual(intensityToRgb(1));
+  });
+
+  it('maps modem windows onto the same 1024-sample waterfall time scale', () => {
+    expect(waterfallPixelAdvance(480)).toBeCloseTo(0.46875);
+    expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(0.9375);
+    expect(waterfallPixelAdvance(1024)).toBe(1);
   });
 });

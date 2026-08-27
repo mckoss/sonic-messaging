@@ -3,6 +3,10 @@ export const WATERFALL_CEILING_DB = -12;
 
 export interface BinRange { start: number; end: number }
 
+export function waterfallPixelAdvance(samples: number, devicePixelRatio = 1, samplesPerCssPixel = 1024): number {
+  return Math.max(0, samples) * Math.max(1, devicePixelRatio) / Math.max(1, samplesPerCssPixel);
+}
+
 /** Returns the half-open FFT-bin range covered by the requested frequencies. */
 export function frequencyBinRange(binCount: number, sampleRate: number, minFrequency: number, maxFrequency: number): BinRange {
   if (binCount <= 0 || sampleRate <= 0) return { start: 0, end: 0 };

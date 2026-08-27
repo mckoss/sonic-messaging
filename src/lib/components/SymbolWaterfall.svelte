@@ -1,17 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { intensityToRgb } from '../audio/waterfall';
+  import { intensityToRgb, waterfallPixelAdvance } from '../audio/waterfall';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
   export let sequence = -1;
   export let tokens: string[] = [];
   export let confidence = 0;
+  export let sampleRate = 48_000;
+  export let symbolRate = 100;
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
   let host: HTMLDivElement;
   let width = 800, height = 150, lastSequence = -1, lastConfidenceSequence = -1;
+  let symbolPixelRemainder = 0, confidencePixelRemainder = 0;
+  let pendingScores = new Float32Array(0), pendingConfidence = 0;
+
+  function pixelAdvance(ratio: number): number {
+    return waterfallPixelAdvance(sampleRate / Math.max(1, symbolRate), ratio);
+  }
 
   function draw() {
     if (!canvas || !scores.length || sequence === lastSequence) return;
@@ -24,19 +32,25 @@
       canvas.width = pixelWidth; canvas.height = pixelHeight;
       ctx.fillStyle = 'rgb(5, 10, 24)'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
-    const columnWidth = Math.max(1, Math.round(2 * ratio));
+    if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
+    for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
+    symbolPixelRemainder += pixelAdvance(ratio);
+    const columnWidth = Math.floor(symbolPixelRemainder);
+    lastSequence = sequence;
+    if (columnWidth < 1) return;
+    symbolPixelRemainder -= columnWidth;
     ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     const column = ctx.createImageData(columnWidth, pixelHeight);
     for (let y = 0; y < pixelHeight; y++) {
-      const symbol = Math.min(scores.length - 1, Math.floor(y * scores.length / pixelHeight));
-      const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, scores[symbol]))));
+      const symbol = Math.min(pendingScores.length - 1, Math.floor(y * pendingScores.length / pixelHeight));
+      const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, pendingScores[symbol]))));
       for (let x = 0; x < columnWidth; x++) {
         const offset = (y * columnWidth + x) * 4;
         column.data[offset] = red; column.data[offset + 1] = green; column.data[offset + 2] = blue; column.data[offset + 3] = 255;
       }
     }
     ctx.putImageData(column, pixelWidth - columnWidth, 0);
-    lastSequence = sequence;
+    pendingScores.fill(0);
   }
 
   function confidenceColor(value: number): string {
@@ -57,15 +71,20 @@
       confidenceCanvas.width = pixelWidth; confidenceCanvas.height = pixelHeight;
       ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
-    const columnWidth = Math.max(1, Math.round(2 * ratio));
+    pendingConfidence = Math.max(pendingConfidence, confidence);
+    confidencePixelRemainder += pixelAdvance(ratio);
+    const columnWidth = Math.floor(confidencePixelRemainder);
+    lastConfidenceSequence = sequence;
+    if (columnWidth < 1) return;
+    confidencePixelRemainder -= columnWidth;
     ctx.drawImage(confidenceCanvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight,
       0, 0, pixelWidth - columnWidth, pixelHeight);
     ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - columnWidth, 0, columnWidth, pixelHeight);
-    const value = Math.max(0, Math.min(1, confidence));
+    const value = Math.max(0, Math.min(1, pendingConfidence));
     const barHeight = Math.max(1, Math.round(value * pixelHeight));
     ctx.fillStyle = confidenceColor(value);
     ctx.fillRect(pixelWidth - columnWidth, pixelHeight - barHeight, columnWidth, barHeight);
-    lastConfidenceSequence = sequence;
+    pendingConfidence = 0;
   }
 
   $: scores, sequence, width, height, draw();
