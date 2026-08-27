@@ -19,6 +19,7 @@
 ## Live receiver
 
 - [x] Add configured FSK raw-symbol detection and a symbol-likelihood waterfall.
+- [x] Calibrate raw FSK likelihood against full-window energy so noise and partial-symbol matches are rejected.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [ ] Detect packet timing in the continuous microphone stream for the selected mode.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

@@ -5,6 +5,9 @@ export interface FskSymbolDetection {
   powerDbfs: number;
 }
 
+const MIN_SYMBOL_SCORE = 0.25;
+const MIN_SYMBOL_MARGIN = 0.15;
+
 /** Measures coherent energy at each configured tone over one candidate symbol window. */
 export function detectFskSymbol(
   samples: Float32Array, sampleRate: number, frequencies: readonly number[]
@@ -25,16 +28,24 @@ export function detectFskSymbol(
     powers[tone] = inPhase * inPhase + quadrature * quadrature;
   }
 
-  const total = powers.reduce((sum, value) => sum + value, 0);
-  const scores = Float32Array.from(powers, value => total > 0 ? value / total : 0);
-  let symbol = -1, winner = 0, runnerUp = 0;
+  // For a full-window sinusoid, 2 * coherentPower / (N * samplePower) is one.
+  // Referencing all window energy (rather than only the configured tone bins)
+  // prevents noise from being normalized into a guaranteed false winner. It
+  // also penalizes tones that occupy only part of the configured symbol time.
+  const coherentScale = samples.length * samplePower;
+  const scores = Float32Array.from(powers, value => coherentScale > 0
+    ? Math.min(1, 2 * value / coherentScale)
+    : 0);
+  let winnerIndex = -1, winner = 0, runnerUp = 0;
   for (let i = 0; i < scores.length; i++) {
-    if (scores[i] > winner) { runnerUp = winner; winner = scores[i]; symbol = i; }
+    if (scores[i] > winner) { runnerUp = winner; winner = scores[i]; winnerIndex = i; }
     else if (scores[i] > runnerUp) runnerUp = scores[i];
   }
+  const confidence = Math.max(0, winner - runnerUp);
+  const symbol = winner >= MIN_SYMBOL_SCORE && confidence >= MIN_SYMBOL_MARGIN ? winnerIndex : -1;
   const rms = Math.sqrt(samplePower / Math.max(1, samples.length));
   return {
-    scores, symbol, confidence: winner > 0 ? (winner - runnerUp) / winner : 0,
+    scores, symbol, confidence,
     powerDbfs: 20 * Math.log10(Math.max(rms, 1e-12))
   };
 }
