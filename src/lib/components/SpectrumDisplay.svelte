@@ -74,19 +74,18 @@
   });
 </script>
 
-<div class="spectrum" bind:this={host} aria-label={`${label}; waterfall display, newest samples at bottom`} role="img">
-  <canvas bind:this={canvas} aria-hidden="true"></canvas>
-  <span class="axis left">{Math.round(minFrequency / 100) / 10} kHz</span>
-  <span class="axis right">{Math.round(maxFrequency / 100) / 10} kHz</span>
-  <span class="time">older ↑ · newest ↓</span>
+<div class="figure" bind:this={host} aria-label={`${label}; waterfall display, newest samples at bottom`} role="img">
+  <div class="time">older ↑ · newest ↓</div>
+  <div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div>
+  <div class="axis"><span>{Math.round(minFrequency / 100) / 10} kHz</span><span>{Math.round(maxFrequency / 100) / 10} kHz</span></div>
 </div>
 
 <style>
-  .spectrum { position: relative; width: 100%; min-height: 176px; overflow: hidden; border-radius: 14px; background: #050a18; }
+  .figure { width: 100%; }
+  .spectrum { width: 100%; min-height: 176px; overflow: hidden; border-radius: 14px; background: #050a18; }
   canvas { display: block; width: 100%; height: 220px; }
-  .axis, .time { position: absolute; color: #c3cfdd; font: 11px/1.2 ui-monospace, monospace; pointer-events: none; text-shadow: 0 1px 3px #050a18, 0 0 3px #050a18; }
-  .left { bottom: 9px; left: 10px; }
-  .right { bottom: 9px; right: 10px; }
-  .time { top: 9px; right: 10px; }
+  .axis, .time { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
+  .axis { display: flex; justify-content: space-between; padding: 5px 2px 0; }
+  .time { height: 17px; padding-right: 2px; text-align: right; }
   @media (max-width: 559px) { canvas { height: 176px; } }
 </style>

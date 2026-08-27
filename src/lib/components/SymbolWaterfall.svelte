@@ -45,17 +45,17 @@
   });
 </script>
 
-<div class="detector" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at bottom" role="img">
-  <canvas bind:this={canvas} aria-hidden="true"></canvas>
+<div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at bottom" role="img">
+  <div class="time">older ↑ · newest ↓</div>
+  <div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div>
   <div class="labels">{#each labels as label}<span>{label}</span>{/each}</div>
-  <span class="time">older ↑ · newest ↓</span>
 </div>
 
 <style>
-  .detector { position:relative; width:100%; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
+  .figure { width:100%; }
+  .detector { width:100%; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
   canvas { display:block; width:100%; height:150px; }
-  .labels { position:absolute; inset:auto 0 7px; display:grid; grid-template-columns:repeat(var(--columns, 1),1fr); color:#c3cfdd; font:10px ui-monospace,monospace; text-shadow:0 1px 3px #050a18; }
-  .labels { grid-template-columns:repeat(auto-fit,minmax(1px,1fr)); }
+  .labels { display:grid; grid-template-columns:repeat(auto-fit,minmax(1px,1fr)); padding-top:5px; color:#8294aa; font:10px ui-monospace,monospace; }
   .labels span { text-align:center; }
-  .time { position:absolute; top:8px; right:9px; color:#c3cfdd; font:10px ui-monospace,monospace; text-shadow:0 1px 3px #050a18; }
+  .time { height:17px; padding-right:2px; color:#8294aa; font:10px ui-monospace,monospace; text-align:right; }
 </style>

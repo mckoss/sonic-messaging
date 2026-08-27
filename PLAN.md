@@ -14,6 +14,7 @@
 - [x] Add DSSS with Gold/Kasami experiments and competing-user metrics.
 - [x] Add simulated AWGN, attenuation, frequency-offset, and interference channels.
 - [x] Replace the line spectrum with a scrolling power waterfall.
+- [x] Keep waterfall time and axis labels outside the signal plots for legibility.
 - [ ] Add saved experiment configurations and comparable benchmark results.
 
 ## Live receiver
