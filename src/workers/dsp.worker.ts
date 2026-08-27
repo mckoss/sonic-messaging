@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { hannWindow, magnitudesToDecibels, realFftMagnitude } from '../lib/audio/fft';
 import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../lib/audio/contracts';
-import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk,
+import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
   goldCodes, mSequence, simulateChannel, smallKasamiCodes } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
@@ -52,9 +52,8 @@ function buildModem(request: SimulationRequest): {
 } {
   const bytes = new TextEncoder().encode(request.payload), s = request.settings, sampleRate = 48_000;
   if (request.mode === 'FSK') {
-    const tones = numeric(s.tones, 4), center = numeric(s.centerFrequency, 5_000);
-    const bandwidth = numeric(s.bandwidth, 2_400), low = center - bandwidth / 2;
-    const frequencies = Array.from({ length: tones }, (_, i) => low + bandwidth * i / Math.max(1, tones - 1));
+    const tones = numeric(s.tones, 4), lowest = numeric(s.lowestFrequency, 3_800);
+    const frequencies = fskFrequencies(lowest, numeric(s.toneSpacing, 800), tones);
     const config: FskConfig = { sampleRate, symbolRate: numeric(s.symbolRate, 100), frequencies };
     return { waveform: encodeFsk(bytes, config), decode: samples => decodeFsk(samples, config) };
   }

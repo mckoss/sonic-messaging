@@ -3,6 +3,7 @@ export * from './types';
 export * from './bits';
 export * from './frame';
 export * from './fsk';
+export * from './fsk-frequencies';
 export * from './css';
 export * from './codes';
 export * from './dsss';

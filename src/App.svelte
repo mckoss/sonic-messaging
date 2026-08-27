@@ -22,7 +22,7 @@
   let payload = 'SONIC TEST 001';
   let activePanel: 'radio' | 'simulator' = 'radio';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { centerFrequency: 5000, bandwidth: 2400, tones: 4, symbolRate: 100, pulseShape: 'Gaussian' },
+    FSK: { lowestFrequency: 3800, toneSpacing: 800, tones: 4, symbolRate: 100 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };

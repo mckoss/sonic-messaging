@@ -4,7 +4,7 @@ Sonic Messaging is a local-first PWA for nearby data-over-sound communication on
 
 Current experiments include:
 
-- M-ary FSK with configurable center frequency, bandwidth, tone count, and symbol rate
+- M-ary FSK with configurable lowest tone, arithmetic tone spacing, tone count, and symbol rate
 - LoRa-like cyclic chirp spread spectrum (CSS) with configurable spreading factor
 - DSSS using Gold, small-set Kasami, and m-sequence codes
 - Competing-user detection and rejection metrics for DSSS
