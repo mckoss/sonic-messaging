@@ -12,6 +12,7 @@ const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlob
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
 let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
+let spectrumSequence = 0;
 let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number } | undefined;
 let detectorPending = new Float32Array(0);
 let detectorLength = 0;
@@ -99,7 +100,7 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
       const bins = magnitudesToDecibels(
         realFftMagnitude(hannWindow(pending)), options.minDecibels, options.maxDecibels
       );
-      send({ type: 'spectrum', bins, sampleRate, fftSize: pending.length, sequence }, [bins.buffer as ArrayBuffer]);
+      send({ type: 'spectrum', bins, sampleRate, fftSize: pending.length, sequence: spectrumSequence++ }, [bins.buffer as ArrayBuffer]);
       // 50% overlap improves display responsiveness without changing AudioWorklet traffic.
       pending.copyWithin(0, pending.length / 2);
       pendingLength = pending.length / 2;
@@ -166,7 +167,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
-      case 'reset': pendingLength = 0; pending.fill(0); detectorLength = 0; detectorPending.fill(0); fskStreamDecoder?.reset(); break;
+      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; detectorLength = 0; detectorPending.fill(0); fskStreamDecoder?.reset(); break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

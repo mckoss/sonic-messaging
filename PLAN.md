@@ -31,6 +31,8 @@
 - [x] Keep a continuous right-anchored history of CRC-valid messages in the RX bar.
 - [x] Tolerate limited FSK sync errors while retaining CRC-gated payload display.
 - [x] Show accepted physical FSK symbols in RX-Time before packet sync acquisition.
+- [x] Lock spectrum and symbol waterfall travel by source sequence delta, including coalesced UI updates.
+- [x] Gate waterfall time-scale behavior with unit and Playwright desktop/mobile coverage.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

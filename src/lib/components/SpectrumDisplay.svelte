@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance } from '../audio/waterfall';
+  import { dbToIntensity, frequencyBinRange, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSequenceSteps } from '../audio/waterfall';
 
   export let spectrum: number[] | Float32Array = [];
   export let sampleRate = 48_000;
   export let minFrequency = 0;
   export let maxFrequency = 24_000;
   export let label = 'Live receiver spectrum';
+  export let sequence = -1;
 
   let canvas: HTMLCanvasElement;
   let host: HTMLDivElement;
@@ -14,6 +15,7 @@
   let height = 220;
   let lastPixelWidth = 0;
   let lastPixelHeight = 0;
+  let lastSequence = -1;
 
   function prepareCanvas(ctx: CanvasRenderingContext2D, pixelWidth: number, pixelHeight: number) {
     if (lastPixelWidth === pixelWidth && lastPixelHeight === pixelHeight) return;
@@ -34,7 +36,9 @@
     const pixelHeight = Math.max(1, Math.round(height * ratio));
     prepareCanvas(ctx, pixelWidth, pixelHeight);
 
-    const columnWidth = Math.max(1, Math.round(waterfallPixelAdvance(1024, ratio)));
+    const steps = waterfallSequenceSteps(sequence, lastSequence);
+    const columnWidth = Math.min(pixelWidth, Math.max(1, Math.round(waterfallPixelAdvance(steps * 1024, ratio))));
+    lastSequence = sequence;
     if (pixelWidth > columnWidth) {
       ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     }
@@ -63,7 +67,7 @@
     ctx.putImageData(column, pixelWidth - columnWidth, 0);
   }
 
-  $: spectrum, sampleRate, minFrequency, maxFrequency, width, height, draw();
+  $: spectrum, sequence, sampleRate, minFrequency, maxFrequency, width, height, draw();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => {
@@ -75,7 +79,7 @@
   });
 </script>
 
-<div class="figure" bind:this={host} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
+<div class="figure" bind:this={host} data-testid="spectrum-waterfall" data-samples-per-css-pixel={WATERFALL_SAMPLES_PER_CSS_PIXEL} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
   <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
 </div>
 

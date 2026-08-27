@@ -10,6 +10,12 @@ export function waterfallPixelAdvance(
   return Math.max(0, samples) * Math.max(1, devicePixelRatio) / Math.max(1, samplesPerCssPixel);
 }
 
+/** Number of source updates represented by the latest event, including coalesced UI updates. */
+export function waterfallSequenceSteps(sequence: number, previousSequence: number): number {
+  if (sequence < 0) return 0;
+  return previousSequence >= 0 && sequence > previousSequence ? sequence - previousSequence : 1;
+}
+
 /** Returns the half-open FFT-bin range covered by the requested frequencies. */
 export function frequencyBinRange(binCount: number, sampleRate: number, minFrequency: number, maxFrequency: number): BinRange {
   if (binCount <= 0 || sampleRate <= 0) return { start: 0, end: 0 };

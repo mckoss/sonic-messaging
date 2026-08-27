@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance } from './waterfall';
+import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance, waterfallSequenceSteps } from './waterfall';
 
 describe('waterfall mapping', () => {
   it('maps a selected frequency span to a bounded half-open bin range', () => {
@@ -32,5 +32,16 @@ describe('waterfall mapping', () => {
     expect(waterfallPixelAdvance(480)).toBeCloseTo(1.875);
     expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(3.75);
     expect(waterfallPixelAdvance(1024)).toBe(4);
+  });
+
+  it('keeps spectrum and symbol travel locked when UI updates are coalesced', () => {
+    const spectrumSteps = waterfallSequenceSteps(20, 5);
+    const symbolSteps = waterfallSequenceSteps(41, 9);
+    const spectrumTravel = waterfallPixelAdvance(spectrumSteps * 1024);
+    const symbolTravel = waterfallPixelAdvance(symbolSteps * 480);
+    expect(spectrumSteps).toBe(15);
+    expect(symbolSteps).toBe(32);
+    expect(symbolTravel).toBe(spectrumTravel);
+    expect(waterfallSequenceSteps(0, 100)).toBe(1);
   });
 });

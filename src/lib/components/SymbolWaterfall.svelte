@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { intensityToRgb, waterfallPixelAdvance } from '../audio/waterfall';
+  import { intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSequenceSteps } from '../audio/waterfall';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -39,11 +39,12 @@
     }
     if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
     for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
-    symbolPixelRemainder += pixelAdvance(ratio);
-    const columnWidth = Math.floor(symbolPixelRemainder);
+    symbolPixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastSequence);
+    const elapsedPixels = Math.floor(symbolPixelRemainder);
+    const columnWidth = Math.min(pixelWidth, elapsedPixels);
     lastSequence = sequence;
     if (columnWidth < 1) return;
-    symbolPixelRemainder -= columnWidth;
+    symbolPixelRemainder -= elapsedPixels;
     ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     const column = ctx.createImageData(columnWidth, pixelHeight);
     for (let y = 0; y < pixelHeight; y++) {
@@ -77,11 +78,12 @@
       ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
     pendingConfidence = Math.max(pendingConfidence, confidence);
-    confidencePixelRemainder += pixelAdvance(ratio);
-    const columnWidth = Math.floor(confidencePixelRemainder);
+    confidencePixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastConfidenceSequence);
+    const elapsedPixels = Math.floor(confidencePixelRemainder);
+    const columnWidth = Math.min(pixelWidth, elapsedPixels);
     lastConfidenceSequence = sequence;
     if (columnWidth < 1) return;
-    confidencePixelRemainder -= columnWidth;
+    confidencePixelRemainder -= elapsedPixels;
     ctx.drawImage(confidenceCanvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight,
       0, 0, pixelWidth - columnWidth, pixelHeight);
     ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - columnWidth, 0, columnWidth, pixelHeight);
@@ -108,11 +110,12 @@
     if (!ctx) return;
     const ratio = Math.max(1, window.devicePixelRatio || 1);
     const { pixelWidth, pixelHeight } = prepareTimeline(ctx, ratio);
-    timelinePixelRemainder += pixelAdvance(ratio);
-    const advance = Math.floor(timelinePixelRemainder);
+    timelinePixelRemainder += pixelAdvance(ratio) * waterfallSequenceSteps(sequence, lastTimelineSequence);
+    const elapsedPixels = Math.floor(timelinePixelRemainder);
+    const advance = Math.min(pixelWidth, elapsedPixels);
     lastTimelineSequence = sequence;
     if (advance < 1) return;
-    timelinePixelRemainder -= advance;
+    timelinePixelRemainder -= elapsedPixels;
     ctx.drawImage(timelineCanvas, advance, 0, pixelWidth - advance, pixelHeight,
       0, 0, pixelWidth - advance, pixelHeight);
     ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - advance, 0, advance, pixelHeight);
@@ -156,7 +159,7 @@
   });
 </script>
 
-<div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
+<div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={WATERFALL_SAMPLES_PER_CSS_PIXEL} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>

@@ -7,5 +7,5 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(packageJson.version) },
   plugins: [svelte()],
   worker: { format: 'es' },
-  test: { environment: 'node' }
+  test: { include: ['src/**/*.test.ts'], environment: 'node' }
 });

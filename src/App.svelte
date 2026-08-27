@@ -10,6 +10,7 @@
   type Mode = 'FSK' | 'CSS' | 'DSSS';
 
   let spectrum: Float32Array = new Float32Array(1024).fill(-110);
+  let spectrumSequence = -1;
   let receiverState: 'idle' | 'listening' | 'signal' = 'idle';
   let offlineReady = false;
   let installAvailable = false;
@@ -101,7 +102,7 @@
 
   onMount(() => {
     audio = new AudioEngine(); lab = new ModemLabWorker();
-    const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; receiverState = 'signal'; });
+    const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; spectrumSequence = event.sequence; receiverState = 'signal'; });
     const offSymbols = audio.onSymbols(event => {
       symbolScores = event.scores; symbolSequence = event.sequence; rawSymbol = event.symbol;
       symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
@@ -180,7 +181,7 @@
 
     <section class="card receiver">
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><span class="badge {receiverState}">{receiverState}</span></div>
-      <SpectrumDisplay {spectrum} minFrequency={0} maxFrequency={24000} />
+      <SpectrumDisplay {spectrum} sequence={spectrumSequence} minFrequency={0} maxFrequency={24000} />
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
