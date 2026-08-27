@@ -8,6 +8,7 @@ These instructions apply to the entire repository.
 - The current application is a modulation and protocol test bed that will later support nearby messaging.
 - Keep the application a static, installable PWA. Do not introduce an application server or required backend without explicit approval.
 - Preserve desktop and mobile browser support. Microphone features must work in secure contexts and fail with useful user-facing errors when unavailable.
+- Treat `PLAN.md` as the living development sequence. Update its decisions, ordering, current marker, and completed checkboxes whenever project direction or implementation status changes.
 
 ## Architecture
 

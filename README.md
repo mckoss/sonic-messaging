@@ -9,7 +9,7 @@ Current experiments include:
 - DSSS using Gold, small-set Kasami, and m-sequence codes
 - Competing-user detection and rejection metrics for DSSS
 - Deterministic channel simulation with attenuation, AWGN, frequency offset, and interferers
-- Live microphone spectrum processing in a Web Worker
+- Live microphone waterfall processing in a Web Worker
 - Audio capture and playback through AudioWorklets
 
 ## Development
