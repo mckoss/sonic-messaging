@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fskCenterFrequency, fskFrequencies, fskPlanWarnings, fskToneSpan } from '../dsp/fsk-frequencies';
+  import { dsssCodeLengths, normalizeDsssCodeLength } from '../dsp/dsss-code-options';
 
   type Mode = 'FSK' | 'CSS' | 'DSSS';
   export let mode: Mode;
@@ -17,6 +18,10 @@
   $: spacingRatio = mode === 'FSK' ? toneSpacing / Number(settings.symbolRate) : 0;
   $: fskWarnings = mode === 'FSK' ? fskPlanWarnings(fskTones, toneSpacing, Number(settings.symbolRate)) : [];
   $: chipRate = Number(settings.chipRate);
+  $: dsssLengths = dsssCodeLengths(String(settings.codeFamily));
+  $: if (mode === 'DSSS') settings.codeLength = normalizeDsssCodeLength(
+    String(settings.codeFamily), Number(settings.codeLength)
+  );
 
   function hz(value: number): string {
     return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} Hz`;
@@ -52,7 +57,7 @@
     <label><span>Preamble</span><input type="number" min="4" max="32" bind:value={settings.preambleSymbols} /><small>symbols</small></label>
   {:else}
     <label><span>Code family</span><select bind:value={settings.codeFamily}><option>Gold</option><option>Kasami</option><option>m-sequence</option><option>Barker</option></select></label>
-    <label><span>Code length</span><select bind:value={settings.codeLength}>{#each [31,63,127,255,511,1023] as n}<option value={n}>{n} chips</option>{/each}</select></label>
+    <label><span>Code length</span><select bind:value={settings.codeLength}>{#each dsssLengths as n}<option value={n}>{n} chips</option>{/each}</select></label>
     <label><span>Code index</span><input type="number" min="0" max="1024" bind:value={settings.codeIndex} /></label>
     <label><span>Chip rate</span><input type="number" min="100" max="24000" step="100" bind:value={settings.chipRate} /><small>chips/s</small></label>
     <div class="frequency-plan">

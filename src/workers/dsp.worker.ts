@@ -118,7 +118,12 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         break;
     }
   } catch (error) {
-    send({ type: 'worker-error', message: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    if (data.type === 'decode') {
+      send({ type: 'decode-result', requestId: data.requestId, modem: data.modem, error: message });
+    } else {
+      send({ type: 'worker-error', message });
+    }
   }
 };
 
