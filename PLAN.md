@@ -18,6 +18,7 @@
 
 ## Live receiver
 
+- [x] Add configured FSK raw-symbol detection and a symbol-likelihood waterfall.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [ ] Detect packet timing in the continuous microphone stream for the selected mode.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

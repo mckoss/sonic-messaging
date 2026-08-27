@@ -9,6 +9,7 @@ export interface AudioEngineOptions {
 }
 
 export type SpectrumListener = (event: Extract<DspWorkerResponse, { type: 'spectrum' }>) => void;
+export type SymbolListener = (event: Extract<DspWorkerResponse, { type: 'symbol-scores' }>) => void;
 export type StateListener = (state: Readonly<AudioEngineState>) => void;
 
 const DEFAULT_CONSTRAINTS: MediaTrackConstraints = {
@@ -25,6 +26,7 @@ export class AudioEngine {
   private playback?: AudioWorkletNode;
   private worker?: Worker;
   private spectrumListeners = new Set<SpectrumListener>();
+  private symbolListeners = new Set<SymbolListener>();
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
   private options: AudioEngineOptions;
@@ -43,6 +45,18 @@ export class AudioEngine {
 
   onSpectrum(listener: SpectrumListener): () => void {
     this.spectrumListeners.add(listener); return () => this.spectrumListeners.delete(listener);
+  }
+
+  onSymbols(listener: SymbolListener): () => void {
+    this.symbolListeners.add(listener); return () => this.symbolListeners.delete(listener);
+  }
+
+  configureFskDetector(frequencies: number[], symbolRate: number): void {
+    this.worker?.postMessage({ type: 'configure-detector', mode: 'FSK', fsk: { frequencies, symbolRate } } satisfies DspWorkerRequest);
+  }
+
+  disableDetector(): void {
+    this.worker?.postMessage({ type: 'configure-detector', mode: 'off' } satisfies DspWorkerRequest);
   }
 
   onState(listener: StateListener): () => void {
@@ -146,6 +160,7 @@ export class AudioEngine {
 
   private handleWorker(message: DspWorkerResponse): void {
     if (message.type === 'spectrum') this.spectrumListeners.forEach((listener) => listener(message));
+    else if (message.type === 'symbol-scores') this.symbolListeners.forEach((listener) => listener(message));
     else if (message.type === 'worker-error') console.error('DSP worker:', message.message);
   }
 

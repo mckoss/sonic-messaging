@@ -2,7 +2,7 @@
 import { hannWindow, magnitudesToDecibels, realFftMagnitude } from '../lib/audio/fft';
 import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../lib/audio/contracts';
 import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
-  goldCodes, mSequence, simulateChannel, smallKasamiCodes } from '../lib/dsp';
+  goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 
@@ -10,6 +10,10 @@ const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlob
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
 let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
+let detector: { frequencies: number[]; symbolRate: number } | undefined;
+let detectorPending = new Float32Array(0);
+let detectorLength = 0;
+let detectorSequence = 0;
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
@@ -24,7 +28,39 @@ function configure(next: SpectrumOptions): void {
   pendingLength = 0;
 }
 
+function configureDetector(mode: 'off' | 'FSK', fsk?: { frequencies: number[]; symbolRate: number }): void {
+  detector = mode === 'FSK' && fsk && fsk.frequencies.length >= 2 && fsk.symbolRate > 0
+    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate }
+    : undefined;
+  detectorPending = new Float32Array(0);
+  detectorLength = 0;
+  detectorSequence = 0;
+}
+
+function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void {
+  if (!detector) return;
+  const samplesPerSymbol = Math.max(1, Math.round(sampleRate / detector.symbolRate));
+  if (detectorPending.length !== samplesPerSymbol) {
+    detectorPending = new Float32Array(samplesPerSymbol);
+    detectorLength = 0;
+  }
+  let offset = 0;
+  while (offset < samples.length) {
+    const count = Math.min(samples.length - offset, samplesPerSymbol - detectorLength);
+    detectorPending.set(samples.subarray(offset, offset + count), detectorLength);
+    detectorLength += count;
+    offset += count;
+    if (detectorLength === samplesPerSymbol) {
+      const result = detectFskSymbol(detectorPending, sampleRate, detector.frequencies);
+      send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++ },
+        [result.scores.buffer as ArrayBuffer]);
+      detectorLength = 0;
+    }
+  }
+}
+
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  acceptDetectorSamples(samples, sampleRate);
   let sourceOffset = 0;
   while (sourceOffset < samples.length) {
     const count = Math.min(samples.length - sourceOffset, pending.length - pendingLength);
@@ -99,8 +135,9 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
   try {
     switch (data.type) {
       case 'configure-spectrum': configure(data.options); break;
+      case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
-      case 'reset': pendingLength = 0; pending.fill(0); break;
+      case 'reset': pendingLength = 0; pending.fill(0); detectorLength = 0; detectorPending.fill(0); break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

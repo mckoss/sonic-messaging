@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SpectrumDisplay from './lib/components/SpectrumDisplay.svelte';
+  import SymbolWaterfall from './lib/components/SymbolWaterfall.svelte';
   import ModeControls from './lib/components/ModeControls.svelte';
   import { AudioEngine } from './lib/audio';
   import { ModemLabWorker, type SimulationResult } from './lib/modem-lab';
+  import { fskFrequencies } from './lib/dsp';
 
   type Mode = 'FSK' | 'CSS' | 'DSSS';
 
@@ -16,6 +18,11 @@
   let lab: ModemLabWorker;
   let lastResult: SimulationResult | undefined;
   let busy = false;
+  let symbolScores: Float32Array = new Float32Array(4);
+  let symbolSequence = -1;
+  let rawSymbol = -1;
+  let symbolConfidence = 0;
+  let symbolPower = -120;
 
   let mode: Mode = 'FSK';
   let listening = false;
@@ -48,8 +55,9 @@
 
   async function onListenToggle(next: boolean) {
     try {
-      if (next) await audio.startListening(); else audio.stopListening();
+      if (next) await audio.startListening(); else { audio.stopListening(); audio.disableDetector(); }
       listening = next;
+      configureDetector();
       receiverState = next ? 'listening' : 'idle';
     } catch (error) {
       listening = false; receiverState = 'idle';
@@ -73,6 +81,15 @@
   }
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
+  function configureDetector() {
+    if (!audio || !listening || mode !== 'FSK') { audio?.disableDetector(); return; }
+    const s = settings.FSK;
+    audio.configureFskDetector(
+      fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
+      Number(s.symbolRate)
+    );
+  }
+  function selectMode(next: Mode) { mode = next; configureDetector(); }
   function toggleListen() { void onListenToggle(!listening); }
   function simulate() { void onRunSimulation({ mode, payload, settings: { ...settings[mode] }, snr, interferer, interfererPower }); }
   function onInstall() { void installPrompt?.prompt(); }
@@ -80,10 +97,14 @@
   onMount(() => {
     audio = new AudioEngine(); lab = new ModemLabWorker();
     const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; receiverState = 'signal'; });
+    const offSymbols = audio.onSymbols(event => {
+      symbolScores = event.scores; symbolSequence = event.sequence; rawSymbol = event.symbol;
+      symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
+    });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offSpectrum(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offSpectrum(); offSymbols(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -103,8 +124,8 @@
   <div class="layout">
     <section class="card composer">
       <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
-      <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" aria-selected={mode === item} class:active={mode === item} on:click={() => mode = item as Mode}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
-      <ModeControls {mode} settings={settings[mode]} />
+      <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
+      <div on:change={configureDetector}><ModeControls {mode} settings={settings[mode]} /></div>
       <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3"></textarea></label>
       <button class="primary" disabled={!payload || busy} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
@@ -112,7 +133,12 @@
     <section class="card receiver">
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><span class="badge {receiverState}">{receiverState}</span></div>
       <SpectrumDisplay {spectrum} minFrequency={0} maxFrequency={24000} />
-      <div class="readouts"><div><span>Peak</span><strong>{spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>Last confidence</span><strong>{lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode : 'Standby'}</strong></div></div>
+      {#if mode === 'FSK'}
+        <div class="detector-head"><span>Raw symbol likelihood</span><small>No packet framing or timing search</small></div>
+        <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
+          labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
+      {/if}
+      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' && rawSymbol >= 0 ? `FSK · S${rawSymbol}` : mode : 'Standby'}</strong></div></div>
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
     </section>
 
@@ -151,6 +177,7 @@
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
   .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
   .badge{font:10px ui-monospace,monospace;text-transform:uppercase;padding:5px 8px;border-radius:99px;background:#17263a;color:var(--dim)}.badge.listening,.badge.signal{color:var(--accent)}.readouts,.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.readouts div,.metrics div{padding:12px;background:#081321;border-radius:10px}.readouts span,.metrics span{display:block;color:var(--dim);font-size:10px}.readouts strong{font:600 12px ui-monospace,monospace}.metrics strong{display:block;font-size:22px;color:#d6e7fb;margin-bottom:3px}
+  .detector-head{display:flex;justify-content:space-between;gap:10px;margin:14px 2px 7px;color:var(--muted);font-size:11px;font-weight:650}.detector-head small{color:var(--dim);font-weight:500}
   .sim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sim-grid label,.interference{display:grid;gap:8px}.sim-grid select{background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:10px}.sim-grid input,.interference input{width:100%;accent-color:var(--accent)}output{font:12px ui-monospace,monospace;color:var(--accent)}.switch-row{display:flex;gap:12px;align-items:start;padding:15px;margin-top:18px;border:1px solid var(--line);border-radius:11px}.switch-row input{margin-top:3px;accent-color:var(--accent)}.switch-row b,.switch-row small{display:block}.switch-row b{font-size:13px}.switch-row small{color:var(--dim);margin-top:3px;line-height:1.35}.interference{margin-top:16px}
   .text-button{font-size:11px}.packet-list{margin-top:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}.packet-list article{display:grid;grid-template-columns:60px 55px 1fr auto;gap:9px;padding:10px 12px;align-items:center;color:var(--dim);font-size:11px}.packet-mode{color:var(--blue)}code{overflow:hidden;text-overflow:ellipsis;color:var(--muted)}.log{margin-top:12px;max-height:110px;overflow:auto;background:#06101c;padding:8px 12px;border-radius:10px;font:10px/1.5 ui-monospace,monospace;color:#7890ab}.log p{margin:3px 0}.empty{font-style:italic}
   footer{display:flex;justify-content:space-between;gap:20px;max-width:1320px;margin:auto;border-top:1px solid var(--line);padding:20px 24px 32px;color:var(--dim);font-size:11px}

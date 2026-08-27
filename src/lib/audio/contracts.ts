@@ -22,14 +22,21 @@ export interface SpectrumOptions {
   maxDecibels?: number;
 }
 
+export interface FskDetectorOptions {
+  frequencies: number[];
+  symbolRate: number;
+}
+
 export type DspWorkerRequest =
   | { type: 'configure-spectrum'; options: SpectrumOptions }
+  | { type: 'configure-detector'; mode: 'off' | 'FSK'; fsk?: FskDetectorOptions }
   | { type: 'samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
   | { type: 'decode'; requestId: string; modem: string; command: string; payload: unknown }
   | { type: 'reset' };
 
 export type DspWorkerResponse =
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number }
+  | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number }
   | { type: 'decode-result'; requestId: string; modem: string; result?: unknown; error?: string }
   | { type: 'worker-error'; message: string };
 
