@@ -63,9 +63,10 @@ export class AudioEngine {
     try {
       this.context = new AudioContext({ latencyHint: 'interactive' });
       if (!this.context.audioWorklet) throw new Error('AudioWorklet is unavailable in this browser');
+      const workletBase = `${import.meta.env.BASE_URL}worklets/`;
       await Promise.all([
-        this.context.audioWorklet.addModule(new URL('../../worklets/capture.worklet.ts', import.meta.url)),
-        this.context.audioWorklet.addModule(new URL('../../worklets/playback.worklet.ts', import.meta.url))
+        this.context.audioWorklet.addModule(`${workletBase}capture.worklet.js`),
+        this.context.audioWorklet.addModule(`${workletBase}playback.worklet.js`)
       ]);
       this.worker = new Worker(new URL('../../workers/dsp.worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = ({ data }: MessageEvent<DspWorkerResponse>) => this.handleWorker(data);

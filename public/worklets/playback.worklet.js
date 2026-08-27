@@ -1,17 +1,10 @@
-declare abstract class AudioWorkletProcessor {
-  readonly port: MessagePort;
-  abstract process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean;
-}
-declare function registerProcessor(name: string, ctor: typeof AudioWorkletProcessor): void;
-
 class SonicPlaybackProcessor extends AudioWorkletProcessor {
-  private queue: Float32Array[] = [];
-  private offset = 0;
-  private gain = 1;
-  private wasPlaying = false;
-
   constructor() {
     super();
+    this.queue = [];
+    this.offset = 0;
+    this.gain = 1;
+    this.wasPlaying = false;
     this.port.onmessage = ({ data }) => {
       if (data?.type === 'enqueue' && data.samples instanceof Float32Array) this.queue.push(data.samples);
       if (data?.type === 'clear') { this.queue = []; this.offset = 0; }
@@ -19,7 +12,7 @@ class SonicPlaybackProcessor extends AudioWorkletProcessor {
     };
   }
 
-  process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+  process(_inputs, outputs) {
     const channels = outputs[0];
     if (!channels?.length) return true;
     const mono = channels[0];
@@ -29,7 +22,8 @@ class SonicPlaybackProcessor extends AudioWorkletProcessor {
       const block = this.queue[0];
       const count = Math.min(mono.length - destination, block.length - this.offset);
       for (let i = 0; i < count; i++) mono[destination + i] = block[this.offset + i] * this.gain;
-      destination += count; this.offset += count;
+      destination += count;
+      this.offset += count;
       if (this.offset === block.length) { this.queue.shift(); this.offset = 0; }
     }
     for (let channel = 1; channel < channels.length; channel++) channels[channel].set(mono);
@@ -41,5 +35,5 @@ class SonicPlaybackProcessor extends AudioWorkletProcessor {
     return true;
   }
 }
+
 registerProcessor('sonic-playback', SonicPlaybackProcessor);
-export {};

@@ -1,3 +1,16 @@
+import FFT from 'fft.js';
+
+const plans = new Map<number, FFT>();
+
+function fftPlan(size: number): FFT {
+  let fft = plans.get(size);
+  if (!fft) {
+    fft = new FFT(size);
+    plans.set(size, fft);
+  }
+  return fft;
+}
+
 export function isPowerOfTwo(value: number): boolean {
   return value > 0 && (value & (value - 1)) === 0;
 }
@@ -13,35 +26,13 @@ export function hannWindow(input: Float32Array): Float32Array {
 export function realFftMagnitude(input: Float32Array): Float32Array {
   const n = input.length;
   if (!isPowerOfTwo(n)) throw new RangeError('FFT size must be a power of two');
-  const real = Float64Array.from(input);
-  const imag = new Float64Array(n);
-
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [real[i], real[j]] = [real[j], real[i]];
-    }
-  }
-  for (let size = 2; size <= n; size <<= 1) {
-    const angle = -2 * Math.PI / size;
-    const stepR = Math.cos(angle), stepI = Math.sin(angle);
-    for (let offset = 0; offset < n; offset += size) {
-      let wr = 1, wi = 0;
-      for (let j = 0; j < size / 2; j++) {
-        const even = offset + j, odd = even + size / 2;
-        const tr = wr * real[odd] - wi * imag[odd];
-        const ti = wr * imag[odd] + wi * real[odd];
-        real[odd] = real[even] - tr; imag[odd] = imag[even] - ti;
-        real[even] += tr; imag[even] += ti;
-        const nextWr = wr * stepR - wi * stepI;
-        wi = wr * stepI + wi * stepR; wr = nextWr;
-      }
-    }
-  }
+  const fft = fftPlan(n);
+  const complex = fft.createComplexArray();
+  fft.realTransform(complex, input);
   const result = new Float32Array(n / 2 + 1);
-  for (let i = 0; i < result.length; i++) result[i] = (2 / n) * Math.hypot(real[i], imag[i]);
+  for (let i = 0; i < result.length; i++) {
+    result[i] = (2 / n) * Math.hypot(complex[2 * i], complex[2 * i + 1]);
+  }
   result[0] *= 0.5;
   result[result.length - 1] *= 0.5;
   return result;
@@ -55,4 +46,3 @@ export function magnitudesToDecibels(magnitudes: Float32Array, floor = -120, cei
   }
   return result;
 }
-
