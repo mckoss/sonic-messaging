@@ -15,9 +15,12 @@ Current experiments include:
 ## Development
 
 ```sh
+nvm use
 npm install
 npm run dev
 ```
+
+Node 24.20.0 (the current LTS release) is pinned in `.nvmrc`; npm rejects unsupported Node major versions.
 
 Microphone access requires HTTPS or `localhost`.
 
