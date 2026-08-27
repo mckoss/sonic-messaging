@@ -6,12 +6,14 @@
   export let labels: string[] = [];
   export let sequence = -1;
   export let messages: string[] = [];
+  export let currentMessage = '';
   export let markers: Array<{ id: number; label: string; symbols: number }> = [];
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
 
-  $: recentMessages = messages.length ? `| ${messages.join(' | ')} |` : '';
+  $: recentEntries = currentMessage ? [...messages, currentMessage] : messages;
+  $: recentMessages = recentEntries.length ? `| ${recentEntries.join(' | ')} |` : '';
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
@@ -135,11 +137,12 @@
       ));
       const right = pixelWidth - ratio, left = Math.max(0, right - span);
       const top = 5 * ratio, tickBottom = 11 * ratio;
-      ctx.strokeStyle = marker.label === '<CRC-Error>' ? '#ff5578' : '#ff718d';
+      const crcError = marker.label === '✕', crcConfirm = marker.label === '✓';
+      ctx.strokeStyle = crcError ? '#ff5578' : crcConfirm ? '#4ee8b4' : '#ff718d';
       ctx.lineWidth = Math.max(1, ratio);
       ctx.beginPath(); ctx.moveTo(left, tickBottom); ctx.lineTo(left, top);
       ctx.lineTo(right, top); ctx.lineTo(right, tickBottom); ctx.stroke();
-      ctx.fillStyle = marker.label === '<CRC-Error>' ? '#ff8da8' : '#dcecff';
+      ctx.fillStyle = crcError ? '#ff8da8' : crcConfirm ? '#4ee8b4' : '#dcecff';
       ctx.font = `${Math.round(10 * ratio)}px ui-monospace, monospace`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(marker.label, (left + right) / 2, 23 * ratio);
@@ -163,7 +166,7 @@
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
-  <div class="receive"><span class="channel">RX</span><div class="messages"><span>{recentMessages}</span></div></div>
+  <div class="receive"><span class="channel">RX</span><div class="messages"><span>{#each [...recentMessages] as character}<i class:confirm={character === '✓'} class:error={character === '✕'}>{character}</i>{/each}</span></div></div>
 </div>
 
 <style>
@@ -181,4 +184,5 @@
   .timeline-history canvas { width:100%; height:34px; }
   .messages { height:27px; display:flex; align-items:center; justify-content:flex-end; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
   .messages span { flex:0 0 auto; }
+  .messages i { font:inherit; font-style:normal; }.messages i.confirm{color:#4ee8b4;font-weight:800}.messages i.error{color:#ff8da8;font-weight:800}
 </style>

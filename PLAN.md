@@ -16,7 +16,7 @@
 - [x] Replace the line spectrum with a scrolling power waterfall.
 - [x] Keep waterfall time and axis labels outside the signal plots for legibility.
 - [x] Scroll spectrum and FSK symbol waterfalls right-to-left and show live sync/text acquisition.
-- [ ] Add saved experiment configurations and comparable benchmark results.
+- [ ] Add comparable benchmark results. *(Saved user configurations are complete.)*
 
 ## Live receiver
 
@@ -33,6 +33,8 @@
 - [x] Show accepted physical FSK symbols in RX-Time before packet sync acquisition.
 - [x] Lock spectrum and symbol waterfall travel by source sequence delta, including coalesced UI updates.
 - [x] Gate waterfall time-scale behavior with unit and Playwright desktop/mobile coverage.
+- [x] Persist user-defined modem/channel settings locally and restore them on reload.
+- [x] Stream decoded characters into RX before CRC, then mark confirmation or rejection.
 - [ ] Add robust preambles and physical-layer packet headers. *(Current)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.

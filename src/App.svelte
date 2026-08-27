@@ -6,8 +6,7 @@
   import { AudioEngine } from './lib/audio';
   import { ModemLabWorker, type SimulationResult } from './lib/modem-lab';
   import { fskFrequencies } from './lib/dsp';
-
-  type Mode = 'FSK' | 'CSS' | 'DSSS';
+  import { loadUserPreferences, saveUserPreferences, type Mode, type UserPreferences } from './lib/preferences';
 
   let spectrum: Float32Array = new Float32Array(1024).fill(-110);
   let spectrumSequence = -1;
@@ -25,6 +24,7 @@
   let symbolConfidence = 0;
   let symbolPower = -120;
   let receivedMessages: string[] = [];
+  let receivingMessage = '';
   let receivedMarkers: Array<{ id: number; label: string; symbols: number }> = [];
   let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
@@ -33,8 +33,8 @@
   let listening = false;
   let payload = 'SONIC TEST 001';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { lowestFrequency: 3800, toneSpacing: 800, tones: 4, symbolRate: 100,
-      squelchDbfs: -45, confidencePercent: 15 },
+    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25,
+      squelchDbfs: -45, confidencePercent: 80 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };
@@ -42,6 +42,7 @@
   let noiseType = 'White noise';
   let interferer = false;
   let interfererPower = -6;
+  let preferencesReady = false;
   let packets = [
     { time: '—', mode: 'Waiting', payload: 'No packets decoded yet', quality: '—' }
   ];
@@ -87,6 +88,13 @@
   }
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
+  function currentPreferences(): UserPreferences {
+    return { mode, settings, snr, noiseType, interferer, interfererPower };
+  }
+  function persistPreferences() {
+    if (preferencesReady) saveUserPreferences(window.localStorage, currentPreferences());
+  }
+  function onSettingsChange() { configureDetector(); persistPreferences(); }
   function configureDetector() {
     if (!audio || !listening || mode !== 'FSK') { audio?.disableDetector(); return; }
     const s = settings.FSK;
@@ -95,12 +103,15 @@
       Number(s.symbolRate), Number(s.squelchDbfs), Number(s.confidencePercent) / 100
     );
   }
-  function selectMode(next: Mode) { mode = next; configureDetector(); }
+  function selectMode(next: Mode) { mode = next; configureDetector(); persistPreferences(); }
   function toggleListen() { void onListenToggle(!listening); }
   function simulate() { void onRunSimulation({ mode, payload, settings: { ...settings[mode] }, snr, interferer, interfererPower }); }
   function onInstall() { void installPrompt?.prompt(); }
 
   onMount(() => {
+    const restored = loadUserPreferences(window.localStorage, currentPreferences());
+    mode = restored.mode; settings = restored.settings; snr = restored.snr; noiseType = restored.noiseType;
+    interferer = restored.interferer; interfererPower = restored.interfererPower; preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
     const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; spectrumSequence = event.sequence; receiverState = 'signal'; });
     const offSymbols = audio.onSymbols(event => {
@@ -117,7 +128,6 @@
         const text = decoded.decode(event.payload);
         packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
-        receivedMessages = [...receivedMessages, text].slice(-24);
         logs = [`${new Date().toLocaleTimeString()} · Live FSK packet decoded (${event.payload.length} bytes, CRC valid)`, ...logs].slice(0, 10);
       } catch {
         logs = [`${new Date().toLocaleTimeString()} · Valid FSK frame rejected: payload is not UTF-8`, ...logs].slice(0, 10);
@@ -132,13 +142,15 @@
         }].slice(-64);
       };
       if (event.token === 'sync') {
-        receptionDecoder = new TextDecoder();
+        receptionDecoder = new TextDecoder(); receivingMessage = '';
         addMarker('<SYNC>', 4);
         logs = [`${new Date().toLocaleTimeString()} · FSK sync acquired`, ...logs].slice(0, 10);
       } else if (event.token === 'crc-confirm') {
-        addMarker('<CRC-Confirm>', 2);
+        receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
+        addMarker('✓', 2);
       } else if (event.token === 'crc-error') {
-        addMarker('<CRC-Error>', 2);
+        receivedMessages = [...receivedMessages, `${receivingMessage} ✕`].slice(-24); receivingMessage = '';
+        addMarker('✕', 2);
       } else if (event.byte !== undefined) {
         const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true });
         if (text) {
@@ -147,6 +159,7 @@
             const byteCount = new TextEncoder().encode(character).length;
             addMarker(character, byteCount);
           }
+          receivingMessage += text;
         }
       }
     });
@@ -174,7 +187,7 @@
     <section class="card composer">
       <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
       <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
-      <div on:change={configureDetector}><ModeControls {mode} settings={settings[mode]} /></div>
+      <div on:change={onSettingsChange}><ModeControls {mode} settings={settings[mode]} /></div>
       <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3"></textarea></label>
       <button class="primary" disabled={!payload || busy} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
@@ -185,7 +198,7 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
-          messages={receivedMessages} markers={receivedMarkers} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
+          messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} confidence={symbolConfidence} sampleRate={audio?.state.sampleRate ?? 48_000}
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
@@ -193,7 +206,7 @@
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
     </section>
 
-    <section class="card simulation">
+    <section class="card simulation" on:change={persistPreferences}>
       <div class="section-head"><div><span class="step">03</span><h2>Channel simulation</h2></div><span class="hint">Worker isolated</span></div>
       <div class="sim-grid"><label><span>SNR <output>{snr} dB</output></span><input type="range" min="-30" max="40" bind:value={snr} /></label><label><span>Noise model</span><select bind:value={noiseType}><option>White noise</option><option>Pink noise</option><option>Impulse noise</option><option>Room response</option></select></label></div>
       <label class="switch-row"><input type="checkbox" bind:checked={interferer} /><span><b>Competing transmitter</b><small>Add an overlapping user with a different code or packet.</small></span></label>
