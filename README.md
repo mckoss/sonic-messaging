@@ -1,6 +1,6 @@
-# Sonic Lab
+# Sonic Message
 
-Sonic Lab is a static, local-first PWA for experimenting with data-over-sound modulation and protocol behavior on desktop and mobile browsers.
+Sonic Message is a local-first PWA for nearby data-over-sound communication on desktop and mobile browsers. Its initial **Sonic Lab** workspace is a modulation and protocol test bed that will become the foundation for messaging.
 
 Current experiments include:
 
