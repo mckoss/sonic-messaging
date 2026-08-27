@@ -76,7 +76,6 @@
 </script>
 
 <div class="figure" bind:this={host} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
-  <div class="time">older ← · newest →</div>
   <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
 </div>
 
@@ -85,8 +84,7 @@
   .plot { display:grid; grid-template-columns:auto 1fr; gap:6px; }
   .spectrum { width: 100%; min-width:0; min-height:176px; overflow:hidden; border-radius:14px; background:#050a18; }
   canvas { display: block; width: 100%; height: 220px; }
-  .axis, .time { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
+  .axis { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
   .axis { display:flex; flex-direction:column; justify-content:space-between; padding:1px 0; text-align:right; }
-  .time { height: 17px; padding-right: 2px; text-align: right; }
   @media (max-width: 559px) { canvas { height: 176px; } }
 </style>

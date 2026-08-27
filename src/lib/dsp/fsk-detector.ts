@@ -41,10 +41,15 @@ export function detectFskSymbol(
     const frequency = frequencies[tone];
     if (!(frequency > 0 && frequency < sampleRate / 2)) continue;
     let inPhase = 0, quadrature = 0;
+    const step = 2 * Math.PI * frequency / sampleRate;
+    const stepCos = Math.cos(step), stepSin = Math.sin(step);
+    let phaseCos = 1, phaseSin = 0;
     for (let i = 0; i < samples.length; i++) {
-      const phase = 2 * Math.PI * frequency * i / sampleRate;
-      inPhase += samples[i] * Math.cos(phase);
-      quadrature -= samples[i] * Math.sin(phase);
+      inPhase += samples[i] * phaseCos;
+      quadrature -= samples[i] * phaseSin;
+      const nextCos = phaseCos * stepCos - phaseSin * stepSin;
+      phaseSin = phaseSin * stepCos + phaseCos * stepSin;
+      phaseCos = nextCos;
     }
     powers[tone] = inPhase * inPhase + quadrature * quadrature;
   }
@@ -69,4 +74,10 @@ export function detectFskSymbol(
     scores, symbol, confidence,
     powerDbfs: 20 * Math.log10(Math.max(rms, 1e-12))
   };
+}
+
+export function windowPowerDbfs(samples: Float32Array): number {
+  let power = 0;
+  for (const sample of samples) power += sample * sample;
+  return 20 * Math.log10(Math.max(Math.sqrt(power / Math.max(1, samples.length)), 1e-12));
 }

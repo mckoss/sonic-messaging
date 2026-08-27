@@ -72,6 +72,8 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  // Keep visualization responsive even when multi-phase packet acquisition is busy.
+  acceptDetectorSamples(samples, sampleRate);
   if (detector && detectorSampleRate !== sampleRate) {
     fskStreamDecoder = new FskStreamDecoder(
       { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies },
@@ -88,7 +90,6 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
     }
   }
-  acceptDetectorSamples(samples, sampleRate);
   let sourceOffset = 0;
   while (sourceOffset < samples.length) {
     const count = Math.min(samples.length - sourceOffset, pending.length - pendingLength);

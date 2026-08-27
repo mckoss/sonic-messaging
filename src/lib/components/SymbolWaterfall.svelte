@@ -79,7 +79,6 @@
 </script>
 
 <div class="figure" bind:this={host} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
-  <div class="time">older ← · newest →</div>
   <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="receive"><span class="channel">RX</span><div class="tokens">{#each tokens as token}<span class:confirm={token === '<SYNC>' || token === '<CRC-Confirm>'} class:error={token === '<CRC-Error>'}>{token === ' ' ? '␠' : token}</span>{/each}</div></div>
@@ -92,7 +91,6 @@
   canvas { display:block; width:100%; height:150px; }
   .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
   .labels span { display:flex; align-items:center; justify-content:flex-end; }
-  .time { height:17px; padding-right:2px; color:#8294aa; font:10px ui-monospace,monospace; text-align:right; }
   .receive,.confidence { display:grid; grid-template-columns:38px 1fr; gap:7px; margin-top:6px; min-width:0; }
   .channel { color:#8294aa; font:10px ui-monospace,monospace; text-align:right; padding-top:5px; }
   .confidence-history { height:22px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }

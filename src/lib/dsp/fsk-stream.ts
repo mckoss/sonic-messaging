@@ -1,6 +1,6 @@
 import { bitsToBytes } from './bits';
 import { unframe } from './frame';
-import { detectFskSymbol, gateFskDetection } from './fsk-detector';
+import { detectFskSymbol, gateFskDetection, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
 const SYNC = [0xd3, 0x91, 0xd3, 0x91];
@@ -67,6 +67,11 @@ export class FskStreamDecoder {
     const syncSymbols = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
     const required = syncSymbols * this.samplesPerSymbol;
     while (this.searchOffset + required <= this.samples.length) {
+      const firstWindow = this.samples.subarray(this.searchOffset, this.searchOffset + this.samplesPerSymbol);
+      if (windowPowerDbfs(firstWindow) < this.squelchDbfs) {
+        this.searchOffset += this.phaseStep;
+        continue;
+      }
       const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
       if (SYNC.every((byte, index) => decoded.bytes[index] === byte)) {
         this.candidateOffset = this.searchOffset;
