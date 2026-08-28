@@ -76,10 +76,10 @@ export class FskStreamDecoder {
     this.streamPosition = 0;
   }
 
-  /** Absolute stream sample index of the symbol boundary `bytes` bytes into the frame. */
+  /** Absolute stream sample index where the frame's first `bytes` bytes end (exact bit time). */
   private frameBytePosition(start: number, bytes: number): number {
     return this.streamPosition + start +
-      Math.ceil((bytes * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
+      Math.round((bytes * 8 * this.samplesPerSymbol) / this.bitsPerSymbol);
   }
 
   drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }

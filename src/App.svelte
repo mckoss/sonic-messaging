@@ -173,7 +173,7 @@
       const addMarker = (label: string, byteCount: number) => {
         receivedMarkers = [...receivedMarkers, {
           id: receivedMarkerId++, label: label === ' ' ? '⎵' : label,
-          symbols: Math.ceil(byteCount * 8 / bitsPerSymbol), position: event.position
+          symbols: byteCount * 8 / bitsPerSymbol, position: event.position
         }].slice(-64);
       };
       if (event.token === 'sync') {
