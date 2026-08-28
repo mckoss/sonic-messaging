@@ -43,6 +43,7 @@ These instructions apply to the entire repository.
 ## Git and deployment
 
 - All repository work must be tracked in Git. Make focused, reviewable commits and preserve unrelated user changes.
+- Commit and push each feature change as soon as the local test suite passes; do not batch multiple completed features into one commit or leave verified work unpushed.
 - Treat side conversations as discussion and read-only investigation by default because they share the main thread's workspace and Git branch.
 - A side conversation may modify code only when the user explicitly requests it after the side-conversation boundary. Before editing, verify that the worktree is clean and that the change will not overlap known main-thread work. If coordination is uncertain, leave the implementation to the main thread.
 - Keep side-conversation edits narrowly scoped. Recheck the worktree before committing or pushing, and do not overwrite, bundle, or publish unrelated main-thread changes.
