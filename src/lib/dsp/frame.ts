@@ -1,4 +1,11 @@
-const SYNC = new Uint8Array([0xd3, 0x91, 0xd3, 0x91]);
+/**
+ * CCSDS attached sync marker: chosen for low aperiodic autocorrelation, so a
+ * matched-filter search sees one sharp peak instead of the half-length false
+ * peak a repeated pattern produces.
+ */
+export const SYNC_BYTES = Object.freeze([0x1a, 0xcf, 0xfc, 0x1d]) as readonly number[];
+
+const SYNC = new Uint8Array(SYNC_BYTES);
 
 export function crc16(data: Uint8Array): number {
   let crc = 0xffff;

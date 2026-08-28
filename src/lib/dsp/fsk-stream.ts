@@ -1,26 +1,36 @@
 import { bitsToBytes } from './bits';
-import { unframe } from './frame';
-import { detectFskSymbol, windowPowerDbfs } from './fsk-detector';
+import { SYNC_BYTES, unframe } from './frame';
+import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
-const SYNC = [0xd3, 0x91, 0xd3, 0x91];
+const SYNC = SYNC_BYTES;
 const HEADER_BYTES = 6;
 const TRAILER_BYTES = 2;
-const MAX_SYNC_BIT_ERRORS = 2;
 const MAX_LIVE_PAYLOAD_BYTES = 4096;
 /**
  * A corrupted length field must not leave the decoder waiting on a frame for minutes.
  * Matches the one-minute capture history so legitimate very-low-baud frames still fit.
  */
 const MAX_LIVE_FRAME_SECONDS = 60;
+/**
+ * Mean per-symbol margin (expected-tone score minus best other tone) for the
+ * matched-filter sync statistic to declare a candidate. Noise and payload data
+ * average near or below zero because they do not follow the sync hop pattern;
+ * a true sync accumulates positive margin on every template symbol.
+ */
+const SYNC_DETECT_MARGIN = 0.1;
 
-function syncBitErrors(bytes: Uint8Array): number {
-  let errors = 0;
-  for (let index = 0; index < SYNC.length; index++) {
-    let difference = (bytes[index] ?? 0) ^ SYNC[index];
-    while (difference) { errors += difference & 1; difference >>>= 1; }
+/** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
+function syncSymbolTemplate(bitsPerSymbol: number): number[] {
+  const bits: number[] = [];
+  for (const byte of SYNC) for (let bit = 7; bit >= 0; bit--) bits.push((byte >>> bit) & 1);
+  const template: number[] = [];
+  for (let index = 0; index + bitsPerSymbol <= bits.length; index += bitsPerSymbol) {
+    let value = 0;
+    for (let bit = 0; bit < bitsPerSymbol; bit++) value = (value << 1) | bits[index + bit];
+    template.push(value);
   }
-  return errors;
+  return template;
 }
 
 export interface FskStreamPacket {
@@ -52,8 +62,10 @@ export class FskStreamDecoder {
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
-  /** Argmax symbols by absolute offset, shared across overlapping sync-search trials. */
-  private readonly syncScanCache = new Map<number, number>();
+  /** Per-tone score vectors by absolute offset, shared across overlapping sync-search trials. */
+  private readonly syncScanCache = new Map<number, Float32Array>();
+  /** Expected tone index per sync symbol for the matched-filter search. */
+  private readonly syncTemplate: number[];
 
   constructor(
     private readonly config: FskConfig,
@@ -67,6 +79,7 @@ export class FskStreamDecoder {
     }
     this.samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
+    this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
   }
 
   push(input: Float32Array): FskStreamPacket[] {
@@ -106,8 +119,8 @@ export class FskStreamDecoder {
     this.streamPosition += count;
   }
 
-  /** Argmax symbol for the window at an absolute stream offset, cached for sync trials. */
-  private scanSymbolAt(absolute: number): number {
+  /** Per-tone scores for the window at an absolute stream offset, cached for sync trials. */
+  private scanScoresAt(absolute: number): Float32Array {
     const cached = this.syncScanCache.get(absolute);
     if (cached !== undefined) return cached;
     const offset = absolute - this.streamPosition;
@@ -116,24 +129,41 @@ export class FskStreamDecoder {
       this.config.sampleRate,
       this.config.frequencies
     );
-    let symbol = 0;
-    for (let index = 1; index < decision.scores.length; index++) {
-      if (decision.scores[index] > decision.scores[symbol]) symbol = index;
-    }
-    this.syncScanCache.set(absolute, symbol);
-    return symbol;
+    this.syncScanCache.set(absolute, decision.scores);
+    return decision.scores;
   }
 
-  /** Sync-length bytes at a trial offset, assembled from cached scan symbols. */
-  private scanSyncBytes(searchOffset: number): Uint8Array {
-    const symbolCount = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
+  /**
+   * Matched-filter sync statistic: mean margin of the template's expected tone over
+   * the best other tone, accumulated softly across every fully-known sync symbol.
+   */
+  private syncScoreAt(searchOffset: number): number {
     const absolute = this.streamPosition + searchOffset;
-    const bits: number[] = [];
-    for (let index = 0; index < symbolCount; index++) {
-      const symbol = this.scanSymbolAt(absolute + index * this.samplesPerSymbol);
-      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) bits.push((symbol >>> bit) & 1);
+    let sum = 0;
+    for (let index = 0; index < this.syncTemplate.length; index++) {
+      const scores = this.scanScoresAt(absolute + index * this.samplesPerSymbol);
+      const expected = this.syncTemplate[index];
+      let other = 0;
+      for (let tone = 0; tone < scores.length; tone++) {
+        if (tone !== expected) other = Math.max(other, scores[tone]);
+      }
+      sum += scores[expected] - other;
     }
-    return bitsToBytes(bits).slice(0, SYNC.length);
+    return sum / this.syncTemplate.length;
+  }
+
+  /** Sum of expected-tone scores at a trial offset; sharp in alignment, cheap to evaluate. */
+  private syncAlignmentScore(offset: number): number {
+    let sum = 0;
+    for (let index = 0; index < this.syncTemplate.length; index++) {
+      const start = offset + index * this.samplesPerSymbol;
+      sum += toneScore(
+        this.samples.subarray(start, start + this.samplesPerSymbol),
+        this.config.sampleRate,
+        this.config.frequencies[this.syncTemplate[index]]
+      );
+    }
+    return sum;
   }
 
   /** Absolute stream sample index where the frame's first `bytes` bytes end (exact bit time). */
@@ -156,19 +186,16 @@ export class FskStreamDecoder {
   private findSync(): boolean {
     const syncSymbols = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
     const required = syncSymbols * this.samplesPerSymbol;
-    while (this.searchOffset + required <= this.sampleCount) {
+    // One symbol plus one phase step of lookahead lets phase refinement trial
+    // offsets past the coarse match without running off the buffer.
+    while (this.searchOffset + required + this.samplesPerSymbol + this.phaseStep <= this.sampleCount) {
       const firstWindow = this.samples.subarray(this.searchOffset, this.searchOffset + this.samplesPerSymbol);
       if (windowPowerDbfs(firstWindow) < this.squelchDbfs) {
         this.searchOffset += this.phaseStep;
         continue;
       }
-      if (syncBitErrors(this.scanSyncBytes(this.searchOffset)) <= MAX_SYNC_BIT_ERRORS) {
-        // Wait for one symbol of lookahead so phase refinement has samples to trial;
-        // accepting immediately locks a coarse phase that can corrupt the whole frame.
-        const lookahead = required + this.samplesPerSymbol + this.phaseStep;
-        if (this.searchOffset + lookahead > this.sampleCount) return false;
-        const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
-        this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
+      if (this.syncScoreAt(this.searchOffset) >= SYNC_DETECT_MARGIN) {
+        this.candidateOffset = this.refineSyncPhase(this.searchOffset);
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
         this.candidateSymbols = []; this.candidateConfidences = [];
@@ -180,17 +207,15 @@ export class FskStreamDecoder {
     return false;
   }
 
-  /** Locks sync timing to the sample by maximizing sync confidence near the first match. */
-  private refineSyncPhase(start: number, confidence: number): number {
-    const required = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
-    const trial = (offset: number, best: { offset: number; confidence: number }) => {
-      if (offset < 0 || offset === best.offset || offset + required > this.sampleCount) return;
-      const decoded = this.decodeBytes(offset, SYNC.length);
-      if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS && decoded.confidence > best.confidence) {
-        best.offset = offset; best.confidence = decoded.confidence;
-      }
+  /** Locks sync timing to the sample by maximizing the matched-filter alignment score. */
+  private refineSyncPhase(start: number): number {
+    const span = this.syncTemplate.length * this.samplesPerSymbol;
+    const trial = (offset: number, best: { offset: number; score: number }) => {
+      if (offset < 0 || offset === best.offset || offset + span > this.sampleCount) return;
+      const score = this.syncAlignmentScore(offset);
+      if (score > best.score) { best.offset = offset; best.score = score; }
     };
-    const best = { offset: start, confidence };
+    const best = { offset: start, score: this.syncAlignmentScore(start) };
     for (let offset = start + this.phaseStep; offset < start + this.samplesPerSymbol; offset += this.phaseStep) {
       trial(offset, best);
     }
@@ -239,7 +264,12 @@ export class FskStreamDecoder {
       }
       this.reportedPayloadBytes = reportThrough;
     }
-    if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
+    // Noise can jitter the refined phase a few samples past the true frame start,
+    // so a stream that ends exactly with the frame would otherwise never complete.
+    // One phase step of slack truncates at most 1/8 of the final symbol's window.
+    if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) {
+      return undefined;
+    }
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
@@ -253,7 +283,7 @@ export class FskStreamDecoder {
       return null;
     }
     this.progress.push({ type: 'crc-confirm', position: framePosition });
-    this.discard(start + frameSymbols * this.samplesPerSymbol);
+    this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
@@ -275,7 +305,8 @@ export class FskStreamDecoder {
     while (this.candidateSymbols.length < symbolCount) {
       const offset = start + this.candidateSymbols.length * this.samplesPerSymbol;
       const decision = detectFskSymbol(
-        this.samples.subarray(offset, offset + this.samplesPerSymbol),
+        // The final window may fall short of the buffer by the tail slack.
+        this.samples.subarray(offset, Math.min(offset + this.samplesPerSymbol, this.sampleCount)),
         this.config.sampleRate,
         this.config.frequencies
       );
@@ -292,32 +323,6 @@ export class FskStreamDecoder {
       confidence += this.candidateConfidences[index];
       for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
         bits.push((this.candidateSymbols[index] >>> bit) & 1);
-      }
-    }
-    return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };
-  }
-
-  private decodeBytes(offset: number, count: number): { bytes: Uint8Array; confidence: number } {
-    const bitCount = count * 8;
-    const symbolCount = Math.ceil(bitCount / this.bitsPerSymbol);
-    const bits: number[] = [];
-    let confidence = 0;
-    for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
-      const start = offset + symbolIndex * this.samplesPerSymbol;
-      const decision = detectFskSymbol(
-        this.samples.subarray(start, start + this.samplesPerSymbol),
-        this.config.sampleRate,
-        this.config.frequencies
-      );
-      confidence += decision.confidence;
-      // Always take the strongest tone: sync matching and the CRC validate the
-      // frame, so display-oriented confidence gates must not corrupt bits here.
-      let symbol = 0;
-      for (let index = 1; index < decision.scores.length; index++) {
-        if (decision.scores[index] > decision.scores[symbol]) symbol = index;
-      }
-      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
-        bits.push((symbol >>> bit) & 1);
       }
     }
     return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };

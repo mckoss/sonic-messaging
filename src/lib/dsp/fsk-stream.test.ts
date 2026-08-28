@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { SYNC_BYTES } from './frame';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
+import { simulateChannel } from './channel';
 
 const config = { sampleRate: 48_000, symbolRate: 400, frequencies: [2400, 3200, 4000, 4800] };
 
@@ -126,6 +128,35 @@ describe('continuous FSK receiver', () => {
     expect(receiver.lockedSymbolAnchor()).toBeUndefined();
   });
 
+  it('acquires sync timing in noise too deep for reliable per-symbol decisions', () => {
+    const payload = new TextEncoder().encode('deep noise');
+    const waveform = encodeFsk(payload, config).samples;
+    const lead = 4_000;
+    const clean = new Float32Array(lead + waveform.length + 2_000);
+    clean.set(waveform, lead);
+    const noisy = simulateChannel(clean, { snrDb: -3, seed: 7 });
+    const receiver = new FskStreamDecoder(config);
+    receiver.push(noisy);
+    const sync = receiver.drainProgress().find(progress => progress.type === 'sync');
+    expect(sync).toBeDefined();
+    // Sync position reports where the sync word ends: 16 symbols past the packet start.
+    const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
+    expect(Math.abs(sync!.position - (lead + 16 * samplesPerSymbol)))
+      .toBeLessThanOrEqual(samplesPerSymbol / 2);
+  });
+
+  it('reports no sync candidates in pure noise', () => {
+    let state = 12345;
+    const random = () => {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 0xffffffff - 0.5;
+    };
+    const noise = Float32Array.from({ length: 5 * config.sampleRate }, () => 0.3 * random());
+    const receiver = new FskStreamDecoder(config);
+    receiver.push(noise);
+    expect(receiver.drainProgress().filter(progress => progress.type === 'sync')).toHaveLength(0);
+  });
+
   it('decodes a very-low-baud frame whose duration exceeds the old 10-second cap', () => {
     const slow = {
       sampleRate: 48_000, symbolRate: 2,
@@ -139,7 +170,7 @@ describe('continuous FSK receiver', () => {
   });
 
   it('skips past a whole sync after an oversized length instead of re-refining it', () => {
-    const oversized = frameSymbolWaveform(config, [0xd3, 0x91, 0xd3, 0x91, 0xff, 0xff, 0, 0, 0, 0]);
+    const oversized = frameSymbolWaveform(config, [...SYNC_BYTES, 0xff, 0xff, 0, 0, 0, 0]);
     const clean = encodeFsk(new TextEncoder().encode('ok'), config).samples;
     const samples = new Float32Array(oversized.length + clean.length);
     samples.set(oversized); samples.set(clean, oversized.length);

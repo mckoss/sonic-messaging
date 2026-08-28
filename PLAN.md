@@ -37,9 +37,9 @@
 - [x] Stream decoded characters into RX before CRC, then mark confirmation or rejection.
 - [x] Lock all receiver lanes to absolute sample positions with persisted Slow/Medium/Fast scaling.
 - [x] Add a persisted microphone device picker with live capture restart.
-- [ ] Add robust preambles and physical-layer packet headers. *(Current)*
+- [x] Add robust preambles and physical-layer packet headers. *(Matched-filter sync acquisition over a low-autocorrelation CCSDS sync word accumulates soft per-symbol evidence, acquiring timing in noise too deep for hard-decision matching.)*
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
-- [ ] Estimate frequency/sample-clock offset and collect complete packets.
+- [ ] Estimate frequency/sample-clock offset and collect complete packets. *(Current)*
 - [x] Decode live FSK packets, verify CRC, and display valid UTF-8 payloads and confidence.
 - [ ] Add forward error correction (e.g. convolutional or Reed-Solomon coding with interleaving against burst errors), so payloads survive symbol errors that currently fail the whole frame's CRC.
 - [ ] Add automatic multi-mode detection.

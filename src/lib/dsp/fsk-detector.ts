@@ -61,6 +61,28 @@ export function detectFskSymbol(
   };
 }
 
+/** Normalized coherent score of one tone over a window, on detectFskSymbol's scale. */
+export function toneScore(samples: Float32Array, sampleRate: number, frequency: number): number {
+  if (!(frequency > 0 && frequency < sampleRate / 2)) return 0;
+  let inPhase = 0, quadrature = 0, samplePower = 0;
+  const step = 2 * Math.PI * frequency / sampleRate;
+  const stepCos = Math.cos(step), stepSin = Math.sin(step);
+  let phaseCos = 1, phaseSin = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const x = samples[i];
+    samplePower += x * x;
+    inPhase += x * phaseCos;
+    quadrature -= x * phaseSin;
+    const nextCos = phaseCos * stepCos - phaseSin * stepSin;
+    phaseSin = phaseSin * stepCos + phaseCos * stepSin;
+    phaseCos = nextCos;
+  }
+  const coherentScale = samples.length * samplePower;
+  return coherentScale > 0
+    ? Math.min(1, 2 * (inPhase * inPhase + quadrature * quadrature) / coherentScale)
+    : 0;
+}
+
 export function windowPowerDbfs(samples: Float32Array): number {
   let power = 0;
   for (const sample of samples) power += sample * sample;
