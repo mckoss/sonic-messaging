@@ -14,6 +14,8 @@
   export let samplePosition = -1;
   export let samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL;
 
+  // Lowest tone at the bottom, matching the spectrogram's frequency axis.
+  $: displayLabels = [...labels].reverse();
   $: recentEntries = currentMessage ? [...messages, currentMessage] : messages;
   $: recentMessages = recentEntries.length ? `| ${recentEntries.join(' | ')} |` : '';
 
@@ -51,7 +53,8 @@
     ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
     const column = ctx.createImageData(columnWidth, pixelHeight);
     for (let y = 0; y < pixelHeight; y++) {
-      const symbol = Math.min(pendingScores.length - 1, Math.floor(y * pendingScores.length / pixelHeight));
+      const symbol = Math.min(pendingScores.length - 1,
+        Math.floor((pixelHeight - 1 - y) * pendingScores.length / pixelHeight));
       const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, pendingScores[symbol]))));
       for (let x = 0; x < columnWidth; x++) {
         const offset = (y * columnWidth + x) * 4;
@@ -168,7 +171,7 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
-  <div class="plot"><div class="labels">{#each labels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
+  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
   <div class="receive"><span class="channel">RX</span><div class="messages"><span>{#each [...recentMessages] as character}<i class:confirm={character === '✓'} class:error={character === '✕'}>{character}</i>{/each}</span></div></div>

@@ -16,12 +16,14 @@ test('updates the symbol waterfall axis when tone settings change', async ({ pag
   await page.goto('/sonic-messaging/');
   const labels = page.getByTestId('symbol-waterfall').locator('.labels span');
   await expect(labels).toHaveCount(4);
-  await expect(labels.first()).toHaveText('S0 · 500Hz');
+  await expect(labels.first()).toHaveText('S3 · 800Hz');
+  await expect(labels.last()).toHaveText('S0 · 500Hz');
   await page.getByLabel('Tones').selectOption('8');
   await page.getByLabel('Lowest frequency').fill('1000');
   await page.getByLabel('Lowest frequency').press('Tab');
   await expect(labels).toHaveCount(8);
-  await expect(labels.first()).toHaveText('S0 · 1000Hz');
+  await expect(labels.first()).toHaveText('S7 · 1700Hz');
+  await expect(labels.last()).toHaveText('S0 · 1000Hz');
 });
 
 test('restores user-defined modem settings after reload', async ({ page }) => {
