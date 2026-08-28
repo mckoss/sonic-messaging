@@ -5,7 +5,7 @@ const defaults: UserPreferences = {
   mode: 'FSK',
   settings: { FSK: { frequency: 3800, tones: 4 }, CSS: { bandwidth: 6000 }, DSSS: { chipRate: 4000 } },
   snr: 10, noiseType: 'White noise', interferer: false, interfererPower: -6,
-  scrollSpeed: 'Medium', inputDeviceId: 'default'
+  scrollSpeed: 'Medium', inputDeviceId: 'default', payload: 'SONIC TEST 001'
 };
 
 describe('user preferences', () => {
@@ -19,6 +19,15 @@ describe('user preferences', () => {
     expect(result.settings.CSS).toEqual(defaults.settings.CSS);
     expect(result.snr).toBe(4);
     expect(result.interferer).toBe(true);
+  });
+
+  it('restores the saved test payload and clamps it to the editor limit', () => {
+    const saved = loadUserPreferences({ getItem: () => JSON.stringify({ payload: 'hello 🌍' }) }, defaults);
+    expect(saved.payload).toBe('hello 🌍');
+    const oversized = loadUserPreferences({ getItem: () => JSON.stringify({ payload: 'x'.repeat(300) }) }, defaults);
+    expect(oversized.payload).toHaveLength(256);
+    const invalid = loadUserPreferences({ getItem: () => JSON.stringify({ payload: 42 }) }, defaults);
+    expect(invalid.payload).toBe(defaults.payload);
   });
 
   it('falls back safely for corrupt storage and invalid values', () => {

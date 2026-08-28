@@ -105,7 +105,7 @@
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
   function currentPreferences(): UserPreferences {
-    return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed, inputDeviceId };
+    return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed, inputDeviceId, payload };
   }
   function persistPreferences() {
     if (preferencesReady) saveUserPreferences(window.localStorage, currentPreferences());
@@ -190,7 +190,8 @@
     const restored = loadUserPreferences(window.localStorage, currentPreferences());
     mode = restored.mode; settings = restored.settings; snr = restored.snr; noiseType = restored.noiseType;
     interferer = restored.interferer; interfererPower = restored.interfererPower;
-    scrollSpeed = restored.scrollSpeed; inputDeviceId = restored.inputDeviceId; preferencesReady = true;
+    scrollSpeed = restored.scrollSpeed; inputDeviceId = restored.inputDeviceId; payload = restored.payload;
+    preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
     void refreshInputDevices(false);
     const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; spectrumSequence = event.sequence;
@@ -270,7 +271,7 @@
       <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
       <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
       <div on:change={onSettingsChange}><ModeControls {mode} settings={settings[mode]} /></div>
-      <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3"></textarea></label>
+      <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3" on:input={persistPreferences}></textarea></label>
       <button class="primary" disabled={!payload || busy} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
 

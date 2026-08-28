@@ -55,8 +55,10 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.getByLabel('Symbol rate').fill('125');
   await page.getByLabel('Confidence threshold').fill('22');
   await page.getByLabel('Waterfall scroll speed').selectOption('Fast');
+  await page.getByLabel(/Test payload/).fill('PERSIST ME');
   await page.getByLabel('Symbol rate').press('Tab');
   await page.reload();
+  await expect(page.getByLabel(/Test payload/)).toHaveValue('PERSIST ME');
   await expect(page.getByLabel('Lowest frequency')).toHaveValue('4100');
   await expect(page.getByLabel('Tone spacing')).toHaveValue('900');
   await expect(page.getByLabel('Tones')).toHaveValue('8');

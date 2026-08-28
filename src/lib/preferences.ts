@@ -10,6 +10,7 @@ export interface UserPreferences {
   interfererPower: number;
   scrollSpeed: 'Slow' | 'Medium' | 'Fast';
   inputDeviceId: string;
+  payload: string;
 }
 
 export const PREFERENCES_KEY = 'sonic-messaging:preferences:v1';
@@ -45,7 +46,9 @@ export function loadUserPreferences(storage: Pick<Storage, 'getItem'>, defaults:
         ? value.interfererPower : defaults.interfererPower,
       scrollSpeed: value.scrollSpeed === 'Slow' || value.scrollSpeed === 'Medium' || value.scrollSpeed === 'Fast'
         ? value.scrollSpeed : defaults.scrollSpeed,
-      inputDeviceId: typeof value.inputDeviceId === 'string' ? value.inputDeviceId : defaults.inputDeviceId
+      inputDeviceId: typeof value.inputDeviceId === 'string' ? value.inputDeviceId : defaults.inputDeviceId,
+      // Match the payload editor's maxlength so storage can't overflow the UI limit.
+      payload: typeof value.payload === 'string' ? value.payload.slice(0, 256) : defaults.payload
     };
   } catch {
     return structuredClone(defaults);
