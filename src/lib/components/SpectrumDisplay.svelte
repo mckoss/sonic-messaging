@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
   import { waterfallScrubSamples } from '../audio/scrub-store';
 
   export let spectrum: number[] | Float32Array = [];
@@ -152,12 +152,14 @@
       if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
       const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
       lastTime = now;
-      // Free-run at the audio rate so worker stalls never pause the lane: scroll
-      // up to a second ahead of the data (late output backfills behind the edge)
-      // and catch up at a bounded fast-forward rate when the worker is behind.
+      // Free-run at the audio rate with bounded catch-up when the worker is behind,
+      // easing to a stop within two hops ahead of the data so the live edge stays
+      // pinned to the display's right edge instead of scrolling into blank canvas.
       const lag = latestPosition - renderedPosition;
-      const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate) : lag > -sampleRate ? 1 : 0;
-      renderedPosition += dt * sampleRate * factor;
+      const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate)
+        : Math.max(0, 1 + lag / (2 * DETECTOR_HOP_SAMPLES));
+      renderedPosition = Math.min(renderedPosition + dt * sampleRate * factor,
+        latestPosition + 2 * DETECTOR_HOP_SAMPLES);
       ensureRing();
       ensureCleared(Math.floor(xOf(renderedPosition)));
       blit();

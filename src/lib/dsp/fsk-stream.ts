@@ -41,7 +41,7 @@ export class FskStreamDecoder {
   private reportedPayloadBytes = 0;
   private reportedLength = false;
   /** Absolute stream sample index of samples[0]. */
-  private streamPosition = 0;
+  private streamPosition: number;
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
@@ -50,8 +50,10 @@ export class FskStreamDecoder {
 
   constructor(
     private readonly config: FskConfig,
-    private readonly squelchDbfs = -Infinity
+    private readonly squelchDbfs = -Infinity,
+    basePosition = 0
   ) {
+    this.streamPosition = basePosition;
     this.bitsPerSymbol = Math.log2(config.frequencies.length);
     if (!Number.isInteger(this.bitsPerSymbol) || this.bitsPerSymbol < 1) {
       throw new Error('FSK tone count must be a power of two');

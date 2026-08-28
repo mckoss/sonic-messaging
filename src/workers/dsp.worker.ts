@@ -68,8 +68,10 @@ function appendDetectorWindow(chunk: Float32Array): void {
 }
 
 /** Analyzes a sliding symbol-length window on a fixed hop so the display scrolls smoothly. */
-function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void {
+function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkBase: number): void {
   if (!detector) return;
+  // Positions share the capture clock so replay and history stay aligned across reconfigures.
+  detectorSamplePosition = chunkBase;
   const samplesPerSymbol = Math.max(1, Math.round(sampleRate / detector.symbolRate));
   if (detectorWindow.length !== samplesPerSymbol) {
     detectorWindow = new Float32Array(samplesPerSymbol);
@@ -154,14 +156,15 @@ function detectCaptureGaps(samples: Float32Array, sampleRate: number): void {
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  const chunkBase = captureSamples;
   storeCapturedAudio(samples, sampleRate);
   detectCaptureGaps(samples, sampleRate);
   // Keep visualization responsive even when multi-phase packet acquisition is busy.
-  acceptDetectorSamples(samples, sampleRate);
+  acceptDetectorSamples(samples, sampleRate, chunkBase);
   if (detector && detectorSampleRate !== sampleRate) {
     fskStreamDecoder = new FskStreamDecoder(
       { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies },
-      detector.squelchDbfs
+      detector.squelchDbfs, chunkBase
     );
     detectorSampleRate = sampleRate;
   }
@@ -259,7 +262,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
           [samples.buffer as ArrayBuffer]);
         break;
       }
-      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); detectorSamplePosition = 0; fskStreamDecoder?.reset(); break;
+      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); fskStreamDecoder = undefined; detectorSampleRate = 0; break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

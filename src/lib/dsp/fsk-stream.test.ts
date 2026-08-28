@@ -54,6 +54,16 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].confidence).toBeLessThan(0.8);
   });
 
+  it('reports progress positions on the caller-supplied stream clock', () => {
+    const payload = new TextEncoder().encode('hi');
+    const waveform = encodeFsk(payload, config).samples;
+    const receiver = new FskStreamDecoder(config, -Infinity, 5_000);
+    receiver.push(waveform);
+    const progress = receiver.drainProgress();
+    expect(progress[0].type).toBe('sync');
+    expect(progress[0].position).toBeGreaterThanOrEqual(5_000);
+  });
+
   it('rejects a corrupted frame and still decodes the packet that follows', () => {
     const first = encodeFsk(new TextEncoder().encode('corrupt me'), config).samples;
     const second = encodeFsk(new TextEncoder().encode('clean'), config).samples;
