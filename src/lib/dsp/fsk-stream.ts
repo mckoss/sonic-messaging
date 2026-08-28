@@ -23,10 +23,11 @@ export interface FskStreamPacket {
   confidence: number;
 }
 
+/** position is the absolute stream sample index where the reported item ends. */
 export type FskStreamProgress =
-  | { type: 'sync' | 'length' }
-  | { type: 'byte'; byte: number }
-  | { type: 'crc-confirm' | 'crc-error' };
+  | { type: 'sync' | 'length'; position: number }
+  | { type: 'byte'; byte: number; position: number }
+  | { type: 'crc-confirm' | 'crc-error'; position: number };
 
 /** Acquires framed FSK packets in an arbitrarily chunked continuous sample stream. */
 export class FskStreamDecoder {
@@ -39,6 +40,8 @@ export class FskStreamDecoder {
   private progress: FskStreamProgress[] = [];
   private reportedPayloadBytes = 0;
   private reportedLength = false;
+  /** Absolute stream sample index of samples[0]. */
+  private streamPosition = 0;
 
   constructor(
     private readonly config: FskConfig,
@@ -70,6 +73,13 @@ export class FskStreamDecoder {
   reset(): void {
     this.samples = new Float32Array(0); this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
+    this.streamPosition = 0;
+  }
+
+  /** Absolute stream sample index of the symbol boundary `bytes` bytes into the frame. */
+  private frameBytePosition(start: number, bytes: number): number {
+    return this.streamPosition + start +
+      Math.ceil((bytes * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
   }
 
   drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }
@@ -85,10 +95,14 @@ export class FskStreamDecoder {
       }
       const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
       if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS) {
+        // Wait for one symbol of lookahead so phase refinement has samples to trial;
+        // accepting immediately locks a coarse phase that can corrupt the whole frame.
+        const lookahead = required + this.samplesPerSymbol + this.phaseStep;
+        if (this.searchOffset + lookahead > this.samples.length) return false;
         this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
-        this.progress.push({ type: 'sync' });
+        this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
         return true;
       }
       this.searchOffset += this.phaseStep;
@@ -130,7 +144,7 @@ export class FskStreamDecoder {
     }
     if (!this.reportedLength) {
       this.reportedLength = true;
-      this.progress.push({ type: 'length' });
+      this.progress.push({ type: 'length', position: this.frameBytePosition(start, HEADER_BYTES) });
     }
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
@@ -141,7 +155,8 @@ export class FskStreamDecoder {
     if (reportThrough > this.reportedPayloadBytes) {
       const partial = this.decodeBytes(start, HEADER_BYTES + reportThrough).bytes;
       for (let index = this.reportedPayloadBytes; index < reportThrough; index++) {
-        this.progress.push({ type: 'byte', byte: partial[HEADER_BYTES + index] });
+        this.progress.push({ type: 'byte', byte: partial[HEADER_BYTES + index],
+          position: this.frameBytePosition(start, HEADER_BYTES + index + 1) });
       }
       this.reportedPayloadBytes = reportThrough;
     }
@@ -150,14 +165,16 @@ export class FskStreamDecoder {
     const decoded = this.decodeBytes(start, frameBytes);
     decoded.bytes.set(SYNC, 0);
     const parsed = unframe(decoded.bytes);
+    const framePosition = this.frameBytePosition(start, frameBytes);
     if (!parsed.payload) {
-      this.progress.push({ type: 'crc-error' });
+      this.progress.push({ type: 'crc-error', position: framePosition });
       this.rejectCandidate();
       return null;
     }
-    this.progress.push({ type: 'crc-confirm' });
+    this.progress.push({ type: 'crc-confirm', position: framePosition });
     const consumed = start + frameSymbols * this.samplesPerSymbol;
     this.samples = this.samples.slice(consumed);
+    this.streamPosition += consumed;
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
     return { payload: parsed.payload, confidence: decoded.confidence };
@@ -200,6 +217,7 @@ export class FskStreamDecoder {
     if (this.candidateOffset !== undefined) {
       if (this.candidateOffset > 0) {
         this.samples = this.samples.slice(this.candidateOffset);
+        this.streamPosition += this.candidateOffset;
         this.searchOffset = 0; this.candidateOffset = 0;
       }
       return;
@@ -208,6 +226,7 @@ export class FskStreamDecoder {
     const removable = Math.max(0, this.searchOffset - retain);
     if (removable > 0) {
       this.samples = this.samples.slice(removable);
+      this.streamPosition += removable;
       this.searchOffset -= removable;
     }
   }

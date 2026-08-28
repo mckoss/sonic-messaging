@@ -20,9 +20,12 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].payload).toEqual(payload);
     expect(packets[0].confidence).toBeGreaterThan(0.5);
     const progress = receiver.drainProgress();
-    expect(progress[0]).toEqual({ type: 'sync' });
-    expect(progress[1]).toEqual({ type: 'length' });
-    expect(progress[progress.length - 1]).toEqual({ type: 'crc-confirm' });
+    expect(progress[0].type).toBe('sync');
+    expect(progress[1].type).toBe('length');
+    expect(progress[progress.length - 1].type).toBe('crc-confirm');
+    // Sync ends 16 symbols after the 73-sample offset; the phase lock is sample-accurate.
+    const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
+    expect(Math.abs(progress[0].position - (73 + 16 * samplesPerSymbol))).toBeLessThanOrEqual(2);
   });
 
   it('decodes consecutive packets and ignores leading noise', () => {

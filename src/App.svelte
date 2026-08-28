@@ -28,7 +28,7 @@
   let symbolPower = -120;
   let receivedMessages: string[] = [];
   let receivingMessage = '';
-  let receivedMarkers: Array<{ id: number; label: string; symbols: number }> = [];
+  let receivedMarkers: Array<{ id: number; label: string; symbols: number; position: number }> = [];
   let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
 
@@ -173,7 +173,7 @@
       const addMarker = (label: string, byteCount: number) => {
         receivedMarkers = [...receivedMarkers, {
           id: receivedMarkerId++, label: label === ' ' ? '⎵' : label,
-          symbols: Math.ceil(byteCount * 8 / bitsPerSymbol)
+          symbols: Math.ceil(byteCount * 8 / bitsPerSymbol), position: event.position
         }].slice(-64);
       };
       if (event.token === 'sync') {

@@ -7,7 +7,7 @@
   export let sequence = -1;
   export let messages: string[] = [];
   export let currentMessage = '';
-  export let markers: Array<{ id: number; label: string; symbols: number }> = [];
+  export let markers: Array<{ id: number; label: string; symbols: number; position: number }> = [];
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
@@ -133,17 +133,23 @@
 
   function drawMarkers() {
     if (!timelineCanvas || !markers.length) return;
-    const pending = markers.filter(marker => marker.id > lastMarkerId);
-    if (!pending.length) return;
     const ctx = timelineCanvas.getContext('2d', { alpha: false });
     if (!ctx) return;
     const ratio = Math.max(1, window.devicePixelRatio || 1);
     const { pixelWidth } = prepareTimeline(ctx, ratio);
-    for (const marker of pending) {
+    for (const marker of markers) {
+      if (marker.id <= lastMarkerId) continue;
+      // Anchor to captured-signal time; defer markers the timeline has not scrolled to yet.
+      if (lastTimelineSamplePosition >= 0 && marker.position > lastTimelineSamplePosition) break;
+      lastMarkerId = marker.id;
+      const behind = lastTimelineSamplePosition >= 0
+        ? Math.max(0, lastTimelineSamplePosition - marker.position) : 0;
       const span = Math.max(2 * ratio, waterfallPixelAdvance(
         marker.symbols * sampleRate / Math.max(1, symbolRate), ratio, samplesPerCssPixel
       ));
-      const right = pixelWidth - ratio, left = Math.max(0, right - span);
+      const right = pixelWidth - ratio - waterfallPixelAdvance(behind, ratio, samplesPerCssPixel);
+      if (right < 1) continue;
+      const left = Math.max(0, right - span);
       const top = 5 * ratio, tickBottom = 11 * ratio;
       const crcError = marker.label === '✕', crcConfirm = marker.label === '✓';
       ctx.strokeStyle = crcError ? '#ff5578' : crcConfirm ? '#4ee8b4' : '#ff718d';
@@ -154,14 +160,13 @@
       ctx.font = `${Math.round(10 * ratio)}px ui-monospace, monospace`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(marker.label, (left + right) / 2, 23 * ratio);
-      lastMarkerId = marker.id;
     }
   }
 
   $: scores, sequence, samplePosition, samplesPerCssPixel, width, height, draw();
   $: confidence, sequence, samplePosition, samplesPerCssPixel, width, drawConfidence();
   $: sequence, samplePosition, samplesPerCssPixel, width, scrollTimeline();
-  $: markers, width, drawMarkers();
+  $: markers, sequence, width, drawMarkers();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => { width = Math.max(280, Math.floor(entry.contentRect.width)); });
