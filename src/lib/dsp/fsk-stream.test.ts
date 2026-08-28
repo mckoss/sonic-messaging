@@ -20,6 +20,8 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].payload).toEqual(payload);
     expect(packets[0].confidence).toBeGreaterThan(0.5);
     const progress = receiver.drainProgress();
+    expect(progress[0]).toEqual({ type: 'sync' });
+    expect(progress[1]).toEqual({ type: 'length' });
     expect(progress[progress.length - 1]).toEqual({ type: 'crc-confirm' });
   });
 

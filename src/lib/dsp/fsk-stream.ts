@@ -24,7 +24,7 @@ export interface FskStreamPacket {
 }
 
 export type FskStreamProgress =
-  | { type: 'sync' }
+  | { type: 'sync' | 'length' }
   | { type: 'byte'; byte: number }
   | { type: 'crc-confirm' | 'crc-error' };
 
@@ -38,6 +38,7 @@ export class FskStreamDecoder {
   private readonly phaseStep: number;
   private progress: FskStreamProgress[] = [];
   private reportedPayloadBytes = 0;
+  private reportedLength = false;
 
   constructor(
     private readonly config: FskConfig,
@@ -68,7 +69,7 @@ export class FskStreamDecoder {
 
   reset(): void {
     this.samples = new Float32Array(0); this.searchOffset = 0; this.candidateOffset = undefined;
-    this.progress = []; this.reportedPayloadBytes = 0;
+    this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
   }
 
   drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }
@@ -86,6 +87,7 @@ export class FskStreamDecoder {
       if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS) {
         this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
+        this.reportedLength = false;
         this.progress.push({ type: 'sync' });
         return true;
       }
@@ -126,6 +128,10 @@ export class FskStreamDecoder {
       this.rejectCandidate();
       return null;
     }
+    if (!this.reportedLength) {
+      this.reportedLength = true;
+      this.progress.push({ type: 'length' });
+    }
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
     const availableBytes = Math.floor(
@@ -153,7 +159,7 @@ export class FskStreamDecoder {
     const consumed = start + frameSymbols * this.samplesPerSymbol;
     this.samples = this.samples.slice(consumed);
     this.searchOffset = 0; this.candidateOffset = undefined;
-    this.reportedPayloadBytes = 0;
+    this.reportedPayloadBytes = 0; this.reportedLength = false;
     return { payload: parsed.payload, confidence: decoded.confidence };
   }
 
@@ -161,6 +167,7 @@ export class FskStreamDecoder {
     this.searchOffset = this.candidateOffset! + this.phaseStep;
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
+    this.reportedLength = false;
   }
 
   private decodeBytes(offset: number, count: number): { bytes: Uint8Array; confidence: number } {
