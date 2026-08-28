@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DETECTOR_HOP_SAMPLES, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSampleDelta } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -23,46 +23,43 @@
   let confidenceCanvas: HTMLCanvasElement;
   let timelineCanvas: HTMLCanvasElement;
   let host: HTMLDivElement;
-  let width = 800, height = 150, lastSequence = -1, lastConfidenceSequence = -1;
-  let symbolPixelRemainder = 0, confidencePixelRemainder = 0;
-  let timelinePixelRemainder = 0, lastTimelineSequence = -1, lastMarkerId = -1;
-  let lastSymbolSamplePosition = -1, lastConfidenceSamplePosition = -1, lastTimelineSamplePosition = -1;
+  let width = 800, height = 150;
+  // The lanes scroll on their own animation clock (sample-time at the right edge),
+  // rate-locked to the worker's sample positions; late worker data paints behind the edge.
+  let renderedPosition = -1, latestPosition = -1, scrollRemainder = 0;
+  let lastSequence = -1, lastPaintedPosition = -1, lastMarkerId = -1;
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
 
-  function draw() {
-    if (!canvas || !scores.length || sequence === lastSequence) return;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
-    const ratio = Math.max(1, window.devicePixelRatio || 1);
+  function pixelRatio(): number { return Math.max(1, window.devicePixelRatio || 1); }
+
+  function laneContext(target: HTMLCanvasElement, cssHeight: number) {
+    const ctx = target.getContext('2d', { alpha: false });
+    if (!ctx) return undefined;
+    const ratio = pixelRatio();
     const pixelWidth = Math.max(1, Math.round(width * ratio));
-    const pixelHeight = Math.max(1, Math.round(height * ratio));
-    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-      canvas.width = pixelWidth; canvas.height = pixelHeight;
-      ctx.fillStyle = 'rgb(5, 10, 24)'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
+    const pixelHeight = Math.max(1, Math.round(cssHeight * ratio));
+    if (target.width !== pixelWidth || target.height !== pixelHeight) {
+      target.width = pixelWidth; target.height = pixelHeight;
+      ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
-    if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
-    for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastSymbolSamplePosition, DETECTOR_HOP_SAMPLES);
-    symbolPixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
-    const elapsedPixels = Math.floor(symbolPixelRemainder);
-    const columnWidth = Math.min(pixelWidth, elapsedPixels);
-    lastSequence = sequence;
-    lastSymbolSamplePosition = samplePosition;
-    if (columnWidth < 1) return;
-    symbolPixelRemainder -= elapsedPixels;
-    ctx.drawImage(canvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight, 0, 0, pixelWidth - columnWidth, pixelHeight);
-    const column = ctx.createImageData(columnWidth, pixelHeight);
-    for (let y = 0; y < pixelHeight; y++) {
-      const symbol = Math.min(pendingScores.length - 1,
-        Math.floor((pixelHeight - 1 - y) * pendingScores.length / pixelHeight));
-      const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, pendingScores[symbol]))));
-      for (let x = 0; x < columnWidth; x++) {
-        const offset = (y * columnWidth + x) * 4;
-        column.data[offset] = red; column.data[offset + 1] = green; column.data[offset + 2] = blue; column.data[offset + 3] = 255;
-      }
+    return { ctx, ratio, pixelWidth, pixelHeight };
+  }
+
+  function scrollLane(target: HTMLCanvasElement, cssHeight: number, advance: number) {
+    const lane = laneContext(target, cssHeight);
+    if (!lane || advance < 1) return;
+    const { ctx, pixelWidth, pixelHeight } = lane;
+    const shift = Math.min(pixelWidth, advance);
+    ctx.drawImage(target, shift, 0, pixelWidth - shift, pixelHeight, 0, 0, pixelWidth - shift, pixelHeight);
+    ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - shift, 0, shift, pixelHeight);
+  }
+
+  function resetLanes() {
+    renderedPosition = -1; latestPosition = -1; scrollRemainder = 0; lastPaintedPosition = -1;
+    for (const target of [canvas, confidenceCanvas, timelineCanvas]) {
+      const ctx = target?.getContext('2d', { alpha: false });
+      if (ctx && target) { ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, target.width, target.height); }
     }
-    ctx.putImageData(column, pixelWidth - columnWidth, 0);
-    pendingScores.fill(0);
   }
 
   function confidenceColor(value: number): string {
@@ -72,83 +69,71 @@
     return '#4ee8b4';
   }
 
-  function drawConfidence() {
-    if (!confidenceCanvas || sequence === lastConfidenceSequence) return;
-    const ctx = confidenceCanvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
-    const ratio = Math.max(1, window.devicePixelRatio || 1);
-    const pixelWidth = Math.max(1, Math.round(width * ratio));
-    const pixelHeight = Math.max(1, Math.round(22 * ratio));
-    if (confidenceCanvas.width !== pixelWidth || confidenceCanvas.height !== pixelHeight) {
-      confidenceCanvas.width = pixelWidth; confidenceCanvas.height = pixelHeight;
-      ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
-    }
+  function ingest() {
+    if (!canvas || !scores.length || sequence === lastSequence || samplePosition < 0) return;
+    lastSequence = sequence;
+    if (samplePosition < latestPosition) resetLanes();
+    latestPosition = samplePosition;
+    if (renderedPosition < 0) renderedPosition = samplePosition;
+    if (lastPaintedPosition < 0) { lastPaintedPosition = samplePosition; return; }
+
+    if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
+    for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
     pendingConfidence = Math.max(pendingConfidence, confidence);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastConfidenceSamplePosition, DETECTOR_HOP_SAMPLES);
-    confidencePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
-    const elapsedPixels = Math.floor(confidencePixelRemainder);
-    const columnWidth = Math.min(pixelWidth, elapsedPixels);
-    lastConfidenceSequence = sequence;
-    lastConfidenceSamplePosition = samplePosition;
+
+    const symbolLane = laneContext(canvas, 150);
+    const confidenceLane = laneContext(confidenceCanvas, 22);
+    if (!symbolLane || !confidenceLane) return;
+    const { ratio, pixelWidth, pixelHeight } = symbolLane;
+    const columnWidth = Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ratio, samplesPerCssPixel));
     if (columnWidth < 1) return;
-    confidencePixelRemainder -= elapsedPixels;
-    ctx.drawImage(confidenceCanvas, columnWidth, 0, pixelWidth - columnWidth, pixelHeight,
-      0, 0, pixelWidth - columnWidth, pixelHeight);
-    ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - columnWidth, 0, columnWidth, pixelHeight);
-    const value = Math.max(0, Math.min(1, pendingConfidence));
-    const barHeight = Math.max(1, Math.round(value * pixelHeight));
-    ctx.fillStyle = confidenceColor(value);
-    ctx.fillRect(pixelWidth - columnWidth, pixelHeight - barHeight, columnWidth, barHeight);
+    lastPaintedPosition += columnWidth * samplesPerCssPixel / ratio;
+    const behind = Math.max(0, Math.round(waterfallPixelAdvance(renderedPosition - samplePosition, ratio, samplesPerCssPixel)));
+    const columnEnd = pixelWidth - behind;
+    const columnStart = columnEnd - Math.min(columnWidth, pixelWidth);
+    if (columnEnd >= 1) {
+      const clippedStart = Math.max(0, columnStart), clippedWidth = columnEnd - clippedStart;
+      const column = symbolLane.ctx.createImageData(clippedWidth, pixelHeight);
+      for (let y = 0; y < pixelHeight; y++) {
+        const symbol = Math.min(pendingScores.length - 1,
+          Math.floor((pixelHeight - 1 - y) * pendingScores.length / pixelHeight));
+        const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, pendingScores[symbol]))));
+        for (let x = 0; x < clippedWidth; x++) {
+          const offset = (y * clippedWidth + x) * 4;
+          column.data[offset] = red; column.data[offset + 1] = green; column.data[offset + 2] = blue; column.data[offset + 3] = 255;
+        }
+      }
+      symbolLane.ctx.putImageData(column, clippedStart, 0);
+
+      const value = Math.max(0, Math.min(1, pendingConfidence));
+      const barHeight = Math.max(1, Math.round(value * confidenceLane.pixelHeight));
+      confidenceLane.ctx.fillStyle = '#050a18';
+      confidenceLane.ctx.fillRect(clippedStart, 0, clippedWidth, confidenceLane.pixelHeight);
+      confidenceLane.ctx.fillStyle = confidenceColor(value);
+      confidenceLane.ctx.fillRect(clippedStart, confidenceLane.pixelHeight - barHeight, clippedWidth, barHeight);
+    }
+    pendingScores.fill(0);
     pendingConfidence = 0;
   }
 
-  function prepareTimeline(ctx: CanvasRenderingContext2D, ratio: number) {
-    const pixelWidth = Math.max(1, Math.round(width * ratio));
-    const pixelHeight = Math.max(1, Math.round(34 * ratio));
-    if (timelineCanvas.width !== pixelWidth || timelineCanvas.height !== pixelHeight) {
-      timelineCanvas.width = pixelWidth; timelineCanvas.height = pixelHeight;
-      ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
-    }
-    return { pixelWidth, pixelHeight };
-  }
-
-  function scrollTimeline() {
-    if (!timelineCanvas || sequence === lastTimelineSequence) return;
-    const ctx = timelineCanvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
-    const ratio = Math.max(1, window.devicePixelRatio || 1);
-    const { pixelWidth, pixelHeight } = prepareTimeline(ctx, ratio);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastTimelineSamplePosition, DETECTOR_HOP_SAMPLES);
-    timelinePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
-    const elapsedPixels = Math.floor(timelinePixelRemainder);
-    const advance = Math.min(pixelWidth, elapsedPixels);
-    lastTimelineSequence = sequence;
-    lastTimelineSamplePosition = samplePosition;
-    if (advance < 1) return;
-    timelinePixelRemainder -= elapsedPixels;
-    ctx.drawImage(timelineCanvas, advance, 0, pixelWidth - advance, pixelHeight,
-      0, 0, pixelWidth - advance, pixelHeight);
-    ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - advance, 0, advance, pixelHeight);
-  }
-
   function drawMarkers() {
-    if (!timelineCanvas || !markers.length) return;
-    const ctx = timelineCanvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
-    const ratio = Math.max(1, window.devicePixelRatio || 1);
-    const { pixelWidth } = prepareTimeline(ctx, ratio);
+    if (!timelineCanvas || !markers.length || renderedPosition < 0) return;
+    const lane = laneContext(timelineCanvas, 34);
+    if (!lane) return;
+    const { ctx, ratio, pixelWidth } = lane;
     for (const marker of markers) {
       if (marker.id <= lastMarkerId) continue;
-      // Anchor to captured-signal time; defer markers the timeline has not scrolled to yet.
-      if (lastTimelineSamplePosition >= 0 && marker.position > lastTimelineSamplePosition) break;
+      // Stale markers from a previous listening session can never scroll into view.
+      if (marker.position > latestPosition + 10 * DETECTOR_HOP_SAMPLES) { lastMarkerId = marker.id; continue; }
+      // Anchor to captured-signal time; defer markers the clock has not reached yet.
+      if (marker.position > renderedPosition) break;
       lastMarkerId = marker.id;
-      const behind = lastTimelineSamplePosition >= 0
-        ? Math.max(0, lastTimelineSamplePosition - marker.position) : 0;
+      const behind = waterfallPixelAdvance(renderedPosition - marker.position, ratio, samplesPerCssPixel);
+      const right = pixelWidth - ratio - behind;
+      if (right < 1) continue;
       const span = Math.max(2 * ratio, waterfallPixelAdvance(
         marker.symbols * sampleRate / Math.max(1, symbolRate), ratio, samplesPerCssPixel
       ));
-      const right = pixelWidth - ratio - waterfallPixelAdvance(behind, ratio, samplesPerCssPixel);
-      if (right < 1) continue;
       const left = Math.max(0, right - span);
       const top = 5 * ratio, tickBottom = 11 * ratio;
       const crcError = marker.label === '✕', crcConfirm = marker.label === '✓';
@@ -163,15 +148,37 @@
     }
   }
 
-  $: scores, sequence, samplePosition, samplesPerCssPixel, width, height, draw();
-  $: confidence, sequence, samplePosition, samplesPerCssPixel, width, drawConfidence();
-  $: sequence, samplePosition, samplesPerCssPixel, width, scrollTimeline();
-  $: markers, sequence, width, drawMarkers();
+  $: scores, confidence, sequence, samplePosition, samplesPerCssPixel, width, ingest();
+  $: markers, drawMarkers();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => { width = Math.max(280, Math.floor(entry.contentRect.width)); });
     resize.observe(host);
-    return () => resize.disconnect();
+    let frame = 0, lastTime = -1;
+    const tick = (now: number) => {
+      frame = requestAnimationFrame(tick);
+      if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
+      const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
+      lastTime = now;
+      // Free-run at the audio rate with proportional catch-up toward the worker's
+      // clock, capped just ahead of the latest data so a stalled worker pauses us.
+      const lag = latestPosition - renderedPosition;
+      const advanceSamples = Math.max(0, dt * (sampleRate + 2 * lag));
+      const next = Math.min(renderedPosition + advanceSamples, latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+      const ratio = pixelRatio();
+      scrollRemainder += waterfallPixelAdvance(next - renderedPosition, ratio, samplesPerCssPixel);
+      renderedPosition = next;
+      const advance = Math.floor(scrollRemainder);
+      if (advance >= 1) {
+        scrollRemainder -= advance;
+        scrollLane(canvas, 150, advance);
+        scrollLane(confidenceCanvas, 22, advance);
+        scrollLane(timelineCanvas, 34, advance);
+      }
+      drawMarkers();
+    };
+    frame = requestAnimationFrame(tick);
+    return () => { resize.disconnect(); cancelAnimationFrame(frame); };
   });
 </script>
 

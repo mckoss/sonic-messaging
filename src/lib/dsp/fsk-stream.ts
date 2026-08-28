@@ -42,6 +42,9 @@ export class FskStreamDecoder {
   private reportedLength = false;
   /** Absolute stream sample index of samples[0]. */
   private streamPosition = 0;
+  /** Decoded symbols/confidences for the current candidate, relative to its start. */
+  private candidateSymbols: number[] = [];
+  private candidateConfidences: number[] = [];
 
   constructor(
     private readonly config: FskConfig,
@@ -74,6 +77,7 @@ export class FskStreamDecoder {
     this.samples = new Float32Array(0); this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.streamPosition = 0;
+    this.candidateSymbols = []; this.candidateConfidences = [];
   }
 
   /** Absolute stream sample index where the frame's first `bytes` bytes end (exact bit time). */
@@ -102,6 +106,7 @@ export class FskStreamDecoder {
         this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
+        this.candidateSymbols = []; this.candidateConfidences = [];
         this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
         return true;
       }
@@ -136,7 +141,7 @@ export class FskStreamDecoder {
     const start = this.candidateOffset!;
     const headerSymbols = Math.ceil((HEADER_BYTES * 8) / this.bitsPerSymbol);
     if (start + headerSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
-    const header = this.decodeBytes(start, HEADER_BYTES).bytes;
+    const header = this.decodeCandidateBytes(HEADER_BYTES).bytes;
     const payloadLength = (header[4] << 8) | header[5];
     if (payloadLength > MAX_LIVE_PAYLOAD_BYTES) {
       this.rejectCandidate();
@@ -153,7 +158,7 @@ export class FskStreamDecoder {
     );
     const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - HEADER_BYTES));
     if (reportThrough > this.reportedPayloadBytes) {
-      const partial = this.decodeBytes(start, HEADER_BYTES + reportThrough).bytes;
+      const partial = this.decodeCandidateBytes(HEADER_BYTES + reportThrough).bytes;
       for (let index = this.reportedPayloadBytes; index < reportThrough; index++) {
         this.progress.push({ type: 'byte', byte: partial[HEADER_BYTES + index],
           position: this.frameBytePosition(start, HEADER_BYTES + index + 1) });
@@ -162,7 +167,7 @@ export class FskStreamDecoder {
     }
     if (start + frameSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
 
-    const decoded = this.decodeBytes(start, frameBytes);
+    const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
     const parsed = unframe(decoded.bytes);
     const framePosition = this.frameBytePosition(start, frameBytes);
@@ -177,6 +182,7 @@ export class FskStreamDecoder {
     this.streamPosition += consumed;
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
+    this.candidateSymbols = []; this.candidateConfidences = [];
     return { payload: parsed.payload, confidence: decoded.confidence };
   }
 
@@ -185,6 +191,36 @@ export class FskStreamDecoder {
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false;
+    this.candidateSymbols = []; this.candidateConfidences = [];
+  }
+
+  /** Decodes the candidate's first `count` bytes, reusing symbols decoded on earlier calls. */
+  private decodeCandidateBytes(count: number): { bytes: Uint8Array; confidence: number } {
+    const start = this.candidateOffset!;
+    const symbolCount = Math.ceil((count * 8) / this.bitsPerSymbol);
+    while (this.candidateSymbols.length < symbolCount) {
+      const offset = start + this.candidateSymbols.length * this.samplesPerSymbol;
+      const decision = detectFskSymbol(
+        this.samples.subarray(offset, offset + this.samplesPerSymbol),
+        this.config.sampleRate,
+        this.config.frequencies
+      );
+      let symbol = 0;
+      for (let index = 1; index < decision.scores.length; index++) {
+        if (decision.scores[index] > decision.scores[symbol]) symbol = index;
+      }
+      this.candidateSymbols.push(symbol);
+      this.candidateConfidences.push(decision.confidence);
+    }
+    const bits: number[] = [];
+    let confidence = 0;
+    for (let index = 0; index < symbolCount; index++) {
+      confidence += this.candidateConfidences[index];
+      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
+        bits.push((this.candidateSymbols[index] >>> bit) & 1);
+      }
+    }
+    return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };
   }
 
   private decodeBytes(offset: number, count: number): { bytes: Uint8Array; confidence: number } {
