@@ -38,8 +38,7 @@
   let listening = false;
   let payload = 'SONIC TEST 001';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25,
-      squelchDbfs: -45, confidencePercent: 80 },
+    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25, squelchDbfs: -45 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };
@@ -139,7 +138,7 @@
     const s = settings.FSK;
     audio.configureFskDetector(
       fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
-      Number(s.symbolRate), Number(s.squelchDbfs), Number(s.confidencePercent) / 100
+      Number(s.symbolRate), Number(s.squelchDbfs)
     );
   }
   function selectMode(next: Mode) { mode = next; configureDetector(); persistPreferences(); }

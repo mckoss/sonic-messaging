@@ -7,7 +7,7 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
-import { gateFskDetection } from '../lib/dsp/fsk-detector';
+import { squelchFskDetection } from '../lib/dsp/fsk-detector';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -15,7 +15,7 @@ let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
 let spectrumSequence = 0;
 let spectrumSamplePosition = 0;
-let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number } | undefined;
+let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number } | undefined;
 let detectorWindow = new Float32Array(0);
 let detectorFilled = 0;
 let detectorSinceEmit = 0;
@@ -40,11 +40,10 @@ function configure(next: SpectrumOptions): void {
 }
 
 function configureDetector(mode: 'off' | 'FSK', fsk?: {
-  frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number
+  frequencies: number[]; symbolRate: number; squelchDbfs: number
 }): void {
   detector = mode === 'FSK' && fsk && fsk.frequencies.length >= 2 && fsk.symbolRate > 0
-    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate,
-        squelchDbfs: fsk.squelchDbfs, confidenceThreshold: fsk.confidenceThreshold }
+    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate, squelchDbfs: fsk.squelchDbfs }
     : undefined;
   detectorWindow = new Float32Array(0);
   detectorFilled = 0;
@@ -88,9 +87,9 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
     if (detectorSinceEmit < DETECTOR_HOP_SAMPLES) continue;
     detectorSinceEmit = 0;
     if (detectorFilled < detectorWindow.length) continue;
-    const result = gateFskDetection(
+    const result = squelchFskDetection(
       detectFskSymbol(detectorWindow, sampleRate, detector.frequencies),
-      detector.squelchDbfs, detector.confidenceThreshold
+      detector.squelchDbfs
     );
     send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++,
       samplePosition: detectorSamplePosition },

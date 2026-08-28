@@ -86,10 +86,10 @@ export class AudioEngine {
   }
 
   configureFskDetector(
-    frequencies: number[], symbolRate: number, squelchDbfs: number, confidenceThreshold: number
+    frequencies: number[], symbolRate: number, squelchDbfs: number
   ): void {
     this.worker?.postMessage({ type: 'configure-detector', mode: 'FSK',
-      fsk: { frequencies, symbolRate, squelchDbfs, confidenceThreshold } } satisfies DspWorkerRequest);
+      fsk: { frequencies, symbolRate, squelchDbfs } } satisfies DspWorkerRequest);
     this.lastAnalysisAt = undefined;
   }
 

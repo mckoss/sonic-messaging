@@ -54,7 +54,6 @@
     <label><span>Tones</span><select bind:value={settings.tones}><option value={2}>2-FSK</option><option value={4}>4-FSK</option><option value={8}>8-FSK</option><option value={16}>16-FSK</option></select></label>
     <label><span>Symbol rate</span><input type="number" min="5" max="2000" bind:value={settings.symbolRate} /><small>baud</small></label>
     <label><span>Squelch threshold</span><input type="number" min="-100" max="-1" step="1" bind:value={settings.squelchDbfs} /><small>dBFS</small></label>
-    <label><span>Confidence threshold</span><input type="number" min="0" max="100" step="1" bind:value={settings.confidencePercent} /><small>%</small></label>
     <div class="frequency-plan" aria-live="polite">
       <strong>Generated tones</strong>
       <span>{fskTones.map(hz).join(' · ')}</span>

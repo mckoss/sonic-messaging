@@ -58,13 +58,11 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.getByLabel('Tone spacing')).toHaveValue('100');
   await expect(page.getByLabel('Tones')).toHaveValue('4');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('25');
-  await expect(page.getByLabel('Confidence threshold')).toHaveValue('80');
   await expect(page.getByLabel('Waterfall scroll speed')).toHaveValue('Medium');
   await page.getByLabel('Lowest frequency').fill('4100');
   await page.getByLabel('Tone spacing').fill('900');
   await page.getByLabel('Tones').selectOption('8');
   await page.getByLabel('Symbol rate').fill('125');
-  await page.getByLabel('Confidence threshold').fill('22');
   await page.getByLabel('Waterfall scroll speed').selectOption('Fast');
   await page.getByLabel(/Test payload/).fill('PERSIST ME');
   await page.getByLabel('Symbol rate').press('Tab');
@@ -74,7 +72,6 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.getByLabel('Tone spacing')).toHaveValue('900');
   await expect(page.getByLabel('Tones')).toHaveValue('8');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
-  await expect(page.getByLabel('Confidence threshold')).toHaveValue('22');
   await expect(page.getByLabel('Waterfall scroll speed')).toHaveValue('Fast');
   await expect(page.getByTestId('spectrum-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '256');
   await expect(page.getByTestId('symbol-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '256');
