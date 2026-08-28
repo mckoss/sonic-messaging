@@ -10,7 +10,7 @@ it('rescans a rejected low-baud 8-FSK frame in well under a second', () => {
   samples.set(first); samples.set(second, first.length);
   const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
   samples.fill(0, 40 * samplesPerSymbol, 43 * samplesPerSymbol);
-  const receiver = new FskStreamDecoder(config, -60);
+  const receiver = new FskStreamDecoder(config);
   const started = performance.now();
   const packets: string[] = [];
   for (let offset = 0; offset < samples.length; offset += 2048) {

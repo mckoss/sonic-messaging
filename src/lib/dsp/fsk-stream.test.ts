@@ -66,7 +66,7 @@ describe('continuous FSK receiver', () => {
       return (seed / 2147483647 - 0.5) * 0.15;
     };
     const samples = Float32Array.from(waveform, value => value + noise());
-    const packets = new FskStreamDecoder(config, -45).push(samples);
+    const packets = new FskStreamDecoder(config).push(samples);
     expect(packets).toHaveLength(1);
     expect(packets[0].payload).toEqual(payload);
     // The app's default display gate is 0.8; packet decoding must not use it.
@@ -76,7 +76,7 @@ describe('continuous FSK receiver', () => {
   it('reports progress positions on the caller-supplied stream clock', () => {
     const payload = new TextEncoder().encode('hi');
     const waveform = encodeFsk(payload, config).samples;
-    const receiver = new FskStreamDecoder(config, -Infinity, 5_000);
+    const receiver = new FskStreamDecoder(config, 5_000);
     receiver.push(waveform);
     const progress = receiver.drainProgress();
     expect(progress[0].type).toBe('sync');
@@ -115,7 +115,7 @@ describe('continuous FSK receiver', () => {
     const samples = new Float32Array(lead + waveform.length);
     samples.set(waveform, lead);
     const base = 10_000;
-    const receiver = new FskStreamDecoder(config, -Infinity, base);
+    const receiver = new FskStreamDecoder(config, base);
     expect(receiver.lockedSymbolAnchor()).toBeUndefined();
     // Push through sync plus lookahead but stop before the frame completes.
     const partial = lead + 24 * Math.round(config.sampleRate / config.symbolRate);
@@ -164,7 +164,7 @@ describe('continuous FSK receiver', () => {
     };
     const payload = new TextEncoder().encode('HI!');
     const waveform = encodeFsk(payload, slow).samples;
-    const packets = new FskStreamDecoder(slow, -Infinity).push(waveform);
+    const packets = new FskStreamDecoder(slow).push(waveform);
     expect(packets).toHaveLength(1);
     expect(packets[0].payload).toEqual(payload);
   });
@@ -189,7 +189,7 @@ describe('continuous FSK receiver', () => {
     const gap = new Float32Array(20 * Math.round(config.sampleRate / config.symbolRate));
     const samples = new Float32Array(bogus.length + gap.length + clean.length);
     samples.set(bogus); samples.set(clean, bogus.length + gap.length);
-    const receiver = new FskStreamDecoder(config, -45);
+    const receiver = new FskStreamDecoder(config);
     const packets = receiver.push(samples);
     expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['after']);
     const progress = receiver.drainProgress();

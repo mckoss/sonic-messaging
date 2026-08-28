@@ -39,7 +39,7 @@
   let listening = false;
   let payload = 'SONIC TEST 001';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25, squelchDbfs: -45 },
+    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };
@@ -151,7 +151,7 @@
     const s = settings.FSK;
     audio.configureFskDetector(
       fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
-      Number(s.symbolRate), Number(s.squelchDbfs)
+      Number(s.symbolRate)
     );
   }
   function selectMode(next: Mode) { mode = next; configureDetector(); persistPreferences(); }
@@ -304,7 +304,7 @@
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
-      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · squelched' : mode : 'Standby'}</strong></div></div>
+      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · noise' : mode : 'Standby'}</strong></div></div>
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
       <div class="replay-row"><button class="replay" disabled={busy} on:click={() => void replayVisible('raw')}>▶ Replay visible audio</button><button class="replay" disabled={busy} on:click={() => void replayVisible('fft')}>▶ Replay FFT view</button></div>
     </section>

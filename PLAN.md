@@ -22,7 +22,7 @@
 
 - [x] Add configured FSK raw-symbol detection and a symbol-likelihood waterfall.
 - [x] Calibrate raw FSK likelihood against full-window energy so noise and partial-symbol matches are rejected.
-- [x] Add a configurable dBFS squelch for live FSK symbol detection and packet acquisition.
+- [x] ~~Add a configurable dBFS squelch for live FSK symbol detection and packet acquisition.~~ *(Removed to maximize range: the matched-filter sync needs no power gate, and mid-frame carrier-loss detection is now relative to the frame's own sync power.)*
 - [x] ~~Add a configurable winning-tone confidence threshold for live FSK detection.~~ *(Removed: it gated only the display, never packet decoding, and read as a detection control; the detector's fixed calibrated floors remain.)*
 - [x] Scroll quartile-colored confidence history in lockstep with live FSK symbols.
 - [x] Keep live symbol visualization ahead of packet acquisition and optimize tone scoring latency.

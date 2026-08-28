@@ -5,12 +5,6 @@ export interface FskSymbolDetection {
   powerDbfs: number;
 }
 
-/** Suppresses detector output below the configured full-window RMS threshold. */
-export function squelchFskDetection(result: FskSymbolDetection, thresholdDbfs: number): FskSymbolDetection {
-  if (result.powerDbfs >= thresholdDbfs) return result;
-  return { ...result, scores: new Float32Array(result.scores.length), symbol: -1, confidence: 0 };
-}
-
 const MIN_SYMBOL_SCORE = 0.25;
 const MIN_SYMBOL_MARGIN = 0.15;
 

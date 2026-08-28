@@ -7,7 +7,7 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
-import { squelchFskDetection, type FskSymbolDetection } from '../lib/dsp/fsk-detector';
+import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -15,7 +15,7 @@ let pending = new Float32Array(options.fftSize);
 let pendingLength = 0;
 let spectrumSequence = 0;
 let spectrumSamplePosition = 0;
-let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number } | undefined;
+let detector: { frequencies: number[]; symbolRate: number } | undefined;
 let detectorWindow = new Float32Array(0);
 let detectorFilled = 0;
 let detectorSinceEmit = 0;
@@ -43,10 +43,10 @@ function configure(next: SpectrumOptions): void {
 }
 
 function configureDetector(mode: 'off' | 'FSK', fsk?: {
-  frequencies: number[]; symbolRate: number; squelchDbfs: number
+  frequencies: number[]; symbolRate: number
 }): void {
   detector = mode === 'FSK' && fsk && fsk.frequencies.length >= 2 && fsk.symbolRate > 0
-    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate, squelchDbfs: fsk.squelchDbfs }
+    ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate }
     : undefined;
   detectorWindow = new Float32Array(0);
   detectorFilled = 0;
@@ -120,7 +120,7 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
     detection ??= detectFskSymbol(
       detectorWindow.subarray(detectorFilled - samplesPerSymbol, detectorFilled),
       sampleRate, detector.frequencies);
-    const result = squelchFskDetection(detection, detector.squelchDbfs);
+    const result = detection;
     // Copy the scores: aligned results are re-emitted until the next boundary,
     // so the cached array must survive the transfer.
     const scores = result.scores.slice();
@@ -196,7 +196,7 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
   if (detector && detectorSampleRate !== sampleRate) {
     fskStreamDecoder = new FskStreamDecoder(
       { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies },
-      detector.squelchDbfs, chunkBase
+      chunkBase
     );
     detectorSampleRate = sampleRate;
   }

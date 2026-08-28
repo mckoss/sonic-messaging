@@ -19,8 +19,15 @@ const MAX_LIVE_FRAME_SECONDS = 60;
  * a true sync accumulates positive margin on every template symbol.
  */
 const SYNC_DETECT_MARGIN = 0.1;
-/** Consecutive sub-squelch symbol windows that abandon a mid-frame candidate. */
+/** Consecutive collapsed-power symbol windows that abandon a mid-frame candidate. */
 const CARRIER_LOSS_ABORT_SYMBOLS = 4;
+/**
+ * Power drop below the frame's own sync level that counts as a lost carrier.
+ * Referenced to the received signal rather than an absolute squelch, so weak
+ * signals stay decodable; at low SNR ambient noise keeps windows within the
+ * drop and the CRC (bounded by the frame cap) remains the arbiter.
+ */
+const CARRIER_LOSS_DROP_DB = 12;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
 function syncSymbolTemplate(bitsPerSymbol: number): number[] {
@@ -68,6 +75,7 @@ export class FskStreamDecoder {
   /** Carrier-loss scan state for the current candidate. */
   private candidateScannedSymbols = 0;
   private candidateSilentRun = 0;
+  private candidateSyncPowerDbfs = -Infinity;
   /** Per-tone score vectors by absolute offset, shared across overlapping sync-search trials. */
   private readonly syncScanCache = new Map<number, Float32Array>();
   /** Expected tone index per sync symbol for the matched-filter search. */
@@ -75,7 +83,6 @@ export class FskStreamDecoder {
 
   constructor(
     private readonly config: FskConfig,
-    private readonly squelchDbfs = -Infinity,
     basePosition = 0
   ) {
     this.streamPosition = basePosition;
@@ -196,17 +203,20 @@ export class FskStreamDecoder {
     // One symbol plus one phase step of lookahead lets phase refinement trial
     // offsets past the coarse match without running off the buffer.
     while (this.searchOffset + required + this.samplesPerSymbol + this.phaseStep <= this.sampleCount) {
-      const firstWindow = this.samples.subarray(this.searchOffset, this.searchOffset + this.samplesPerSymbol);
-      if (windowPowerDbfs(firstWindow) < this.squelchDbfs) {
-        this.searchOffset += this.phaseStep;
-        continue;
-      }
       if (this.syncScoreAt(this.searchOffset) >= SYNC_DETECT_MARGIN) {
         this.candidateOffset = this.refineSyncPhase(this.searchOffset);
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
         this.candidateSymbols = []; this.candidateConfidences = [];
-    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
+        this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
+        // Reference power for carrier-loss detection: what this frame's sync measured.
+        let syncPower = 0;
+        for (let index = 0; index < this.syncTemplate.length; index++) {
+          const windowStart = this.candidateOffset + index * this.samplesPerSymbol;
+          syncPower += windowPowerDbfs(
+            this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
+        }
+        this.candidateSyncPowerDbfs = syncPower / this.syncTemplate.length;
         this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
         return true;
       }
@@ -278,22 +288,21 @@ export class FskStreamDecoder {
     // One phase step of slack truncates at most 1/8 of the final symbol's window.
     if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) {
       // A corrupted length field can promise a frame lasting up to a minute. If the
-      // carrier disappears mid-frame — several consecutive symbol windows below the
-      // squelch — abandon the candidate instead of decoding background noise.
+      // carrier collapses mid-frame — several consecutive symbol windows far below
+      // this frame's own sync power — abandon it instead of decoding background noise.
       const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
-      if (Number.isFinite(this.squelchDbfs)) {
-        while (this.candidateScannedSymbols < availableSymbols) {
-          const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
-          const power = windowPowerDbfs(
-            this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
-          this.candidateSilentRun = power < this.squelchDbfs ? this.candidateSilentRun + 1 : 0;
-          this.candidateScannedSymbols++;
-          if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
-            this.progress.push({ type: 'crc-error',
-              position: this.streamPosition + windowStart + this.samplesPerSymbol });
-            this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
-            return null;
-          }
+      const lossFloor = this.candidateSyncPowerDbfs - CARRIER_LOSS_DROP_DB;
+      while (this.candidateScannedSymbols < availableSymbols) {
+        const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
+        const power = windowPowerDbfs(
+          this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
+        this.candidateSilentRun = power < lossFloor ? this.candidateSilentRun + 1 : 0;
+        this.candidateScannedSymbols++;
+        if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
+          this.progress.push({ type: 'crc-error',
+            position: this.streamPosition + windowStart + this.samplesPerSymbol });
+          this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
+          return null;
         }
       }
       return undefined;
