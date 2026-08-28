@@ -41,6 +41,7 @@
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and collect complete packets.
 - [x] Decode live FSK packets, verify CRC, and display valid UTF-8 payloads and confidence.
+- [ ] Add forward error correction (e.g. convolutional or Reed-Solomon coding with interleaving against burst errors), so payloads survive symbol errors that currently fail the whole frame's CRC.
 - [ ] Add automatic multi-mode detection.
 - [ ] Add overlapping-user detection and successive decoding experiments.
 
