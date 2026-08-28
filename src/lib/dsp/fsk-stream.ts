@@ -8,8 +8,11 @@ const HEADER_BYTES = 6;
 const TRAILER_BYTES = 2;
 const MAX_SYNC_BIT_ERRORS = 2;
 const MAX_LIVE_PAYLOAD_BYTES = 4096;
-/** A corrupted length field must not leave the decoder waiting on a frame for minutes. */
-const MAX_LIVE_FRAME_SECONDS = 10;
+/**
+ * A corrupted length field must not leave the decoder waiting on a frame for minutes.
+ * Matches the one-minute capture history so legitimate very-low-baud frames still fit.
+ */
+const MAX_LIVE_FRAME_SECONDS = 60;
 
 function syncBitErrors(bytes: Uint8Array): number {
   let errors = 0;
@@ -213,7 +216,9 @@ export class FskStreamDecoder {
       (MAX_LIVE_FRAME_SECONDS * this.config.symbolRate * this.bitsPerSymbol) / 8
     ) - HEADER_BYTES - TRAILER_BYTES);
     if (payloadLength > Math.max(0, maxPayload)) {
-      this.rejectCandidate();
+      // Skip the whole validated sync: a phase-step skip re-matches the same sync
+      // and re-runs phase refinement repeatedly, stalling the worker for seconds.
+      this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
       return null;
     }
     if (!this.reportedLength) {

@@ -4,6 +4,23 @@ import { FskStreamDecoder } from './fsk-stream';
 
 const config = { sampleRate: 48_000, symbolRate: 400, frequencies: [2400, 3200, 4000, 4800] };
 
+/** Modulates raw frame bytes as phase-continuous FSK, bypassing encodeFsk's framing. */
+function frameSymbolWaveform(cfg: typeof config, bytes: number[]): Float32Array {
+  const bitsPerSymbol = Math.log2(cfg.frequencies.length);
+  const n = Math.round(cfg.sampleRate / cfg.symbolRate);
+  const bits = bytes.flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+  while (bits.length % bitsPerSymbol) bits.push(0);
+  const samples = new Float32Array((bits.length / bitsPerSymbol) * n);
+  let phase = 0;
+  for (let s = 0; s < bits.length / bitsPerSymbol; s++) {
+    let value = 0;
+    for (let b = 0; b < bitsPerSymbol; b++) value = (value << 1) | bits[s * bitsPerSymbol + b];
+    const step = 2 * Math.PI * cfg.frequencies[value] / cfg.sampleRate;
+    for (let i = 0; i < n; i++) { samples[s * n + i] = 0.8 * Math.sin(phase); phase += step; }
+  }
+  return samples;
+}
+
 describe('continuous FSK receiver', () => {
   it('acquires an offset packet across arbitrary microphone chunks', () => {
     const payload = new TextEncoder().encode('Hello 🌍');
@@ -107,6 +124,31 @@ describe('continuous FSK receiver', () => {
     const packets = receiver.push(samples.subarray(partial));
     expect(packets).toHaveLength(1);
     expect(receiver.lockedSymbolAnchor()).toBeUndefined();
+  });
+
+  it('decodes a very-low-baud frame whose duration exceeds the old 10-second cap', () => {
+    const slow = {
+      sampleRate: 48_000, symbolRate: 2,
+      frequencies: Array.from({ length: 16 }, (_, i) => 500 + 20 * i)
+    };
+    const payload = new TextEncoder().encode('HI!');
+    const waveform = encodeFsk(payload, slow).samples;
+    const packets = new FskStreamDecoder(slow, -Infinity).push(waveform);
+    expect(packets).toHaveLength(1);
+    expect(packets[0].payload).toEqual(payload);
+  });
+
+  it('skips past a whole sync after an oversized length instead of re-refining it', () => {
+    const oversized = frameSymbolWaveform(config, [0xd3, 0x91, 0xd3, 0x91, 0xff, 0xff, 0, 0, 0, 0]);
+    const clean = encodeFsk(new TextEncoder().encode('ok'), config).samples;
+    const samples = new Float32Array(oversized.length + clean.length);
+    samples.set(oversized); samples.set(clean, oversized.length);
+    const receiver = new FskStreamDecoder(config);
+    const packets = receiver.push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['ok']);
+    // One rejected sync and one accepted one; a phase-step skip would re-report the first repeatedly.
+    const syncs = receiver.drainProgress().filter(progress => progress.type === 'sync');
+    expect(syncs).toHaveLength(2);
   });
 
   it('decodes a 16-tone stream with byte-aligned symbols', () => {
