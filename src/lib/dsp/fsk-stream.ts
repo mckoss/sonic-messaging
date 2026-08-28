@@ -19,6 +19,8 @@ const MAX_LIVE_FRAME_SECONDS = 60;
  * a true sync accumulates positive margin on every template symbol.
  */
 const SYNC_DETECT_MARGIN = 0.1;
+/** Consecutive sub-squelch symbol windows that abandon a mid-frame candidate. */
+const CARRIER_LOSS_ABORT_SYMBOLS = 4;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
 function syncSymbolTemplate(bitsPerSymbol: number): number[] {
@@ -40,7 +42,8 @@ export interface FskStreamPacket {
 
 /** position is the absolute stream sample index where the reported item ends. */
 export type FskStreamProgress =
-  | { type: 'sync' | 'length'; position: number }
+  | { type: 'sync'; position: number }
+  | { type: 'length'; length: number; position: number }
   | { type: 'byte'; byte: number; position: number }
   | { type: 'crc-confirm' | 'crc-error'; position: number };
 
@@ -62,6 +65,9 @@ export class FskStreamDecoder {
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
+  /** Carrier-loss scan state for the current candidate. */
+  private candidateScannedSymbols = 0;
+  private candidateSilentRun = 0;
   /** Per-tone score vectors by absolute offset, shared across overlapping sync-search trials. */
   private readonly syncScanCache = new Map<number, Float32Array>();
   /** Expected tone index per sync symbol for the matched-filter search. */
@@ -108,6 +114,7 @@ export class FskStreamDecoder {
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.streamPosition = 0;
     this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     this.syncScanCache.clear();
   }
 
@@ -199,6 +206,7 @@ export class FskStreamDecoder {
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
         this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
         return true;
       }
@@ -248,7 +256,8 @@ export class FskStreamDecoder {
     }
     if (!this.reportedLength) {
       this.reportedLength = true;
-      this.progress.push({ type: 'length', position: this.frameBytePosition(start, HEADER_BYTES) });
+      this.progress.push({ type: 'length', length: payloadLength,
+        position: this.frameBytePosition(start, HEADER_BYTES) });
     }
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
@@ -268,6 +277,25 @@ export class FskStreamDecoder {
     // so a stream that ends exactly with the frame would otherwise never complete.
     // One phase step of slack truncates at most 1/8 of the final symbol's window.
     if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) {
+      // A corrupted length field can promise a frame lasting up to a minute. If the
+      // carrier disappears mid-frame — several consecutive symbol windows below the
+      // squelch — abandon the candidate instead of decoding background noise.
+      const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
+      if (Number.isFinite(this.squelchDbfs)) {
+        while (this.candidateScannedSymbols < availableSymbols) {
+          const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
+          const power = windowPowerDbfs(
+            this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
+          this.candidateSilentRun = power < this.squelchDbfs ? this.candidateSilentRun + 1 : 0;
+          this.candidateScannedSymbols++;
+          if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
+            this.progress.push({ type: 'crc-error',
+              position: this.streamPosition + windowStart + this.samplesPerSymbol });
+            this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
+            return null;
+          }
+        }
+      }
       return undefined;
     }
 
@@ -287,6 +315,7 @@ export class FskStreamDecoder {
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     return { payload: parsed.payload, confidence: decoded.confidence };
   }
 
@@ -296,6 +325,7 @@ export class FskStreamDecoder {
     this.reportedPayloadBytes = 0;
     this.reportedLength = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
   }
 
   /** Decodes the candidate's first `count` bytes, reusing symbols decoded on earlier calls. */

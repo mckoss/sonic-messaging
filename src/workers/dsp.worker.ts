@@ -204,7 +204,8 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
     const packets = fskStreamDecoder.push(samples);
     for (const progress of fskStreamDecoder.drainProgress()) {
       send({ type: 'fsk-reception', token: progress.type, position: progress.position,
-        ...('byte' in progress ? { byte: progress.byte } : {}) });
+        ...('byte' in progress ? { byte: progress.byte } : {}),
+        ...('length' in progress ? { length: progress.length } : {}) });
     }
     for (const packet of packets) {
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);

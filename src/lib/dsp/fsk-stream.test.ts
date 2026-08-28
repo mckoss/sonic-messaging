@@ -40,7 +40,7 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].confidence).toBeGreaterThan(0.5);
     const progress = receiver.drainProgress();
     expect(progress[0].type).toBe('sync');
-    expect(progress[1].type).toBe('length');
+    expect(progress[1]).toMatchObject({ type: 'length', length: payload.length });
     expect(progress[progress.length - 1].type).toBe('crc-confirm');
     // Sync ends 16 symbols after the 73-sample offset; the phase lock is sample-accurate.
     const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
@@ -180,6 +180,21 @@ describe('continuous FSK receiver', () => {
     // One rejected sync and one accepted one; a phase-step skip would re-report the first repeatedly.
     const syncs = receiver.drainProgress().filter(progress => progress.type === 'sync');
     expect(syncs).toHaveLength(2);
+  });
+
+  it('abandons a truncated frame with a corrupt length once the carrier disappears', () => {
+    // Sync plus a header claiming 200 payload bytes, then only a moment of data.
+    const bogus = frameSymbolWaveform(config, [...SYNC_BYTES, 0x00, 0xc8, 0x55, 0xaa]);
+    const clean = encodeFsk(new TextEncoder().encode('after'), config).samples;
+    const gap = new Float32Array(20 * Math.round(config.sampleRate / config.symbolRate));
+    const samples = new Float32Array(bogus.length + gap.length + clean.length);
+    samples.set(bogus); samples.set(clean, bogus.length + gap.length);
+    const receiver = new FskStreamDecoder(config, -45);
+    const packets = receiver.push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['after']);
+    const progress = receiver.drainProgress();
+    expect(progress.some(event => event.type === 'crc-error')).toBe(true);
+    expect(progress.some(event => event.type === 'length' && event.length === 200)).toBe(true);
   });
 
   it('decodes a 16-tone stream with byte-aligned symbols', () => {
