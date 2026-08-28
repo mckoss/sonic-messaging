@@ -96,7 +96,29 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
   }
 }
 
+// A microphone never delivers long runs of exact zeros; the OS/browser audio
+// pipeline inserts them when capture underruns. Surface those glitches.
+const CAPTURE_GAP_RUN = 256;
+let captureZeroRun = 0, captureGapSamples = 0, captureSamples = 0, captureGapReported = 0;
+
+function detectCaptureGaps(samples: Float32Array, sampleRate: number): void {
+  for (let index = 0; index < samples.length; index++) {
+    if (samples[index] === 0) captureZeroRun++;
+    else {
+      if (captureZeroRun >= CAPTURE_GAP_RUN) captureGapSamples += captureZeroRun;
+      captureZeroRun = 0;
+    }
+  }
+  captureSamples += samples.length;
+  if (captureGapSamples > 0 && captureSamples - captureGapReported >= sampleRate * 2) {
+    send({ type: 'capture-gap', samples: captureGapSamples, sampleRate });
+    captureGapSamples = 0;
+    captureGapReported = captureSamples;
+  }
+}
+
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  detectCaptureGaps(samples, sampleRate);
   // Keep visualization responsive even when multi-phase packet acquisition is busy.
   acceptDetectorSamples(samples, sampleRate);
   if (detector && detectorSampleRate !== sampleRate) {

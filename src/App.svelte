@@ -188,7 +188,8 @@
         receivedMessages = [...receivedMessages, `${receivingMessage} ✕`].slice(-24); receivingMessage = '';
         addMarker('✕', 2);
       } else if (event.byte !== undefined) {
-        const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true });
+        // The RX lane is a single line; render decoded newlines as spaces.
+        const text = receptionDecoder.decode(Uint8Array.of(event.byte), { stream: true }).replace(/[\r\n]/g, ' ');
         if (text) {
           const characters = [...text];
           for (const character of characters) {
@@ -199,10 +200,14 @@
         }
       }
     });
+    const offCaptureGaps = audio.onCaptureGaps(event => {
+      const ms = Math.round(event.samples / event.sampleRate * 1000);
+      logs = [`${new Date().toLocaleTimeString()} · ⚠ Capture dropouts · ${ms} ms of zeroed audio — OS/browser pipeline glitch`, ...logs].slice(0, 10);
+    });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offSpectrum(); offSymbols(); offPackets(); offReception(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 

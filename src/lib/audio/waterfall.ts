@@ -1,9 +1,24 @@
 export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
-export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 256;
-export const WATERFALL_SPEED_SAMPLES = { Slow: 512, Medium: 256, Fast: 128 } as const;
+export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 512;
+export const WATERFALL_SPEED_SAMPLES = { Slow: 1024, Medium: 512, Fast: 256 } as const;
 /** Detector display cadence; matches the spectrum lane's hop so both scroll equally smoothly. */
 export const DETECTOR_HOP_SAMPLES = 1024;
+/** Scrub-back history retained by the waterfall lanes. */
+export const WATERFALL_HISTORY_SECONDS = 60;
+/** Ring-canvas width cap; stays under every browser's canvas dimension limit. */
+export const WATERFALL_MAX_RING_PIXELS = 32_000;
+
+export interface RingSpan { x: number; w: number }
+
+/** Maps the unwrapped pixel range [start, start+width) onto 1-2 ring-canvas spans. */
+export function ringSpans(start: number, width: number, ringWidth: number): RingSpan[] {
+  if (width <= 0 || ringWidth <= 0) return [];
+  const clipped = Math.min(width, ringWidth);
+  const x = ((Math.floor(start) % ringWidth) + ringWidth) % ringWidth;
+  if (x + clipped <= ringWidth) return [{ x, w: clipped }];
+  return [{ x, w: ringWidth - x }, { x: 0, w: clipped - (ringWidth - x) }];
+}
 
 export interface BinRange { start: number; end: number }
 
@@ -11,16 +26,6 @@ export function waterfallPixelAdvance(
   samples: number, devicePixelRatio = 1, samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL
 ): number {
   return Math.max(0, samples) * Math.max(1, devicePixelRatio) / Math.max(1, samplesPerCssPixel);
-}
-
-/** Number of source updates represented by the latest event, including coalesced UI updates. */
-export function waterfallSequenceSteps(sequence: number, previousSequence: number): number {
-  if (sequence < 0) return 0;
-  return previousSequence >= 0 && sequence > previousSequence ? sequence - previousSequence : 1;
-}
-
-export function waterfallSampleDelta(position: number, previousPosition: number, initialSamples: number): number {
-  return previousPosition >= 0 && position > previousPosition ? position - previousPosition : Math.max(0, initialSamples);
 }
 
 /** Returns the half-open FFT-bin range covered by the requested frequencies. */

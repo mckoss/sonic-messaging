@@ -42,6 +42,7 @@ export type DspWorkerResponse =
   | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; confidence: number }
   | { type: 'fsk-reception'; token: 'sync' | 'length' | 'byte' | 'crc-confirm' | 'crc-error';
       position: number; byte?: number }
+  | { type: 'capture-gap'; samples: number; sampleRate: number }
   | { type: 'decode-result'; requestId: string; modem: string; result?: unknown; error?: string }
   | { type: 'worker-error'; message: string };
 

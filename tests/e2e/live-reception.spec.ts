@@ -68,4 +68,16 @@ test('streams decoded characters into the RX lane and paints RX TIME markers', a
       return painted;
     });
     expect(paintedPixels).toBeGreaterThan(50);
+
+    const detector = page.locator('[data-testid="symbol-waterfall"] .detector');
+    const box = await detector.boundingBox();
+    if (!box) throw new Error('detector lane not laid out');
+    await page.mouse.move(box.x + 40, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 240, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    const live = page.getByRole('button', { name: /LIVE/ });
+    await expect(live.first()).toBeVisible();
+    await live.first().click();
+    await expect(live).toHaveCount(0);
 });

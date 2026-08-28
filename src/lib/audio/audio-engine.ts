@@ -12,6 +12,7 @@ export type SpectrumListener = (event: Extract<DspWorkerResponse, { type: 'spect
 export type SymbolListener = (event: Extract<DspWorkerResponse, { type: 'symbol-scores' }>) => void;
 export type PacketListener = (event: Extract<DspWorkerResponse, { type: 'packet' }>) => void;
 export type ReceptionListener = (event: Extract<DspWorkerResponse, { type: 'fsk-reception' }>) => void;
+export type CaptureGapListener = (event: Extract<DspWorkerResponse, { type: 'capture-gap' }>) => void;
 export type StateListener = (state: Readonly<AudioEngineState>) => void;
 
 const DEFAULT_CONSTRAINTS: MediaTrackConstraints = {
@@ -31,6 +32,7 @@ export class AudioEngine {
   private symbolListeners = new Set<SymbolListener>();
   private packetListeners = new Set<PacketListener>();
   private receptionListeners = new Set<ReceptionListener>();
+  private captureGapListeners = new Set<CaptureGapListener>();
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
   private options: AudioEngineOptions;
@@ -61,6 +63,10 @@ export class AudioEngine {
 
   onReception(listener: ReceptionListener): () => void {
     this.receptionListeners.add(listener); return () => this.receptionListeners.delete(listener);
+  }
+
+  onCaptureGaps(listener: CaptureGapListener): () => void {
+    this.captureGapListeners.add(listener); return () => this.captureGapListeners.delete(listener);
   }
 
   configureFskDetector(
@@ -184,6 +190,7 @@ export class AudioEngine {
     else if (message.type === 'symbol-scores') this.symbolListeners.forEach((listener) => listener(message));
     else if (message.type === 'packet') this.packetListeners.forEach((listener) => listener(message));
     else if (message.type === 'fsk-reception') this.receptionListeners.forEach((listener) => listener(message));
+    else if (message.type === 'capture-gap') this.captureGapListeners.forEach((listener) => listener(message));
     else if (message.type === 'worker-error') console.error('DSP worker:', message.message);
   }
 

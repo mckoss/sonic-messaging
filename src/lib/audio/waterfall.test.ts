@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dbToIntensity, frequencyBinRange, intensityToRgb, waterfallPixelAdvance, waterfallSampleDelta, waterfallSequenceSteps } from './waterfall';
+import { dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, waterfallPixelAdvance } from './waterfall';
 
 describe('waterfall mapping', () => {
   it('maps a selected frequency span to a bounded half-open bin range', () => {
@@ -29,20 +29,18 @@ describe('waterfall mapping', () => {
   });
 
   it('maps modem and FFT windows onto the same captured-sample time scale', () => {
-    expect(waterfallPixelAdvance(480)).toBeCloseTo(1.875);
-    expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(3.75);
-    expect(waterfallPixelAdvance(1024)).toBe(4);
+    expect(waterfallPixelAdvance(480)).toBeCloseTo(0.9375);
+    expect(waterfallPixelAdvance(480, 2)).toBeCloseTo(1.875);
+    expect(waterfallPixelAdvance(1024)).toBe(2);
   });
 
-  it('keeps spectrum and symbol travel locked when UI updates are coalesced', () => {
-    const spectrumSamples = waterfallSampleDelta(17_408, 2_048, 1024);
-    const symbolSamples = waterfallSampleDelta(17_280, 1_920, 1920);
-    const spectrumTravel = waterfallPixelAdvance(spectrumSamples);
-    const symbolTravel = waterfallPixelAdvance(symbolSamples);
-    expect(spectrumSamples).toBe(15_360);
-    expect(symbolSamples).toBe(15_360);
-    expect(symbolTravel).toBe(spectrumTravel);
-    expect(waterfallSequenceSteps(0, 100)).toBe(1);
-    expect(waterfallSampleDelta(1920, -1, 1920)).toBe(1920);
+  it('maps unwrapped pixel ranges onto ring-canvas spans', () => {
+    expect(ringSpans(0, 100, 1000)).toEqual([{ x: 0, w: 100 }]);
+    expect(ringSpans(2950, 100, 1000)).toEqual([{ x: 950, w: 50 }, { x: 0, w: 50 }]);
+    expect(ringSpans(-30, 60, 1000)).toEqual([{ x: 970, w: 30 }, { x: 0, w: 30 }]);
+    expect(ringSpans(5, 2000, 1000)).toEqual([{ x: 5, w: 995 }, { x: 0, w: 5 }]);
+    expect(ringSpans(5, 0, 1000)).toEqual([]);
+    expect(ringSpans(5, 10, 0)).toEqual([]);
   });
+
 });

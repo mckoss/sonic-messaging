@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DETECTOR_HOP_SAMPLES, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
+  import { waterfallScrubSamples } from '../audio/scrub-store';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -18,48 +19,65 @@
   $: displayLabels = [...labels].reverse();
   $: recentEntries = currentMessage ? [...messages, currentMessage] : messages;
   $: recentMessages = recentEntries.length ? `| ${recentEntries.join(' | ')} |` : '';
+  $: scrubSamples = $waterfallScrubSamples;
+
+  const SYMBOL_HEIGHT = 150, CONFIDENCE_HEIGHT = 22, TIMELINE_HEIGHT = 34;
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
   let timelineCanvas: HTMLCanvasElement;
   let host: HTMLDivElement;
-  let width = 800, height = 150;
-  // The lanes scroll on their own animation clock (sample-time at the right edge),
-  // rate-locked to the worker's sample positions; late worker data paints behind the edge.
-  let renderedPosition = -1, latestPosition = -1, scrollRemainder = 0;
+  let width = 800;
+  // The lanes advance on their own animation clock (sample-time at the live edge),
+  // rate-locked to the worker's sample positions; late worker data backfills history.
+  let renderedPosition = -1, latestPosition = -1;
   let lastSequence = -1, lastPaintedPosition = -1, lastMarkerId = -1;
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
+  // History lives in ring canvases; the visible canvases are a scrubable viewport.
+  let rings: { symbol: HTMLCanvasElement; confidence: HTMLCanvasElement; timeline: HTMLCanvasElement } | undefined;
+  let ringWidth = 0, ringRatio = 1, ringSpp = WATERFALL_SAMPLES_PER_CSS_PIXEL, ringRate = 48_000;
+  let originPosition = 0, clearedX = 0;
 
   function pixelRatio(): number { return Math.max(1, window.devicePixelRatio || 1); }
 
-  function laneContext(target: HTMLCanvasElement, cssHeight: number) {
-    const ctx = target.getContext('2d', { alpha: false });
-    if (!ctx) return undefined;
+  function makeRing(cssHeight: number): HTMLCanvasElement {
+    const ring = document.createElement('canvas');
+    ring.width = ringWidth; ring.height = Math.max(1, Math.round(cssHeight * ringRatio));
+    const ctx = ring.getContext('2d', { alpha: false })!;
+    ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, ring.width, ring.height);
+    return ring;
+  }
+
+  function ensureRings(): void {
     const ratio = pixelRatio();
-    const pixelWidth = Math.max(1, Math.round(width * ratio));
-    const pixelHeight = Math.max(1, Math.round(cssHeight * ratio));
-    if (target.width !== pixelWidth || target.height !== pixelHeight) {
-      target.width = pixelWidth; target.height = pixelHeight;
-      ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
-    }
-    return { ctx, ratio, pixelWidth, pixelHeight };
+    if (rings && ringRatio === ratio && ringSpp === samplesPerCssPixel && ringRate === sampleRate) return;
+    ringRatio = ratio; ringSpp = samplesPerCssPixel; ringRate = sampleRate;
+    ringWidth = Math.min(WATERFALL_MAX_RING_PIXELS,
+      Math.ceil(waterfallPixelAdvance(WATERFALL_HISTORY_SECONDS * sampleRate, ratio, samplesPerCssPixel)));
+    rings = { symbol: makeRing(SYMBOL_HEIGHT), confidence: makeRing(CONFIDENCE_HEIGHT), timeline: makeRing(TIMELINE_HEIGHT) };
+    originPosition = Math.max(0, latestPosition); clearedX = 0;
+    lastPaintedPosition = latestPosition;
+    waterfallScrubSamples.set(0);
   }
 
-  function scrollLane(target: HTMLCanvasElement, cssHeight: number, advance: number) {
-    const lane = laneContext(target, cssHeight);
-    if (!lane || advance < 1) return;
-    const { ctx, pixelWidth, pixelHeight } = lane;
-    const shift = Math.min(pixelWidth, advance);
-    ctx.drawImage(target, shift, 0, pixelWidth - shift, pixelHeight, 0, 0, pixelWidth - shift, pixelHeight);
-    ctx.fillStyle = '#050a18'; ctx.fillRect(pixelWidth - shift, 0, shift, pixelHeight);
+  function xOf(position: number): number {
+    return waterfallPixelAdvance(position - originPosition, ringRatio, ringSpp);
   }
 
-  function resetLanes() {
-    renderedPosition = -1; latestPosition = -1; scrollRemainder = 0; lastPaintedPosition = -1;
-    for (const target of [canvas, confidenceCanvas, timelineCanvas]) {
-      const ctx = target?.getContext('2d', { alpha: false });
-      if (ctx && target) { ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, target.width, target.height); }
+  function ensureCleared(x: number): void {
+    if (!rings || x <= clearedX) return;
+    for (const ring of [rings.symbol, rings.confidence, rings.timeline]) {
+      const ctx = ring.getContext('2d', { alpha: false })!;
+      ctx.fillStyle = '#050a18';
+      for (const span of ringSpans(clearedX, x - clearedX, ringWidth)) ctx.fillRect(span.x, 0, span.w, ring.height);
     }
+    clearedX = x;
+  }
+
+  function resetLanes(): void {
+    rings = undefined;
+    renderedPosition = -1; latestPosition = -1; lastPaintedPosition = -1;
+    waterfallScrubSamples.set(0);
   }
 
   function confidenceColor(value: number): string {
@@ -70,57 +88,53 @@
   }
 
   function ingest() {
-    if (!canvas || !scores.length || sequence === lastSequence || samplePosition < 0) return;
+    if (!scores.length || sequence === lastSequence || samplePosition < 0) return;
     lastSequence = sequence;
     if (samplePosition < latestPosition) resetLanes();
     latestPosition = samplePosition;
     if (renderedPosition < 0) renderedPosition = samplePosition;
+    ensureRings();
     if (lastPaintedPosition < 0) { lastPaintedPosition = samplePosition; return; }
 
     if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
     for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
     pendingConfidence = Math.max(pendingConfidence, confidence);
 
-    const symbolLane = laneContext(canvas, 150);
-    const confidenceLane = laneContext(confidenceCanvas, 22);
-    if (!symbolLane || !confidenceLane) return;
-    const { ratio, pixelWidth, pixelHeight } = symbolLane;
-    const columnWidth = Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ratio, samplesPerCssPixel));
-    if (columnWidth < 1) return;
-    lastPaintedPosition += columnWidth * samplesPerCssPixel / ratio;
-    const behind = Math.max(0, Math.round(waterfallPixelAdvance(renderedPosition - samplePosition, ratio, samplesPerCssPixel)));
-    const columnEnd = pixelWidth - behind;
-    const columnStart = columnEnd - Math.min(columnWidth, pixelWidth);
-    if (columnEnd >= 1) {
-      const clippedStart = Math.max(0, columnStart), clippedWidth = columnEnd - clippedStart;
-      const column = symbolLane.ctx.createImageData(clippedWidth, pixelHeight);
-      for (let y = 0; y < pixelHeight; y++) {
+    const columnWidth = Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ringRatio, ringSpp));
+    if (columnWidth < 1 || !rings) return;
+    const columnEnd = Math.floor(xOf(samplePosition));
+    ensureCleared(columnEnd);
+    const symbolCtx = rings.symbol.getContext('2d', { alpha: false })!;
+    const confidenceCtx = rings.confidence.getContext('2d', { alpha: false })!;
+    const symbolHeight = rings.symbol.height, confidenceHeight = rings.confidence.height;
+    const value = Math.max(0, Math.min(1, pendingConfidence));
+    const barHeight = Math.max(1, Math.round(value * confidenceHeight));
+    for (const span of ringSpans(columnEnd - columnWidth, columnWidth, ringWidth)) {
+      const column = symbolCtx.createImageData(span.w, symbolHeight);
+      for (let y = 0; y < symbolHeight; y++) {
         const symbol = Math.min(pendingScores.length - 1,
-          Math.floor((pixelHeight - 1 - y) * pendingScores.length / pixelHeight));
+          Math.floor((symbolHeight - 1 - y) * pendingScores.length / symbolHeight));
         const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, pendingScores[symbol]))));
-        for (let x = 0; x < clippedWidth; x++) {
-          const offset = (y * clippedWidth + x) * 4;
+        for (let x = 0; x < span.w; x++) {
+          const offset = (y * span.w + x) * 4;
           column.data[offset] = red; column.data[offset + 1] = green; column.data[offset + 2] = blue; column.data[offset + 3] = 255;
         }
       }
-      symbolLane.ctx.putImageData(column, clippedStart, 0);
-
-      const value = Math.max(0, Math.min(1, pendingConfidence));
-      const barHeight = Math.max(1, Math.round(value * confidenceLane.pixelHeight));
-      confidenceLane.ctx.fillStyle = '#050a18';
-      confidenceLane.ctx.fillRect(clippedStart, 0, clippedWidth, confidenceLane.pixelHeight);
-      confidenceLane.ctx.fillStyle = confidenceColor(value);
-      confidenceLane.ctx.fillRect(clippedStart, confidenceLane.pixelHeight - barHeight, clippedWidth, barHeight);
+      symbolCtx.putImageData(column, span.x, 0);
+      confidenceCtx.fillStyle = '#050a18';
+      confidenceCtx.fillRect(span.x, 0, span.w, confidenceHeight);
+      confidenceCtx.fillStyle = confidenceColor(value);
+      confidenceCtx.fillRect(span.x, confidenceHeight - barHeight, span.w, barHeight);
     }
+    lastPaintedPosition += columnWidth * ringSpp / ringRatio;
     pendingScores.fill(0);
     pendingConfidence = 0;
   }
 
-  function drawMarkers() {
-    if (!timelineCanvas || !markers.length || renderedPosition < 0) return;
-    const lane = laneContext(timelineCanvas, 34);
-    if (!lane) return;
-    const { ctx, ratio, pixelWidth } = lane;
+  function drawTimelineMarkers() {
+    if (!rings || renderedPosition < 0) return;
+    const ctx = rings.timeline.getContext('2d', { alpha: false })!;
+    const ratio = ringRatio;
     for (const marker of markers) {
       if (marker.id <= lastMarkerId) continue;
       // Stale markers from a previous listening session can never scroll into view.
@@ -128,28 +142,82 @@
       // Anchor to captured-signal time; defer markers the clock has not reached yet.
       if (marker.position > renderedPosition) break;
       lastMarkerId = marker.id;
-      const behind = waterfallPixelAdvance(renderedPosition - marker.position, ratio, samplesPerCssPixel);
-      const right = pixelWidth - ratio - behind;
-      if (right < 1) continue;
+      const rightUnwrapped = Math.floor(xOf(marker.position));
+      ensureCleared(rightUnwrapped);
       const span = Math.max(2 * ratio, waterfallPixelAdvance(
-        marker.symbols * sampleRate / Math.max(1, symbolRate), ratio, samplesPerCssPixel
+        marker.symbols * sampleRate / Math.max(1, symbolRate), ratio, ringSpp
       ));
-      const left = Math.max(0, right - span);
-      const top = 5 * ratio, tickBottom = 11 * ratio;
-      const crcError = marker.label === '✕', crcConfirm = marker.label === '✓';
-      ctx.strokeStyle = crcError ? '#ff5578' : crcConfirm ? '#4ee8b4' : '#ff718d';
-      ctx.lineWidth = Math.max(1, ratio);
-      ctx.beginPath(); ctx.moveTo(left, tickBottom); ctx.lineTo(left, top);
-      ctx.lineTo(right, top); ctx.lineTo(right, tickBottom); ctx.stroke();
-      ctx.fillStyle = crcError ? '#ff8da8' : crcConfirm ? '#4ee8b4' : '#dcecff';
-      ctx.font = `${Math.round(10 * ratio)}px ui-monospace, monospace`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(marker.label, (left + right) / 2, 23 * ratio);
+      const rightBase = ((rightUnwrapped % ringWidth) + ringWidth) % ringWidth;
+      const draws = rightBase - span < 0 && rightUnwrapped >= ringWidth ? [rightBase, rightBase + ringWidth] : [rightBase];
+      for (const right of draws) {
+        const left = right - span;
+        const top = 5 * ratio, tickBottom = 11 * ratio;
+        const crcError = marker.label === '✕', crcConfirm = marker.label === '✓';
+        ctx.strokeStyle = crcError ? '#ff5578' : crcConfirm ? '#4ee8b4' : '#ff718d';
+        ctx.lineWidth = Math.max(1, ratio);
+        ctx.beginPath(); ctx.moveTo(left, tickBottom); ctx.lineTo(left, top);
+        ctx.lineTo(right, top); ctx.lineTo(right, tickBottom); ctx.stroke();
+        ctx.fillStyle = crcError ? '#ff8da8' : crcConfirm ? '#4ee8b4' : '#dcecff';
+        ctx.font = `${Math.round(10 * ratio)}px ui-monospace, monospace`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(marker.label, (left + right) / 2, 23 * ratio);
+      }
     }
   }
 
-  $: scores, confidence, sequence, samplePosition, samplesPerCssPixel, width, ingest();
-  $: markers, drawMarkers();
+  function maxScrubSamples(): number {
+    if (!rings || renderedPosition < 0) return 0;
+    const capacityPx = Math.max(0, ringWidth - Math.round(width * ringRatio));
+    return Math.max(0, Math.min(renderedPosition - originPosition, capacityPx * ringSpp / ringRatio));
+  }
+
+  function blitLane(ring: HTMLCanvasElement, visible: HTMLCanvasElement) {
+    const ctx = visible.getContext('2d', { alpha: false });
+    if (!ctx) return;
+    const pixelWidth = Math.max(1, Math.round(width * ringRatio));
+    const pixelHeight = ring.height;
+    if (visible.width !== pixelWidth || visible.height !== pixelHeight) {
+      visible.width = pixelWidth; visible.height = pixelHeight;
+    }
+    ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
+    const headX = Math.floor(xOf(renderedPosition));
+    const backPx = Math.floor(waterfallPixelAdvance(
+      Math.min(scrubSamples, maxScrubSamples()), ringRatio, ringSpp));
+    const end = headX - backPx;
+    let start = end - pixelWidth, dx = 0;
+    const oldest = Math.max(0, headX - ringWidth + 1);
+    if (start < oldest) { dx = oldest - start; start = oldest; }
+    if (end <= start) return;
+    for (const span of ringSpans(start, end - start, ringWidth)) {
+      ctx.drawImage(ring, span.x, 0, span.w, pixelHeight, dx, 0, span.w, pixelHeight);
+      dx += span.w;
+    }
+  }
+
+  function blit() {
+    if (!rings || renderedPosition < 0 || !canvas) return;
+    blitLane(rings.symbol, canvas);
+    blitLane(rings.confidence, confidenceCanvas);
+    blitLane(rings.timeline, timelineCanvas);
+  }
+
+  let dragPointer = -1, dragX = 0;
+  function scrubStart(event: PointerEvent) {
+    dragPointer = event.pointerId; dragX = event.clientX;
+    (event.currentTarget as Element).setPointerCapture(event.pointerId);
+  }
+  function scrubMove(event: PointerEvent) {
+    if (event.pointerId !== dragPointer) return;
+    const dx = event.clientX - dragX; dragX = event.clientX;
+    waterfallScrubSamples.update(value =>
+      Math.max(0, Math.min(value + dx * samplesPerCssPixel, maxScrubSamples())));
+  }
+  function scrubEnd(event: PointerEvent) {
+    if (event.pointerId === dragPointer) dragPointer = -1;
+  }
+
+  $: scores, confidence, sequence, samplePosition, samplesPerCssPixel, ingest();
+  $: markers, drawTimelineMarkers();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => { width = Math.max(280, Math.floor(entry.contentRect.width)); });
@@ -163,19 +231,12 @@
       // Free-run at the audio rate with proportional catch-up toward the worker's
       // clock, capped just ahead of the latest data so a stalled worker pauses us.
       const lag = latestPosition - renderedPosition;
-      const advanceSamples = Math.max(0, dt * (sampleRate + 2 * lag));
-      const next = Math.min(renderedPosition + advanceSamples, latestPosition + 2 * DETECTOR_HOP_SAMPLES);
-      const ratio = pixelRatio();
-      scrollRemainder += waterfallPixelAdvance(next - renderedPosition, ratio, samplesPerCssPixel);
-      renderedPosition = next;
-      const advance = Math.floor(scrollRemainder);
-      if (advance >= 1) {
-        scrollRemainder -= advance;
-        scrollLane(canvas, 150, advance);
-        scrollLane(confidenceCanvas, 22, advance);
-        scrollLane(timelineCanvas, 34, advance);
-      }
-      drawMarkers();
+      const advance = Math.max(0, dt * (sampleRate + 2 * lag));
+      renderedPosition = Math.min(renderedPosition + advance, latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+      ensureRings();
+      ensureCleared(Math.floor(xOf(renderedPosition)));
+      drawTimelineMarkers();
+      blit();
     };
     frame = requestAnimationFrame(tick);
     return () => { resize.disconnect(); cancelAnimationFrame(frame); };
@@ -183,16 +244,16 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
-  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector"><canvas bind:this={canvas} aria-hidden="true"></canvas></div></div>
-  <div class="confidence"><span class="channel">CONF</span><div class="confidence-history" aria-label="Scrolling FSK symbol confidence history" role="img"><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
-  <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history" aria-label="Scrolling decoded FSK character timing" role="img"><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
+  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector scrub" class:scrubbed={scrubSamples > 0} role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
+  <div class="confidence"><span class="channel">CONF</span><div class="confidence-history scrub" aria-label="Scrolling FSK symbol confidence history" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
+  <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history scrub" aria-label="Scrolling decoded FSK character timing" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
   <div class="receive"><span class="channel">RX</span><div class="messages"><span>{#each [...recentMessages] as character}<i class:confirm={character === '✓'} class:error={character === '✕'}>{character}</i>{/each}</span></div></div>
 </div>
 
 <style>
   .figure { width:100%; }
   .plot { display:grid; grid-template-columns:62px 1fr; gap:7px; }
-  .detector { width:100%; min-width:0; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
+  .detector { position:relative; width:100%; min-width:0; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
   canvas { display:block; width:100%; height:150px; }
   .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
   .labels span { display:flex; align-items:center; justify-content:flex-end; }
@@ -202,6 +263,9 @@
   .confidence-history canvas { width:100%; height:22px; }
   .timeline-history { height:34px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
   .timeline-history canvas { width:100%; height:34px; }
+  .scrub { cursor:grab; touch-action:none; }
+  .scrub.scrubbed, .scrub:active { cursor:grabbing; }
+  .live { position:absolute; top:7px; right:9px; border:1px solid #2c8e6f; border-radius:99px; padding:4px 10px; background:#0b2c22e6; color:#4ee8b4; font:600 10px ui-monospace,monospace; cursor:pointer; }
   .messages { height:27px; display:flex; align-items:center; justify-content:flex-end; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
   .messages span { flex:0 0 auto; }
   .messages i { font:inherit; font-style:normal; }.messages i.confirm{color:#4ee8b4;font-weight:800}.messages i.error{color:#ff8da8;font-weight:800}

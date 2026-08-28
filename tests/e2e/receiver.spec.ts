@@ -6,8 +6,8 @@ test('receiver waterfalls expose one shared captured-audio time scale', async ({
   const symbols = page.getByTestId('symbol-waterfall');
   await expect(spectrum).toBeVisible();
   await expect(symbols).toBeVisible();
-  await expect(spectrum).toHaveAttribute('data-samples-per-css-pixel', '256');
-  await expect(symbols).toHaveAttribute('data-samples-per-css-pixel', '256');
+  await expect(spectrum).toHaveAttribute('data-samples-per-css-pixel', '512');
+  await expect(symbols).toHaveAttribute('data-samples-per-css-pixel', '512');
   await expect(page.getByText('RX TIME', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Microphone')).toHaveValue('default');
 });
@@ -48,6 +48,6 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
   await expect(page.getByLabel('Confidence threshold')).toHaveValue('22');
   await expect(page.getByLabel('Waterfall scroll speed')).toHaveValue('Fast');
-  await expect(page.getByTestId('spectrum-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '128');
-  await expect(page.getByTestId('symbol-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '128');
+  await expect(page.getByTestId('spectrum-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '256');
+  await expect(page.getByTestId('symbol-waterfall')).toHaveAttribute('data-samples-per-css-pixel', '256');
 });
