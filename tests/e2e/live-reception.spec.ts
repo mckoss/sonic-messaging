@@ -82,6 +82,27 @@ test('streams decoded characters into the RX lane and paints RX TIME markers', a
     await expect(live).toHaveCount(0);
 });
 
+test('shows a red receiver error when the DSP worker dies', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    (window as unknown as { __workers: Worker[] }).__workers = [];
+    window.Worker = class extends NativeWorker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        (window as unknown as { __workers: Worker[] }).__workers.push(this);
+      }
+    } as typeof Worker;
+  });
+  await page.goto('/sonic-messaging/');
+  await page.getByRole('button', { name: 'Start listening' }).click();
+  await expect(page.getByTestId('spectrum-waterfall')).toBeVisible();
+  await expect(page.getByTestId('worker-error')).toHaveCount(0);
+  await page.waitForTimeout(1_000);
+  await page.evaluate(() =>
+    (window as unknown as { __workers: Worker[] }).__workers.forEach(worker => worker.terminate()));
+  await expect(page.getByTestId('worker-error')).toContainText('no DSP output', { timeout: 10_000 });
+});
+
 test('sweeps a playback cursor across the waterfalls while replaying visible audio', async ({ page }) => {
     await page.goto('/sonic-messaging/');
     await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));

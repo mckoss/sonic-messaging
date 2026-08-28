@@ -14,6 +14,10 @@ export type PacketListener = (event: Extract<DspWorkerResponse, { type: 'packet'
 export type ReceptionListener = (event: Extract<DspWorkerResponse, { type: 'fsk-reception' }>) => void;
 export type CaptureGapListener = (event: Extract<DspWorkerResponse, { type: 'capture-gap' }>) => void;
 export type StateListener = (state: Readonly<AudioEngineState>) => void;
+export type WorkerHealthListener = (event: { healthy: boolean; reason?: string }) => void;
+
+/** Listening with no worker output for this long is reported as a stalled/dead worker. */
+const WORKER_STALL_ERROR_MS = 5_000;
 
 const DEFAULT_CONSTRAINTS: MediaTrackConstraints = {
   channelCount: { ideal: 1 }, echoCancellation: { ideal: false },
@@ -35,6 +39,10 @@ export class AudioEngine {
   private captureGapListeners = new Set<CaptureGapListener>();
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
+  private workerHealthListeners = new Set<WorkerHealthListener>();
+  private workerHealthy = true;
+  private lastWorkerMessageAt?: number;
+  private healthTimer?: ReturnType<typeof setInterval>;
   private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
   private lastAnalysisAt?: number;
   private options: AudioEngineOptions;
@@ -69,6 +77,19 @@ export class AudioEngine {
 
   onCaptureGaps(listener: CaptureGapListener): () => void {
     this.captureGapListeners.add(listener); return () => this.captureGapListeners.delete(listener);
+  }
+
+  /** Notifies on transitions between a responsive and a stalled/errored DSP worker. */
+  onWorkerHealth(listener: WorkerHealthListener): () => void {
+    this.workerHealthListeners.add(listener); return () => this.workerHealthListeners.delete(listener);
+  }
+
+  private setWorkerHealth(healthy: boolean, reason?: string): void {
+    if (healthy === this.workerHealthy) return;
+    this.workerHealthy = healthy;
+    if (!healthy) console.error(`DSP worker unhealthy: ${reason}`);
+    else console.info('DSP worker recovered');
+    this.workerHealthListeners.forEach((listener) => listener({ healthy, reason }));
   }
 
   /** Fetches captured audio between two absolute sample positions from the worker's history ring. */
@@ -123,7 +144,10 @@ export class AudioEngine {
       ]);
       this.worker = new Worker(new URL('../../workers/dsp.worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = ({ data }: MessageEvent<DspWorkerResponse>) => this.handleWorker(data);
-      this.worker.onerror = (event) => console.error('DSP worker error:', event.message);
+      this.worker.onerror = (event) => {
+        console.error('DSP worker error:', event.message, `(${event.filename}:${event.lineno})`);
+        this.setWorkerHealth(false, `worker error: ${event.message || 'unknown'}`);
+      };
       this.worker.postMessage({ type: 'configure-spectrum', options: {
         fftSize: 2048, minDecibels: -110, maxDecibels: 0, ...this.options.spectrum
       } } satisfies DspWorkerRequest);
@@ -164,6 +188,13 @@ export class AudioEngine {
       };
       this.source.connect(this.capture);
       this.update({ listening: true, inputSettings: this.stream.getAudioTracks()[0]?.getSettings() });
+      this.lastWorkerMessageAt = performance.now();
+      this.healthTimer = setInterval(() => {
+        const elapsed = performance.now() - (this.lastWorkerMessageAt ?? 0);
+        if (elapsed > WORKER_STALL_ERROR_MS) {
+          this.setWorkerHealth(false, `no DSP output for ${Math.round(elapsed / 1000)} s`);
+        }
+      }, 1_000);
     } catch (error) {
       this.stopListening();
       throw new Error(`Unable to access microphone: ${error instanceof Error ? error.message : String(error)}`);
@@ -176,6 +207,8 @@ export class AudioEngine {
   }
 
   stopListening(): void {
+    if (this.healthTimer !== undefined) { clearInterval(this.healthTimer); this.healthTimer = undefined; }
+    this.setWorkerHealth(true);
     this.capture?.disconnect(); this.source?.disconnect();
     this.stream?.getTracks().forEach((track) => track.stop());
     this.capture = undefined; this.source = undefined; this.stream = undefined;
@@ -204,6 +237,8 @@ export class AudioEngine {
   }
 
   private handleWorker(message: DspWorkerResponse): void {
+    this.lastWorkerMessageAt = performance.now();
+    this.setWorkerHealth(true);
     if (message.type === 'spectrum') this.spectrumListeners.forEach((listener) => listener(message));
     else if (message.type === 'symbol-scores') {
       const now = performance.now();
@@ -220,7 +255,10 @@ export class AudioEngine {
       this.audioRequests.get(message.requestId)?.({ samples: message.samples, sampleRate: message.sampleRate });
       this.audioRequests.delete(message.requestId);
     }
-    else if (message.type === 'worker-error') console.error('DSP worker:', message.message);
+    else if (message.type === 'worker-error') {
+      console.error('DSP worker:', message.message);
+      this.setWorkerHealth(false, message.message);
+    }
   }
 
   async dispose(): Promise<void> {

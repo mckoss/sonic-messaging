@@ -31,6 +31,7 @@
   let receivedMessages: string[] = [];
   let receivingMessage = '';
   let receivedMarkers: Array<{ id: number; label: string; symbols: number; position: number }> = [];
+  let workerError = '';
   let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
 
@@ -205,6 +206,9 @@
     preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
     void refreshInputDevices(false);
+    const offHealth = audio.onWorkerHealth(event => {
+      workerError = event.healthy ? '' : event.reason ?? 'DSP worker unresponsive';
+    });
     const offSpectrum = audio.onSpectrum(event => { spectrum = event.bins; spectrumSequence = event.sequence;
       spectrumSamplePosition = event.samplePosition; receiverState = 'signal'; });
     const offSymbols = audio.onSymbols(event => {
@@ -260,7 +264,7 @@
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -288,6 +292,7 @@
 
     <section class="card receiver">
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
+      {#if workerError}<div class="worker-error" role="alert" data-testid="worker-error">⚠ Receiver stalled · {workerError}</div>{/if}
       <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={listening}
         samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
       {#if mode === 'FSK'}
@@ -338,6 +343,7 @@
   .tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:5px;background:#07111e;border-radius:12px;margin-bottom:24px}.tabs button{border:1px solid transparent;border-radius:9px;padding:9px;background:transparent;color:var(--muted);font-weight:750;cursor:pointer}.tabs button small{display:block;font-size:10px;font-weight:500;color:var(--dim);margin-top:2px}.tabs button.active{border-color:#375272;background:#152740;color:var(--text)}.tabs button.active small{color:#9eb3cc}
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
   .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}
+  .worker-error{margin:0 0 8px;padding:8px 12px;border:1px solid #a63a54;border-radius:8px;background:#38141f;color:#ff8da8;font:600 12px ui-monospace,monospace}
   .replay-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
   .replay{border-radius:9px;border:1px solid #2a4a70;background:#122440;color:#cfe3ff;padding:9px;font-size:12px;font-weight:650;cursor:pointer}
   .replay:disabled{opacity:.4;cursor:default}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
