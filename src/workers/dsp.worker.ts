@@ -7,7 +7,7 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
-import { squelchFskDetection } from '../lib/dsp/fsk-detector';
+import { squelchFskDetection, type FskSymbolDetection } from '../lib/dsp/fsk-detector';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -23,6 +23,9 @@ let detectorSequence = 0;
 let detectorSamplePosition = 0;
 let fskStreamDecoder: FskStreamDecoder | undefined;
 let detectorSampleRate = 0;
+/** Boundary-aligned detection held while the decoder is locked; -1 boundary means none. */
+let alignedDetection: FskSymbolDetection | undefined;
+let alignedBoundary = -1;
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
@@ -52,6 +55,8 @@ function configureDetector(mode: 'off' | 'FSK', fsk?: {
   detectorSamplePosition = 0;
   fskStreamDecoder = undefined;
   detectorSampleRate = 0;
+  alignedDetection = undefined;
+  alignedBoundary = -1;
 }
 
 function appendDetectorWindow(chunk: Float32Array): void {
@@ -66,16 +71,25 @@ function appendDetectorWindow(chunk: Float32Array): void {
   detectorFilled = keep + chunk.length;
 }
 
-/** Analyzes a sliding symbol-length window on a fixed hop so the display scrolls smoothly. */
+/**
+ * Analyzes symbol-length windows on a fixed hop so the display scrolls smoothly.
+ * While the packet decoder holds a sync lock, windows snap to its symbol boundaries
+ * (each held until the next boundary passes) so the display mirrors the decoder's
+ * actual per-symbol decisions; during sync search a trailing window slides freely.
+ */
 function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkBase: number): void {
   if (!detector) return;
   // Positions share the capture clock so replay and history stay aligned across reconfigures.
   detectorSamplePosition = chunkBase;
   const samplesPerSymbol = Math.max(1, Math.round(sampleRate / detector.symbolRate));
-  if (detectorWindow.length !== samplesPerSymbol) {
-    detectorWindow = new Float32Array(samplesPerSymbol);
+  // Retain one hop of history beyond the window so a boundary inside the last hop is extractable.
+  const ringLength = samplesPerSymbol + DETECTOR_HOP_SAMPLES;
+  if (detectorWindow.length !== ringLength) {
+    detectorWindow = new Float32Array(ringLength);
     detectorFilled = 0;
     detectorSinceEmit = 0;
+    alignedDetection = undefined;
+    alignedBoundary = -1;
   }
   let offset = 0;
   while (offset < samples.length) {
@@ -86,14 +100,33 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
     detectorSamplePosition += count;
     if (detectorSinceEmit < DETECTOR_HOP_SAMPLES) continue;
     detectorSinceEmit = 0;
-    if (detectorFilled < detectorWindow.length) continue;
-    const result = squelchFskDetection(
-      detectFskSymbol(detectorWindow, sampleRate, detector.frequencies),
-      detector.squelchDbfs
-    );
-    send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++,
+    if (detectorFilled < samplesPerSymbol) continue;
+    const anchor = fskStreamDecoder?.lockedSymbolAnchor();
+    let detection: FskSymbolDetection | undefined;
+    if (anchor !== undefined && anchor <= detectorSamplePosition - samplesPerSymbol) {
+      const boundary = anchor + samplesPerSymbol *
+        Math.floor((detectorSamplePosition - anchor) / samplesPerSymbol);
+      const start = detectorFilled - (detectorSamplePosition - boundary) - samplesPerSymbol;
+      if (boundary > alignedBoundary && start >= 0) {
+        alignedDetection = detectFskSymbol(
+          detectorWindow.subarray(start, start + samplesPerSymbol), sampleRate, detector.frequencies);
+        alignedBoundary = boundary;
+      }
+      detection = alignedDetection;
+    } else {
+      alignedDetection = undefined;
+      alignedBoundary = -1;
+    }
+    detection ??= detectFskSymbol(
+      detectorWindow.subarray(detectorFilled - samplesPerSymbol, detectorFilled),
+      sampleRate, detector.frequencies);
+    const result = squelchFskDetection(detection, detector.squelchDbfs);
+    // Copy the scores: aligned results are re-emitted until the next boundary,
+    // so the cached array must survive the transfer.
+    const scores = result.scores.slice();
+    send({ type: 'symbol-scores', mode: 'FSK', ...result, scores, sequence: detectorSequence++,
       samplePosition: detectorSamplePosition },
-      [result.scores.buffer as ArrayBuffer]);
+      [scores.buffer as ArrayBuffer]);
   }
 }
 

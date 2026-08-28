@@ -141,6 +141,15 @@ export class FskStreamDecoder {
 
   drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }
 
+  /**
+   * Absolute stream position where the locked candidate frame starts, or undefined
+   * while searching. Symbol boundaries fall at anchor + k * samplesPerSymbol, letting
+   * displays analyze the same sample-aligned windows the decoder decides on.
+   */
+  lockedSymbolAnchor(): number | undefined {
+    return this.candidateOffset === undefined ? undefined : this.streamPosition + this.candidateOffset;
+  }
+
   private findSync(): boolean {
     const syncSymbols = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
     const required = syncSymbols * this.samplesPerSymbol;

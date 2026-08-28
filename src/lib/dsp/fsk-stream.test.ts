@@ -89,6 +89,26 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].payload).toEqual(payload);
   });
 
+  it('exposes the locked symbol anchor during a frame and clears it after decode', () => {
+    const payload = new TextEncoder().encode('anchor test payload');
+    const waveform = encodeFsk(payload, config).samples;
+    const lead = 73;
+    const samples = new Float32Array(lead + waveform.length);
+    samples.set(waveform, lead);
+    const base = 10_000;
+    const receiver = new FskStreamDecoder(config, -Infinity, base);
+    expect(receiver.lockedSymbolAnchor()).toBeUndefined();
+    // Push through sync plus lookahead but stop before the frame completes.
+    const partial = lead + 24 * Math.round(config.sampleRate / config.symbolRate);
+    receiver.push(samples.subarray(0, partial));
+    const anchor = receiver.lockedSymbolAnchor();
+    expect(anchor).toBeDefined();
+    expect(Math.abs(anchor! - (base + lead))).toBeLessThanOrEqual(2);
+    const packets = receiver.push(samples.subarray(partial));
+    expect(packets).toHaveLength(1);
+    expect(receiver.lockedSymbolAnchor()).toBeUndefined();
+  });
+
   it('decodes a 16-tone stream with byte-aligned symbols', () => {
     const wide = {
       sampleRate: 48_000, symbolRate: 400,
