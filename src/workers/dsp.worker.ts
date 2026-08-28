@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { hannWindow, magnitudesToDecibels, realFftMagnitude } from '../lib/audio/fft';
+import { DETECTOR_HOP_SAMPLES } from '../lib/audio/waterfall';
 import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../lib/audio/contracts';
 import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
   goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
@@ -15,8 +16,9 @@ let pendingLength = 0;
 let spectrumSequence = 0;
 let spectrumSamplePosition = 0;
 let detector: { frequencies: number[]; symbolRate: number; squelchDbfs: number; confidenceThreshold: number } | undefined;
-let detectorPending = new Float32Array(0);
-let detectorLength = 0;
+let detectorWindow = new Float32Array(0);
+let detectorFilled = 0;
+let detectorSinceEmit = 0;
 let detectorSequence = 0;
 let detectorSamplePosition = 0;
 let fskStreamDecoder: FskStreamDecoder | undefined;
@@ -44,38 +46,53 @@ function configureDetector(mode: 'off' | 'FSK', fsk?: {
     ? { frequencies: [...fsk.frequencies], symbolRate: fsk.symbolRate,
         squelchDbfs: fsk.squelchDbfs, confidenceThreshold: fsk.confidenceThreshold }
     : undefined;
-  detectorPending = new Float32Array(0);
-  detectorLength = 0;
+  detectorWindow = new Float32Array(0);
+  detectorFilled = 0;
+  detectorSinceEmit = 0;
   detectorSequence = 0;
   detectorSamplePosition = 0;
   fskStreamDecoder = undefined;
   detectorSampleRate = 0;
 }
 
+function appendDetectorWindow(chunk: Float32Array): void {
+  if (chunk.length >= detectorWindow.length) {
+    detectorWindow.set(chunk.subarray(chunk.length - detectorWindow.length));
+    detectorFilled = detectorWindow.length;
+    return;
+  }
+  const keep = Math.min(detectorFilled, detectorWindow.length - chunk.length);
+  detectorWindow.copyWithin(0, detectorFilled - keep, detectorFilled);
+  detectorWindow.set(chunk, keep);
+  detectorFilled = keep + chunk.length;
+}
+
+/** Analyzes a sliding symbol-length window on a fixed hop so the display scrolls smoothly. */
 function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void {
   if (!detector) return;
   const samplesPerSymbol = Math.max(1, Math.round(sampleRate / detector.symbolRate));
-  if (detectorPending.length !== samplesPerSymbol) {
-    detectorPending = new Float32Array(samplesPerSymbol);
-    detectorLength = 0;
+  if (detectorWindow.length !== samplesPerSymbol) {
+    detectorWindow = new Float32Array(samplesPerSymbol);
+    detectorFilled = 0;
+    detectorSinceEmit = 0;
   }
   let offset = 0;
   while (offset < samples.length) {
-    const count = Math.min(samples.length - offset, samplesPerSymbol - detectorLength);
-    detectorPending.set(samples.subarray(offset, offset + count), detectorLength);
-    detectorLength += count;
+    const count = Math.min(samples.length - offset, DETECTOR_HOP_SAMPLES - detectorSinceEmit);
+    appendDetectorWindow(samples.subarray(offset, offset + count));
+    detectorSinceEmit += count;
     offset += count;
-    if (detectorLength === samplesPerSymbol) {
-      const result = gateFskDetection(
-        detectFskSymbol(detectorPending, sampleRate, detector.frequencies),
-        detector.squelchDbfs, detector.confidenceThreshold
-      );
-      detectorSamplePosition += samplesPerSymbol;
-      send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++,
-        samplePosition: detectorSamplePosition },
-        [result.scores.buffer as ArrayBuffer]);
-      detectorLength = 0;
-    }
+    detectorSamplePosition += count;
+    if (detectorSinceEmit < DETECTOR_HOP_SAMPLES) continue;
+    detectorSinceEmit = 0;
+    if (detectorFilled < detectorWindow.length) continue;
+    const result = gateFskDetection(
+      detectFskSymbol(detectorWindow, sampleRate, detector.frequencies),
+      detector.squelchDbfs, detector.confidenceThreshold
+    );
+    send({ type: 'symbol-scores', mode: 'FSK', ...result, sequence: detectorSequence++,
+      samplePosition: detectorSamplePosition },
+      [result.scores.buffer as ArrayBuffer]);
   }
 }
 
@@ -85,7 +102,7 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
   if (detector && detectorSampleRate !== sampleRate) {
     fskStreamDecoder = new FskStreamDecoder(
       { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies },
-      detector.squelchDbfs, detector.confidenceThreshold
+      detector.squelchDbfs
     );
     detectorSampleRate = sampleRate;
   }
@@ -176,7 +193,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
-      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorLength = 0; detectorPending.fill(0); detectorSamplePosition = 0; fskStreamDecoder?.reset(); break;
+      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); detectorSamplePosition = 0; fskStreamDecoder?.reset(); break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);

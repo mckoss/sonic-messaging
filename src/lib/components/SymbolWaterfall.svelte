@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSampleDelta } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, intensityToRgb, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance, waterfallSampleDelta } from '../audio/waterfall';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -40,8 +40,7 @@
     }
     if (pendingScores.length !== scores.length) pendingScores = new Float32Array(scores.length);
     for (let index = 0; index < scores.length; index++) pendingScores[index] = Math.max(pendingScores[index], scores[index]);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastSymbolSamplePosition,
-      sampleRate / Math.max(1, symbolRate));
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastSymbolSamplePosition, DETECTOR_HOP_SAMPLES);
     symbolPixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(symbolPixelRemainder);
     const columnWidth = Math.min(pixelWidth, elapsedPixels);
@@ -82,8 +81,7 @@
       ctx.fillStyle = '#050a18'; ctx.fillRect(0, 0, pixelWidth, pixelHeight);
     }
     pendingConfidence = Math.max(pendingConfidence, confidence);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastConfidenceSamplePosition,
-      sampleRate / Math.max(1, symbolRate));
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastConfidenceSamplePosition, DETECTOR_HOP_SAMPLES);
     confidencePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(confidencePixelRemainder);
     const columnWidth = Math.min(pixelWidth, elapsedPixels);
@@ -117,8 +115,7 @@
     if (!ctx) return;
     const ratio = Math.max(1, window.devicePixelRatio || 1);
     const { pixelWidth, pixelHeight } = prepareTimeline(ctx, ratio);
-    const elapsedSamples = waterfallSampleDelta(samplePosition, lastTimelineSamplePosition,
-      sampleRate / Math.max(1, symbolRate));
+    const elapsedSamples = waterfallSampleDelta(samplePosition, lastTimelineSamplePosition, DETECTOR_HOP_SAMPLES);
     timelinePixelRemainder += waterfallPixelAdvance(elapsedSamples, ratio, samplesPerCssPixel);
     const elapsedPixels = Math.floor(timelinePixelRemainder);
     const advance = Math.min(pixelWidth, elapsedPixels);
@@ -141,7 +138,7 @@
     const { pixelWidth } = prepareTimeline(ctx, ratio);
     for (const marker of pending) {
       const span = Math.max(2 * ratio, waterfallPixelAdvance(
-        marker.symbols * sampleRate / Math.max(1, symbolRate), ratio
+        marker.symbols * sampleRate / Math.max(1, symbolRate), ratio, samplesPerCssPixel
       ));
       const right = pixelWidth - ratio, left = Math.max(0, right - span);
       const top = 5 * ratio, tickBottom = 11 * ratio;

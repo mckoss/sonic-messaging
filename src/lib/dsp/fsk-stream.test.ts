@@ -33,6 +33,22 @@ describe('continuous FSK receiver', () => {
     expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['one', 'two']);
   });
 
+  it('decodes a soft noisy signal whose confidence sits below the display gate', () => {
+    const payload = new TextEncoder().encode('soft signal');
+    const waveform = encodeFsk(payload, { ...config, amplitude: 0.05 }).samples;
+    let seed = 1;
+    const noise = () => {
+      seed = (seed * 48271) % 2147483647;
+      return (seed / 2147483647 - 0.5) * 0.15;
+    };
+    const samples = Float32Array.from(waveform, value => value + noise());
+    const packets = new FskStreamDecoder(config, -45).push(samples);
+    expect(packets).toHaveLength(1);
+    expect(packets[0].payload).toEqual(payload);
+    // The app's default display gate is 0.8; packet decoding must not use it.
+    expect(packets[0].confidence).toBeLessThan(0.8);
+  });
+
   it('acquires through one damaged sync symbol while retaining CRC payload validation', () => {
     const payload = new TextEncoder().encode('sync recovery');
     const samples = encodeFsk(payload, config).samples;

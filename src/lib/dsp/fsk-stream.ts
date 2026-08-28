@@ -1,6 +1,6 @@
 import { bitsToBytes } from './bits';
 import { unframe } from './frame';
-import { detectFskSymbol, gateFskDetection, windowPowerDbfs } from './fsk-detector';
+import { detectFskSymbol, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
 const SYNC = [0xd3, 0x91, 0xd3, 0x91];
@@ -41,8 +41,7 @@ export class FskStreamDecoder {
 
   constructor(
     private readonly config: FskConfig,
-    private readonly squelchDbfs = -Infinity,
-    private readonly confidenceThreshold = 0.15
+    private readonly squelchDbfs = -Infinity
   ) {
     this.bitsPerSymbol = Math.log2(config.frequencies.length);
     if (!Number.isInteger(this.bitsPerSymbol) || this.bitsPerSymbol < 1) {
@@ -85,7 +84,7 @@ export class FskStreamDecoder {
       }
       const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
       if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS) {
-        this.candidateOffset = this.searchOffset;
+        this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
         this.progress.push({ type: 'sync' });
         return true;
@@ -93,6 +92,27 @@ export class FskStreamDecoder {
       this.searchOffset += this.phaseStep;
     }
     return false;
+  }
+
+  /** Locks sync timing to the sample by maximizing sync confidence near the first match. */
+  private refineSyncPhase(start: number, confidence: number): number {
+    const required = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
+    const trial = (offset: number, best: { offset: number; confidence: number }) => {
+      if (offset < 0 || offset === best.offset || offset + required > this.samples.length) return;
+      const decoded = this.decodeBytes(offset, SYNC.length);
+      if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS && decoded.confidence > best.confidence) {
+        best.offset = offset; best.confidence = decoded.confidence;
+      }
+    };
+    const coarse = { offset: start, confidence };
+    for (let offset = start + this.phaseStep; offset < start + this.samplesPerSymbol; offset += this.phaseStep) {
+      trial(offset, coarse);
+    }
+    const fine = { ...coarse };
+    for (let offset = coarse.offset - this.phaseStep + 1; offset < coarse.offset + this.phaseStep; offset++) {
+      trial(offset, fine);
+    }
+    return fine.offset;
   }
 
   /** undefined means incomplete, null means rejected, and a value is a valid packet. */
@@ -150,14 +170,20 @@ export class FskStreamDecoder {
     let confidence = 0;
     for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
       const start = offset + symbolIndex * this.samplesPerSymbol;
-      const decision = gateFskDetection(detectFskSymbol(
+      const decision = detectFskSymbol(
         this.samples.subarray(start, start + this.samplesPerSymbol),
         this.config.sampleRate,
         this.config.frequencies
-      ), this.squelchDbfs, this.confidenceThreshold);
+      );
       confidence += decision.confidence;
+      // Always take the strongest tone: sync matching and the CRC validate the
+      // frame, so display-oriented confidence gates must not corrupt bits here.
+      let symbol = 0;
+      for (let index = 1; index < decision.scores.length; index++) {
+        if (decision.scores[index] > decision.scores[symbol]) symbol = index;
+      }
       for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
-        bits.push((decision.symbol >>> bit) & 1);
+        bits.push((symbol >>> bit) & 1);
       }
     }
     return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };

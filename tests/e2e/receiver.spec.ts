@@ -12,6 +12,18 @@ test('receiver waterfalls expose one shared captured-audio time scale', async ({
   await expect(page.getByLabel('Microphone')).toHaveValue('default');
 });
 
+test('updates the symbol waterfall axis when tone settings change', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  const labels = page.getByTestId('symbol-waterfall').locator('.labels span');
+  await expect(labels).toHaveCount(4);
+  await expect(labels.first()).toHaveText('S0 · 500Hz');
+  await page.getByLabel('Tones').selectOption('8');
+  await page.getByLabel('Lowest frequency').fill('1000');
+  await page.getByLabel('Lowest frequency').press('Tab');
+  await expect(labels).toHaveCount(8);
+  await expect(labels.first()).toHaveText('S0 · 1000Hz');
+});
+
 test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.goto('/sonic-messaging/');
   await expect(page.getByLabel('Lowest frequency')).toHaveValue('500');

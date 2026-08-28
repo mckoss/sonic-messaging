@@ -55,12 +55,12 @@
   let logs = ['Ready · Audio engine awaiting user interaction'];
 
   async function onTransmit(detail: { mode: Mode; payload: string; settings: Record<string, unknown> }) {
-    logs = [`${new Date().toLocaleTimeString()} · Queued ${mode} transmission`, ...logs].slice(0, 10);
     busy = true;
     try {
       const waveform = await lab.encode(detail);
       await audio.transmit(waveform.samples);
-      logs = [`${new Date().toLocaleTimeString()} · Playing ${waveform.samples.length.toLocaleString()} samples`, ...logs].slice(0, 10);
+      const seconds = waveform.samples.length / waveform.sampleRate;
+      logs = [`${new Date().toLocaleTimeString()} · TX ${mode} "${detail.payload}" · ${seconds.toFixed(1)} s of audio`, ...logs].slice(0, 10);
     } catch (error) {
       logs = [`Transmit error · ${error instanceof Error ? error.message : String(error)}`, ...logs].slice(0, 10);
     } finally { busy = false; }
@@ -108,7 +108,10 @@
   function persistPreferences() {
     if (preferencesReady) saveUserPreferences(window.localStorage, currentPreferences());
   }
-  function onSettingsChange() { configureDetector(); persistPreferences(); }
+  function onSettingsChange() {
+    settings = settings; // ModeControls mutates in place; reassign so labels and props re-render.
+    configureDetector(); persistPreferences();
+  }
   async function refreshInputDevices(validateSelection = false) {
     try {
       const devices = await audio.listInputDevices();
@@ -161,9 +164,9 @@
         const text = decoded.decode(event.payload);
         packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
-        logs = [`${new Date().toLocaleTimeString()} · Live FSK packet decoded (${event.payload.length} bytes, CRC valid)`, ...logs].slice(0, 10);
+        logs = [`${new Date().toLocaleTimeString()} · RX FSK "${text}" · ${event.payload.length} byte${event.payload.length === 1 ? '' : 's'} · CRC ok`, ...logs].slice(0, 10);
       } catch {
-        logs = [`${new Date().toLocaleTimeString()} · Valid FSK frame rejected: payload is not UTF-8`, ...logs].slice(0, 10);
+        logs = [`${new Date().toLocaleTimeString()} · RX FSK frame with valid CRC rejected: payload is not UTF-8 text`, ...logs].slice(0, 10);
       }
     });
     const offReception = audio.onReception(event => {

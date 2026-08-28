@@ -2,6 +2,8 @@ export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
 export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 256;
 export const WATERFALL_SPEED_SAMPLES = { Slow: 512, Medium: 256, Fast: 128 } as const;
+/** Detector display cadence; matches the spectrum lane's hop so both scroll equally smoothly. */
+export const DETECTOR_HOP_SAMPLES = 1024;
 
 export interface BinRange { start: number; end: number }
 
