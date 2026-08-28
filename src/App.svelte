@@ -164,7 +164,6 @@
         const text = decoded.decode(event.payload);
         packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
-        logs = [`${new Date().toLocaleTimeString()} · RX FSK "${text}" · ${event.payload.length} byte${event.payload.length === 1 ? '' : 's'} · CRC ok`, ...logs].slice(0, 10);
       } catch {
         logs = [`${new Date().toLocaleTimeString()} · RX FSK frame with valid CRC rejected: payload is not UTF-8 text`, ...logs].slice(0, 10);
       }
@@ -180,7 +179,6 @@
       if (event.token === 'sync') {
         receptionDecoder = new TextDecoder(); receivingMessage = '';
         addMarker('<SYNC>', 4);
-        logs = [`${new Date().toLocaleTimeString()} · FSK sync acquired`, ...logs].slice(0, 10);
       } else if (event.token === 'crc-confirm') {
         receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
         addMarker('✓', 2);
