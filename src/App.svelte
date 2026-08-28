@@ -8,7 +8,7 @@
   import { fskFrequencies } from './lib/dsp';
   import { loadUserPreferences, saveUserPreferences, type Mode, type UserPreferences } from './lib/preferences';
   import { WATERFALL_SPEED_SAMPLES } from './lib/audio/waterfall';
-  import { waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
+  import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
   import { get } from 'svelte/store';
 
   let spectrum: Float32Array = new Float32Array(1024).fill(-110);
@@ -162,9 +162,25 @@
       const seconds = captured.samples.length / captured.sampleRate;
       logs = [`${new Date().toLocaleTimeString()} · Replaying ${seconds.toFixed(1)} s of ${replayMode === 'fft' ? 'FFT-reconstructed' : 'captured'} audio`, ...logs].slice(0, 10);
       await audio.transmit(captured.samples);
+      startReplaySweep(to - captured.samples.length, to, captured.sampleRate);
     } catch (error) {
       logs = [`Replay error · ${error instanceof Error ? error.message : String(error)}`, ...logs].slice(0, 10);
     } finally { busy = false; }
+  }
+  let replaySweepFrame = 0;
+  /** Sweep the waterfall playback cursor across [from, to] on the capture clock in real time. */
+  function startReplaySweep(from: number, to: number, sampleRate: number) {
+    cancelAnimationFrame(replaySweepFrame);
+    const startedAt = performance.now();
+    const step = (now: number) => {
+      replayPlaybackPosition.set(Math.min(from + ((now - startedAt) / 1000) * sampleRate, to));
+      replaySweepFrame = requestAnimationFrame(step);
+    };
+    replaySweepFrame = requestAnimationFrame(step);
+    void audio.waitForPlayback().then(() => {
+      cancelAnimationFrame(replaySweepFrame);
+      replayPlaybackPosition.set(-1);
+    });
   }
   function toggleListen() { void onListenToggle(!listening); }
   function simulate() { void onRunSimulation({ mode, payload, settings: { ...settings[mode] }, snr, interferer, interfererPower }); }

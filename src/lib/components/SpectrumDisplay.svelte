@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { DETECTOR_HOP_SAMPLES, dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
-  import { waterfallScrubSamples } from '../audio/scrub-store';
+  import { replayPlaybackPosition, waterfallScrubSamples } from '../audio/scrub-store';
 
   export let spectrum: number[] | Float32Array = [];
   export let sampleRate = 48_000;
@@ -122,6 +122,18 @@
     }
   }
 
+  // CSS-pixel x of the replay playback cursor within the viewport, or -1 when hidden.
+  let sweepLeft = -1;
+  function updateSweep() {
+    const position = $replayPlaybackPosition;
+    if (position < 0 || !ring || renderedPosition < 0) { sweepLeft = -1; return; }
+    const backPx = Math.floor(waterfallPixelAdvance(
+      Math.min(scrubSamples, maxScrubSamples()), ringRatio, ringSpp));
+    const pixelWidth = Math.max(1, Math.round(width * ringRatio));
+    const x = xOf(position) - (Math.floor(xOf(renderedPosition)) - backPx - pixelWidth);
+    sweepLeft = x >= 0 && x <= pixelWidth ? x / ringRatio : -1;
+  }
+
   let dragPointer = -1, dragX = 0;
   function scrubStart(event: PointerEvent) {
     dragPointer = event.pointerId; dragX = event.clientX;
@@ -169,6 +181,7 @@
       ensureRing();
       ensureCleared(Math.floor(xOf(renderedPosition)));
       blit();
+      updateSweep();
     };
     frame = requestAnimationFrame(tick);
     return () => { resize.disconnect(); cancelAnimationFrame(frame); };
@@ -176,7 +189,7 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="spectrum-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
-  <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum scrub" role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
+  <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum scrub" role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
 </div>
 
 <style>
@@ -187,6 +200,7 @@
   .scrub { cursor:grab; touch-action:none; }
   .scrub:active { cursor:grabbing; }
   .live { position:absolute; top:7px; right:9px; border:1px solid #2c8e6f; border-radius:99px; padding:4px 10px; background:#0b2c22e6; color:#4ee8b4; font:600 10px ui-monospace,monospace; cursor:pointer; }
+  .sweep { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#ff4b63; box-shadow:0 0 7px #ff4b63b0; pointer-events:none; }
   .axis { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
   .axis { display:flex; flex-direction:column; justify-content:space-between; padding:1px 0; text-align:right; }
   @media (max-width: 559px) { canvas { height: 176px; } }

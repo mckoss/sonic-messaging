@@ -81,3 +81,22 @@ test('streams decoded characters into the RX lane and paints RX TIME markers', a
     await live.first().click();
     await expect(live).toHaveCount(0);
 });
+
+test('sweeps a playback cursor across the waterfalls while replaying visible audio', async ({ page }) => {
+    await page.goto('/sonic-messaging/');
+    await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
+    await page.getByLabel('Symbol rate').press('Tab');
+    await page.getByRole('button', { name: 'Start listening' }).click();
+    await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 20_000 });
+
+    await page.getByRole('button', { name: '▶ Replay visible audio' }).click();
+    const sweeps = page.getByTestId('replay-sweep');
+    await expect(sweeps).toHaveCount(2, { timeout: 5_000 });
+
+    const sweep = sweeps.first();
+    const leftAt = async () => parseFloat(await sweep.evaluate(element => (element as HTMLElement).style.left));
+    const first = await leftAt();
+    await page.waitForTimeout(800);
+    const second = await leftAt();
+    expect(second).toBeGreaterThan(first);
+});

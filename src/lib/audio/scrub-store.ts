@@ -8,3 +8,6 @@ export const waterfallScrubSamples = writable(0);
 
 /** The symbol waterfall's live-edge sample position and viewport width in samples. */
 export const waterfallView = writable({ position: -1, viewSamples: 0 });
+
+/** Capture-clock sample position currently audible during scrub replay, or -1 when idle. */
+export const replayPlaybackPosition = writable(-1);

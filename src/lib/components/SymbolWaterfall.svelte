@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { DETECTOR_HOP_SAMPLES, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
-  import { waterfallScrubSamples, waterfallView } from '../audio/scrub-store';
+  import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from '../audio/scrub-store';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -201,6 +201,18 @@
     blitLane(rings.timeline, timelineCanvas);
   }
 
+  // CSS-pixel x of the replay playback cursor within the viewport, or -1 when hidden.
+  let sweepLeft = -1;
+  function updateSweep() {
+    const position = $replayPlaybackPosition;
+    if (position < 0 || !rings || renderedPosition < 0) { sweepLeft = -1; return; }
+    const backPx = Math.floor(waterfallPixelAdvance(
+      Math.min(scrubSamples, maxScrubSamples()), ringRatio, ringSpp));
+    const pixelWidth = Math.max(1, Math.round(width * ringRatio));
+    const x = xOf(position) - (Math.floor(xOf(renderedPosition)) - backPx - pixelWidth);
+    sweepLeft = x >= 0 && x <= pixelWidth ? x / ringRatio : -1;
+  }
+
   let dragPointer = -1, dragX = 0;
   function scrubStart(event: PointerEvent) {
     dragPointer = event.pointerId; dragX = event.clientX;
@@ -250,6 +262,7 @@
       ensureCleared(Math.floor(xOf(renderedPosition)));
       drawTimelineMarkers();
       blit();
+      updateSweep();
       waterfallView.set({ position: renderedPosition, viewSamples: width * samplesPerCssPixel });
     };
     frame = requestAnimationFrame(tick);
@@ -258,7 +271,7 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
-  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector scrub" class:scrubbed={scrubSamples > 0} role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
+  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector scrub" class:scrubbed={scrubSamples > 0} role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history scrub" aria-label="Scrolling FSK symbol confidence history" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history scrub" aria-label="Scrolling decoded FSK character timing" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
   <div class="receive"><span class="channel">RX</span><div class="messages"><span>{#each [...recentMessages] as character}<i class:confirm={character === '✓'} class:error={character === '✕'}>{character}</i>{/each}</span></div></div>
@@ -280,6 +293,7 @@
   .scrub { cursor:grab; touch-action:none; }
   .scrub.scrubbed, .scrub:active { cursor:grabbing; }
   .live { position:absolute; top:7px; right:9px; border:1px solid #2c8e6f; border-radius:99px; padding:4px 10px; background:#0b2c22e6; color:#4ee8b4; font:600 10px ui-monospace,monospace; cursor:pointer; }
+  .sweep { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#ff4b63; box-shadow:0 0 7px #ff4b63b0; pointer-events:none; }
   .messages { height:27px; display:flex; align-items:center; justify-content:flex-end; overflow:hidden; padding:4px 8px; border:1px solid #203149; border-radius:7px; background:#050a18; color:#cfe3ff; font:11px ui-monospace,monospace; white-space:pre; }
   .messages span { flex:0 0 auto; }
   .messages i { font:inherit; font-style:normal; }.messages i.confirm{color:#4ee8b4;font-weight:800}.messages i.error{color:#ff8da8;font-weight:800}
