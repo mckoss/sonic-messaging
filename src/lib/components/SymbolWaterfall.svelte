@@ -231,11 +231,17 @@
       // Free-run at the audio rate with bounded catch-up when the worker is behind,
       // easing to a stop within two hops ahead of the data so the live edge stays
       // pinned to the display's right edge instead of scrolling into blank canvas.
+      // More than a second behind (e.g. returning to a background-throttled tab):
+      // jump to the data head; the scrub offset is delay-from-live, so it is kept.
       const lag = latestPosition - renderedPosition;
-      const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate)
-        : Math.max(0, 1 + lag / (2 * DETECTOR_HOP_SAMPLES));
-      renderedPosition = Math.min(renderedPosition + dt * sampleRate * factor,
-        latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+      if (lag > sampleRate) {
+        renderedPosition = latestPosition;
+      } else {
+        const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate)
+          : Math.max(0, 1 + lag / (2 * DETECTOR_HOP_SAMPLES));
+        renderedPosition = Math.min(renderedPosition + dt * sampleRate * factor,
+          latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+      }
       ensureRings();
       ensureCleared(Math.floor(xOf(renderedPosition)));
       drawTimelineMarkers();
