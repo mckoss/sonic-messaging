@@ -88,4 +88,20 @@ describe('continuous FSK receiver', () => {
     expect(packets).toHaveLength(1);
     expect(packets[0].payload).toEqual(payload);
   });
+
+  it('decodes a 16-tone stream with byte-aligned symbols', () => {
+    const wide = {
+      sampleRate: 48_000, symbolRate: 400,
+      frequencies: Array.from({ length: 16 }, (_, i) => 2400 + 800 * i)
+    };
+    const payload = new TextEncoder().encode('16-FSK ✓');
+    const waveform = encodeFsk(payload, wide).samples;
+    const samples = new Float32Array(91 + waveform.length + 130);
+    samples.set(waveform, 91);
+    const receiver = new FskStreamDecoder(wide);
+    const packets = [...receiver.push(samples.subarray(0, 1024)), ...receiver.push(samples.subarray(1024))];
+    expect(packets).toHaveLength(1);
+    expect(packets[0].payload).toEqual(payload);
+    expect(packets[0].confidence).toBeGreaterThan(0.5);
+  });
 });
