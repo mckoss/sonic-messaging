@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { hannWindow, magnitudesToDecibels, realFftMagnitude } from '../lib/audio/fft';
+import { hannWindow, magnitudesToDecibels, realFftMagnitude, reconstructFromMagnitudes } from '../lib/audio/fft';
 import { DETECTOR_HOP_SAMPLES } from '../lib/audio/waterfall';
 import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../lib/audio/contracts';
 import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
@@ -96,6 +96,42 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number): void 
   }
 }
 
+// Retain the last minute of captured audio for scrub-position replay.
+const AUDIO_HISTORY_SECONDS = 60;
+let audioRing = new Float32Array(0);
+let audioRingRate = 48_000;
+
+function storeCapturedAudio(samples: Float32Array, sampleRate: number): void {
+  const size = AUDIO_HISTORY_SECONDS * sampleRate;
+  if (audioRing.length !== size || audioRingRate !== sampleRate) {
+    audioRing = new Float32Array(size);
+    audioRingRate = sampleRate;
+  }
+  let offset = 0;
+  while (offset < samples.length) {
+    const x = (captureSamples + offset) % size;
+    const count = Math.min(samples.length - offset, size - x);
+    audioRing.set(samples.subarray(offset, offset + count), x);
+    offset += count;
+  }
+}
+
+function extractCapturedAudio(fromInput: number, toInput: number, mode: 'raw' | 'fft'): Float32Array {
+  const size = audioRing.length;
+  if (!size) return new Float32Array(0);
+  const head = captureSamples;
+  const from = Math.max(Math.floor(fromInput), head - size, 0);
+  const to = Math.max(from, Math.min(Math.ceil(toInput), head));
+  const out = new Float32Array(to - from);
+  for (let index = 0; index < out.length; ) {
+    const x = (from + index) % size;
+    const count = Math.min(out.length - index, size - x);
+    out.set(audioRing.subarray(x, x + count), index);
+    index += count;
+  }
+  return mode === 'fft' ? reconstructFromMagnitudes(out) : out;
+}
+
 // A microphone never delivers long runs of exact zeros; the OS/browser audio
 // pipeline inserts them when capture underruns. Surface those glitches.
 const CAPTURE_GAP_RUN = 256;
@@ -118,6 +154,7 @@ function detectCaptureGaps(samples: Float32Array, sampleRate: number): void {
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  storeCapturedAudio(samples, sampleRate);
   detectCaptureGaps(samples, sampleRate);
   // Keep visualization responsive even when multi-phase packet acquisition is busy.
   acceptDetectorSamples(samples, sampleRate);
@@ -216,6 +253,12 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
+      case 'audio-request': {
+        const samples = extractCapturedAudio(data.from, data.to, data.mode);
+        send({ type: 'audio-data', requestId: data.requestId, samples, sampleRate: audioRingRate },
+          [samples.buffer as ArrayBuffer]);
+        break;
+      }
       case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); detectorSamplePosition = 0; fskStreamDecoder?.reset(); break;
       case 'decode':
         if (data.command === 'simulate') {

@@ -8,6 +8,8 @@
   import { fskFrequencies } from './lib/dsp';
   import { loadUserPreferences, saveUserPreferences, type Mode, type UserPreferences } from './lib/preferences';
   import { WATERFALL_SPEED_SAMPLES } from './lib/audio/waterfall';
+  import { waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
+  import { get } from 'svelte/store';
 
   let spectrum: Float32Array = new Float32Array(1024).fill(-110);
   let spectrumSequence = -1;
@@ -141,6 +143,26 @@
     );
   }
   function selectMode(next: Mode) { mode = next; configureDetector(); persistPreferences(); }
+  async function replayVisible(replayMode: 'raw' | 'fft') {
+    busy = true;
+    try {
+      if (listening) await onListenToggle(false);
+      const view = get(waterfallView);
+      if (view.position < 0) return;
+      const to = Math.max(0, view.position - get(waterfallScrubSamples));
+      const from = Math.max(0, to - view.viewSamples);
+      const captured = await audio.requestCapturedAudio(from, to, replayMode);
+      if (!captured.samples.length) {
+        logs = [`${new Date().toLocaleTimeString()} · No captured audio in the visible window`, ...logs].slice(0, 10);
+        return;
+      }
+      const seconds = captured.samples.length / captured.sampleRate;
+      logs = [`${new Date().toLocaleTimeString()} · Replaying ${seconds.toFixed(1)} s of ${replayMode === 'fft' ? 'FFT-reconstructed' : 'captured'} audio`, ...logs].slice(0, 10);
+      await audio.transmit(captured.samples);
+    } catch (error) {
+      logs = [`Replay error · ${error instanceof Error ? error.message : String(error)}`, ...logs].slice(0, 10);
+    } finally { busy = false; }
+  }
   function toggleListen() { void onListenToggle(!listening); }
   function simulate() { void onRunSimulation({ mode, payload, settings: { ...settings[mode] }, snr, interferer, interfererPower }); }
   function onInstall() { void installPrompt?.prompt(); }
@@ -248,6 +270,7 @@
       {/if}
       <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · squelched' : mode : 'Standby'}</strong></div></div>
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
+      <div class="replay-row"><button class="replay" disabled={busy} on:click={() => void replayVisible('raw')}>▶ Replay visible audio</button><button class="replay" disabled={busy} on:click={() => void replayVisible('fft')}>▶ Replay FFT view</button></div>
     </section>
 
     <section class="card simulation" on:change={persistPreferences}>
@@ -283,7 +306,10 @@
   .layout{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;align-items:start}.card{background:linear-gradient(145deg,rgba(15,29,48,.94),rgba(8,18,31,.96));border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 18px 40px #0003}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.section-head>div{display:flex;align-items:center;gap:10px}.section-head h2{font-size:16px;margin:0}.step{font:11px ui-monospace,monospace;color:var(--accent);border:1px solid #4ee8b444;border-radius:6px;padding:4px}.hint{font-size:11px;color:var(--dim)}
   .tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:5px;background:#07111e;border-radius:12px;margin-bottom:24px}.tabs button{border:1px solid transparent;border-radius:9px;padding:9px;background:transparent;color:var(--muted);font-weight:750;cursor:pointer}.tabs button small{display:block;font-size:10px;font-weight:500;color:var(--dim);margin-top:2px}.tabs button.active{border-color:#375272;background:#152740;color:var(--text)}.tabs button.active small{color:#9eb3cc}
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
-  .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
+  .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}
+  .replay-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  .replay{border-radius:9px;border:1px solid var(--line);background:#0c1929;color:var(--muted);padding:9px;font-size:12px;font-weight:650;cursor:pointer}
+  .replay:disabled{opacity:.45;cursor:default}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
   .badge{font:10px ui-monospace,monospace;text-transform:uppercase;padding:5px 8px;border-radius:99px;background:#17263a;color:var(--dim)}.badge.listening,.badge.signal{color:var(--accent)}.readouts,.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.readouts div,.metrics div{padding:12px;background:#081321;border-radius:10px}.readouts span,.metrics span{display:block;color:var(--dim);font-size:10px}.readouts strong{font:600 12px ui-monospace,monospace}.metrics strong{display:block;font-size:22px;color:#d6e7fb;margin-bottom:3px}
   .receiver-actions{display:flex!important;align-items:center;gap:8px!important}.receiver-actions label{display:flex;align-items:center;gap:5px;color:var(--dim);font:10px ui-monospace,monospace}.receiver-actions select{max-width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);font:10px ui-monospace,monospace}
   .detector-head{display:flex;justify-content:space-between;gap:10px;margin:14px 2px 7px;color:var(--muted);font-size:11px;font-weight:650}.detector-head small{color:var(--dim);font-weight:500}

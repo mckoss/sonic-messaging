@@ -45,6 +45,8 @@ export class FskStreamDecoder {
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
+  /** Argmax symbols by absolute offset, shared across overlapping sync-search trials. */
+  private readonly syncScanCache = new Map<number, number>();
 
   constructor(
     private readonly config: FskConfig,
@@ -78,6 +80,37 @@ export class FskStreamDecoder {
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.streamPosition = 0;
     this.candidateSymbols = []; this.candidateConfidences = [];
+    this.syncScanCache.clear();
+  }
+
+  /** Argmax symbol for the window at an absolute stream offset, cached for sync trials. */
+  private scanSymbolAt(absolute: number): number {
+    const cached = this.syncScanCache.get(absolute);
+    if (cached !== undefined) return cached;
+    const offset = absolute - this.streamPosition;
+    const decision = detectFskSymbol(
+      this.samples.subarray(offset, offset + this.samplesPerSymbol),
+      this.config.sampleRate,
+      this.config.frequencies
+    );
+    let symbol = 0;
+    for (let index = 1; index < decision.scores.length; index++) {
+      if (decision.scores[index] > decision.scores[symbol]) symbol = index;
+    }
+    this.syncScanCache.set(absolute, symbol);
+    return symbol;
+  }
+
+  /** Sync-length bytes at a trial offset, assembled from cached scan symbols. */
+  private scanSyncBytes(searchOffset: number): Uint8Array {
+    const symbolCount = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
+    const absolute = this.streamPosition + searchOffset;
+    const bits: number[] = [];
+    for (let index = 0; index < symbolCount; index++) {
+      const symbol = this.scanSymbolAt(absolute + index * this.samplesPerSymbol);
+      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) bits.push((symbol >>> bit) & 1);
+    }
+    return bitsToBytes(bits).slice(0, SYNC.length);
   }
 
   /** Absolute stream sample index where the frame's first `bytes` bytes end (exact bit time). */
@@ -97,12 +130,12 @@ export class FskStreamDecoder {
         this.searchOffset += this.phaseStep;
         continue;
       }
-      const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
-      if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS) {
+      if (syncBitErrors(this.scanSyncBytes(this.searchOffset)) <= MAX_SYNC_BIT_ERRORS) {
         // Wait for one symbol of lookahead so phase refinement has samples to trial;
         // accepting immediately locks a coarse phase that can corrupt the whole frame.
         const lookahead = required + this.samplesPerSymbol + this.phaseStep;
         if (this.searchOffset + lookahead > this.samples.length) return false;
+        const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
         this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
@@ -125,15 +158,19 @@ export class FskStreamDecoder {
         best.offset = offset; best.confidence = decoded.confidence;
       }
     };
-    const coarse = { offset: start, confidence };
+    const best = { offset: start, confidence };
     for (let offset = start + this.phaseStep; offset < start + this.samplesPerSymbol; offset += this.phaseStep) {
-      trial(offset, coarse);
+      trial(offset, best);
     }
-    const fine = { ...coarse };
-    for (let offset = coarse.offset - this.phaseStep + 1; offset < coarse.offset + this.phaseStep; offset++) {
-      trial(offset, fine);
+    // Descend to sample accuracy with shrinking radius instead of an exhaustive scan.
+    let radius = this.phaseStep, step = Math.max(1, Math.floor(this.phaseStep / 8));
+    while (true) {
+      const center = best.offset;
+      for (let offset = center - radius; offset <= center + radius; offset += step) trial(offset, best);
+      if (step === 1) break;
+      radius = step; step = Math.max(1, Math.floor(step / 8));
     }
-    return fine.offset;
+    return best.offset;
   }
 
   /** undefined means incomplete, null means rejected, and a value is a valid packet. */
@@ -173,7 +210,9 @@ export class FskStreamDecoder {
     const framePosition = this.frameBytePosition(start, frameBytes);
     if (!parsed.payload) {
       this.progress.push({ type: 'crc-error', position: framePosition });
-      this.rejectCandidate();
+      // The sync itself was validated, so resume the search beyond it rather than
+      // re-matching the same sync at slightly shifted phases.
+      this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
       return null;
     }
     this.progress.push({ type: 'crc-confirm', position: framePosition });
@@ -186,8 +225,8 @@ export class FskStreamDecoder {
     return { payload: parsed.payload, confidence: decoded.confidence };
   }
 
-  private rejectCandidate(): void {
-    this.searchOffset = this.candidateOffset! + this.phaseStep;
+  private rejectCandidate(skip = this.phaseStep): void {
+    this.searchOffset = this.candidateOffset! + skip;
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false;
@@ -255,6 +294,9 @@ export class FskStreamDecoder {
         this.samples = this.samples.slice(this.candidateOffset);
         this.streamPosition += this.candidateOffset;
         this.searchOffset = 0; this.candidateOffset = 0;
+        for (const key of this.syncScanCache.keys()) {
+          if (key < this.streamPosition) this.syncScanCache.delete(key);
+        }
       }
       return;
     }
@@ -264,6 +306,9 @@ export class FskStreamDecoder {
       this.samples = this.samples.slice(removable);
       this.streamPosition += removable;
       this.searchOffset -= removable;
+    }
+    for (const key of this.syncScanCache.keys()) {
+      if (key < this.streamPosition) this.syncScanCache.delete(key);
     }
   }
 }

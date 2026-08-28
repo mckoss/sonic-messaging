@@ -54,6 +54,19 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].confidence).toBeLessThan(0.8);
   });
 
+  it('rejects a corrupted frame and still decodes the packet that follows', () => {
+    const first = encodeFsk(new TextEncoder().encode('corrupt me'), config).samples;
+    const second = encodeFsk(new TextEncoder().encode('clean'), config).samples;
+    const samples = new Float32Array(first.length + second.length);
+    samples.set(first); samples.set(second, first.length);
+    const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
+    samples.fill(0, 30 * samplesPerSymbol, 33 * samplesPerSymbol);
+    const receiver = new FskStreamDecoder(config);
+    const packets = receiver.push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['clean']);
+    expect(receiver.drainProgress().some(progress => progress.type === 'crc-error')).toBe(true);
+  });
+
   it('acquires through one damaged sync symbol while retaining CRC payload validation', () => {
     const payload = new TextEncoder().encode('sync recovery');
     const samples = encodeFsk(payload, config).samples;

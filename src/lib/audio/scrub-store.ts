@@ -5,3 +5,6 @@ import { writable } from 'svelte/store';
  * Shared so dragging any lane scrubs every lane together; 0 means live.
  */
 export const waterfallScrubSamples = writable(0);
+
+/** The symbol waterfall's live-edge sample position and viewport width in samples. */
+export const waterfallView = writable({ position: -1, viewSamples: 0 });

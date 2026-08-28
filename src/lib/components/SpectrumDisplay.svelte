@@ -16,7 +16,7 @@
   let host: HTMLDivElement;
   let width = 800;
   let height = 220;
-  let lastSequence = -1, latestPosition = -1, lastPaintedPosition = -1;
+  let lastSequence = -1, latestPosition = -1, lastPaintedPosition = -1, renderedPosition = -1;
   // History lives in a ring canvas; the visible canvas is a scrubable viewport.
   let ring: HTMLCanvasElement | undefined;
   let ringWidth = 0, ringRatio = 1, ringSpp = WATERFALL_SAMPLES_PER_CSS_PIXEL, ringRate = 48_000, ringHeight = 0;
@@ -56,11 +56,13 @@
   function ingest() {
     if (!canvas || spectrum.length === 0 || sequence === lastSequence || samplePosition < 0) return;
     lastSequence = sequence;
-    if (samplePosition < latestPosition) { ring = undefined; latestPosition = -1; lastPaintedPosition = -1; }
+    if (samplePosition < latestPosition) { ring = undefined; latestPosition = -1; lastPaintedPosition = -1; renderedPosition = -1; }
     latestPosition = samplePosition;
+    if (renderedPosition < 0) renderedPosition = samplePosition;
     ensureRing();
-    if (lastPaintedPosition < 0) { lastPaintedPosition = samplePosition; blit(); return; }
-    const columnWidth = Math.max(1, Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ringRatio, ringSpp)));
+    if (lastPaintedPosition < 0) { lastPaintedPosition = samplePosition; return; }
+    const columnWidth = Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ringRatio, ringSpp));
+    if (columnWidth < 1) return;
     const columnEnd = Math.floor(xOf(samplePosition));
     ensureCleared(columnEnd);
     const ctx = ring!.getContext('2d', { alpha: false })!;
@@ -89,17 +91,16 @@
       ctx.putImageData(column, segment.x, 0);
     }
     lastPaintedPosition += columnWidth * ringSpp / ringRatio;
-    blit();
   }
 
   function maxScrubSamples(): number {
-    if (!ring || latestPosition < 0) return 0;
+    if (!ring || renderedPosition < 0) return 0;
     const capacityPx = Math.max(0, ringWidth - Math.round(width * ringRatio));
-    return Math.max(0, Math.min(latestPosition - originPosition, capacityPx * ringSpp / ringRatio));
+    return Math.max(0, Math.min(renderedPosition - originPosition, capacityPx * ringSpp / ringRatio));
   }
 
   function blit() {
-    if (!ring || !canvas || latestPosition < 0) return;
+    if (!ring || !canvas || renderedPosition < 0) return;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
     const pixelWidth = Math.max(1, Math.round(width * ringRatio));
@@ -107,7 +108,7 @@
       canvas.width = pixelWidth; canvas.height = ringHeight;
     }
     ctx.fillStyle = 'rgb(5, 10, 24)'; ctx.fillRect(0, 0, pixelWidth, ringHeight);
-    const headX = Math.floor(xOf(latestPosition));
+    const headX = Math.floor(xOf(renderedPosition));
     const backPx = Math.floor(waterfallPixelAdvance(
       Math.min(scrubSamples, maxScrubSamples()), ringRatio, ringSpp));
     const end = headX - backPx;
@@ -145,7 +146,24 @@
       height = width < 560 ? 176 : 220;
     });
     resize.observe(host);
-    return () => resize.disconnect();
+    let frame = 0, lastTime = -1;
+    const tick = (now: number) => {
+      frame = requestAnimationFrame(tick);
+      if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
+      const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
+      lastTime = now;
+      // Free-run at the audio rate so worker stalls never pause the lane: scroll
+      // up to a second ahead of the data (late output backfills behind the edge)
+      // and catch up at a bounded fast-forward rate when the worker is behind.
+      const lag = latestPosition - renderedPosition;
+      const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate) : lag > -sampleRate ? 1 : 0;
+      renderedPosition += dt * sampleRate * factor;
+      ensureRing();
+      ensureCleared(Math.floor(xOf(renderedPosition)));
+      blit();
+    };
+    frame = requestAnimationFrame(tick);
+    return () => { resize.disconnect(); cancelAnimationFrame(frame); };
   });
 </script>
 

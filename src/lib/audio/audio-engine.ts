@@ -35,6 +35,7 @@ export class AudioEngine {
   private captureGapListeners = new Set<CaptureGapListener>();
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
+  private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
   private options: AudioEngineOptions;
   private stateValue: AudioEngineState = {
     supported: AudioEngine.isSupported(), running: false, listening: false, transmitting: false
@@ -67,6 +68,16 @@ export class AudioEngine {
 
   onCaptureGaps(listener: CaptureGapListener): () => void {
     this.captureGapListeners.add(listener); return () => this.captureGapListeners.delete(listener);
+  }
+
+  /** Fetches captured audio between two absolute sample positions from the worker's history ring. */
+  requestCapturedAudio(from: number, to: number, mode: 'raw' | 'fft'): Promise<{ samples: Float32Array; sampleRate: number }> {
+    if (!this.worker) return Promise.resolve({ samples: new Float32Array(0), sampleRate: 48_000 });
+    const requestId = crypto.randomUUID();
+    return new Promise(resolve => {
+      this.audioRequests.set(requestId, resolve);
+      this.worker!.postMessage({ type: 'audio-request', requestId, from, to, mode } satisfies DspWorkerRequest);
+    });
   }
 
   configureFskDetector(
@@ -191,6 +202,10 @@ export class AudioEngine {
     else if (message.type === 'packet') this.packetListeners.forEach((listener) => listener(message));
     else if (message.type === 'fsk-reception') this.receptionListeners.forEach((listener) => listener(message));
     else if (message.type === 'capture-gap') this.captureGapListeners.forEach((listener) => listener(message));
+    else if (message.type === 'audio-data') {
+      this.audioRequests.get(message.requestId)?.({ samples: message.samples, sampleRate: message.sampleRate });
+      this.audioRequests.delete(message.requestId);
+    }
     else if (message.type === 'worker-error') console.error('DSP worker:', message.message);
   }
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { DETECTOR_HOP_SAMPLES, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
-  import { waterfallScrubSamples } from '../audio/scrub-store';
+  import { waterfallScrubSamples, waterfallView } from '../audio/scrub-store';
 
   export let scores: Float32Array = new Float32Array();
   export let labels: string[] = [];
@@ -228,15 +228,17 @@
       if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
       const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
       lastTime = now;
-      // Free-run at the audio rate with proportional catch-up toward the worker's
-      // clock, capped just ahead of the latest data so a stalled worker pauses us.
+      // Free-run at the audio rate so worker stalls never pause the lanes: scroll
+      // up to a second ahead of the data (late output backfills behind the edge)
+      // and catch up at a bounded fast-forward rate when the worker is behind.
       const lag = latestPosition - renderedPosition;
-      const advance = Math.max(0, dt * (sampleRate + 2 * lag));
-      renderedPosition = Math.min(renderedPosition + advance, latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+      const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate) : lag > -sampleRate ? 1 : 0;
+      renderedPosition += dt * sampleRate * factor;
       ensureRings();
       ensureCleared(Math.floor(xOf(renderedPosition)));
       drawTimelineMarkers();
       blit();
+      waterfallView.set({ position: renderedPosition, viewSamples: width * samplesPerCssPixel });
     };
     frame = requestAnimationFrame(tick);
     return () => { resize.disconnect(); cancelAnimationFrame(frame); };

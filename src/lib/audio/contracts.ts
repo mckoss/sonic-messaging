@@ -34,6 +34,7 @@ export type DspWorkerRequest =
   | { type: 'configure-detector'; mode: 'off' | 'FSK'; fsk?: FskDetectorOptions }
   | { type: 'samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
   | { type: 'decode'; requestId: string; modem: string; command: string; payload: unknown }
+  | { type: 'audio-request'; requestId: string; from: number; to: number; mode: 'raw' | 'fft' }
   | { type: 'reset' };
 
 export type DspWorkerResponse =
@@ -43,6 +44,7 @@ export type DspWorkerResponse =
   | { type: 'fsk-reception'; token: 'sync' | 'length' | 'byte' | 'crc-confirm' | 'crc-error';
       position: number; byte?: number }
   | { type: 'capture-gap'; samples: number; sampleRate: number }
+  | { type: 'audio-data'; requestId: string; samples: TransferableSamples; sampleRate: number }
   | { type: 'decode-result'; requestId: string; modem: string; result?: unknown; error?: string }
   | { type: 'worker-error'; message: string };
 
