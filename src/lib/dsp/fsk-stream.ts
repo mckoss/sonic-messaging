@@ -8,6 +8,8 @@ const HEADER_BYTES = 6;
 const TRAILER_BYTES = 2;
 const MAX_SYNC_BIT_ERRORS = 2;
 const MAX_LIVE_PAYLOAD_BYTES = 4096;
+/** A corrupted length field must not leave the decoder waiting on a frame for minutes. */
+const MAX_LIVE_FRAME_SECONDS = 10;
 
 function syncBitErrors(bytes: Uint8Array): number {
   let errors = 0;
@@ -32,6 +34,8 @@ export type FskStreamProgress =
 /** Acquires framed FSK packets in an arbitrarily chunked continuous sample stream. */
 export class FskStreamDecoder {
   private samples = new Float32Array(0);
+  /** Valid samples in the buffer; capacity beyond this is growth headroom. */
+  private sampleCount = 0;
   private searchOffset = 0;
   private candidateOffset: number | undefined;
   private readonly samplesPerSymbol: number;
@@ -63,8 +67,13 @@ export class FskStreamDecoder {
   }
 
   push(input: Float32Array): FskStreamPacket[] {
-    const joined = new Float32Array(this.samples.length + input.length);
-    joined.set(this.samples); joined.set(input, this.samples.length); this.samples = joined;
+    if (this.sampleCount + input.length > this.samples.length) {
+      const grown = new Float32Array(Math.max(this.sampleCount + input.length, this.samples.length * 2, 16_384));
+      grown.set(this.samples.subarray(0, this.sampleCount));
+      this.samples = grown;
+    }
+    this.samples.set(input, this.sampleCount);
+    this.sampleCount += input.length;
     const packets: FskStreamPacket[] = [];
 
     while (true) {
@@ -78,11 +87,20 @@ export class FskStreamDecoder {
   }
 
   reset(): void {
-    this.samples = new Float32Array(0); this.searchOffset = 0; this.candidateOffset = undefined;
+    this.samples = new Float32Array(0); this.sampleCount = 0;
+    this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.streamPosition = 0;
     this.candidateSymbols = []; this.candidateConfidences = [];
     this.syncScanCache.clear();
+  }
+
+  /** Drops the oldest `count` samples in place, keeping the buffer's capacity. */
+  private discard(count: number): void {
+    if (count <= 0) return;
+    this.samples.copyWithin(0, count, this.sampleCount);
+    this.sampleCount -= count;
+    this.streamPosition += count;
   }
 
   /** Argmax symbol for the window at an absolute stream offset, cached for sync trials. */
@@ -126,7 +144,7 @@ export class FskStreamDecoder {
   private findSync(): boolean {
     const syncSymbols = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol);
     const required = syncSymbols * this.samplesPerSymbol;
-    while (this.searchOffset + required <= this.samples.length) {
+    while (this.searchOffset + required <= this.sampleCount) {
       const firstWindow = this.samples.subarray(this.searchOffset, this.searchOffset + this.samplesPerSymbol);
       if (windowPowerDbfs(firstWindow) < this.squelchDbfs) {
         this.searchOffset += this.phaseStep;
@@ -136,7 +154,7 @@ export class FskStreamDecoder {
         // Wait for one symbol of lookahead so phase refinement has samples to trial;
         // accepting immediately locks a coarse phase that can corrupt the whole frame.
         const lookahead = required + this.samplesPerSymbol + this.phaseStep;
-        if (this.searchOffset + lookahead > this.samples.length) return false;
+        if (this.searchOffset + lookahead > this.sampleCount) return false;
         const decoded = this.decodeBytes(this.searchOffset, SYNC.length);
         this.candidateOffset = this.refineSyncPhase(this.searchOffset, decoded.confidence);
         this.reportedPayloadBytes = 0;
@@ -154,7 +172,7 @@ export class FskStreamDecoder {
   private refineSyncPhase(start: number, confidence: number): number {
     const required = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
     const trial = (offset: number, best: { offset: number; confidence: number }) => {
-      if (offset < 0 || offset === best.offset || offset + required > this.samples.length) return;
+      if (offset < 0 || offset === best.offset || offset + required > this.sampleCount) return;
       const decoded = this.decodeBytes(offset, SYNC.length);
       if (syncBitErrors(decoded.bytes) <= MAX_SYNC_BIT_ERRORS && decoded.confidence > best.confidence) {
         best.offset = offset; best.confidence = decoded.confidence;
@@ -179,10 +197,13 @@ export class FskStreamDecoder {
   private readCandidate(): FskStreamPacket | null | undefined {
     const start = this.candidateOffset!;
     const headerSymbols = Math.ceil((HEADER_BYTES * 8) / this.bitsPerSymbol);
-    if (start + headerSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
+    if (start + headerSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
     const header = this.decodeCandidateBytes(HEADER_BYTES).bytes;
     const payloadLength = (header[4] << 8) | header[5];
-    if (payloadLength > MAX_LIVE_PAYLOAD_BYTES) {
+    const maxPayload = Math.min(MAX_LIVE_PAYLOAD_BYTES, Math.floor(
+      (MAX_LIVE_FRAME_SECONDS * this.config.symbolRate * this.bitsPerSymbol) / 8
+    ) - HEADER_BYTES - TRAILER_BYTES);
+    if (payloadLength > Math.max(0, maxPayload)) {
       this.rejectCandidate();
       return null;
     }
@@ -193,7 +214,7 @@ export class FskStreamDecoder {
     const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
     const availableBytes = Math.floor(
-      (Math.floor((this.samples.length - start) / this.samplesPerSymbol) * this.bitsPerSymbol) / 8
+      (Math.floor((this.sampleCount - start) / this.samplesPerSymbol) * this.bitsPerSymbol) / 8
     );
     const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - HEADER_BYTES));
     if (reportThrough > this.reportedPayloadBytes) {
@@ -204,7 +225,7 @@ export class FskStreamDecoder {
       }
       this.reportedPayloadBytes = reportThrough;
     }
-    if (start + frameSymbols * this.samplesPerSymbol > this.samples.length) return undefined;
+    if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
@@ -218,9 +239,7 @@ export class FskStreamDecoder {
       return null;
     }
     this.progress.push({ type: 'crc-confirm', position: framePosition });
-    const consumed = start + frameSymbols * this.samplesPerSymbol;
-    this.samples = this.samples.slice(consumed);
-    this.streamPosition += consumed;
+    this.discard(start + frameSymbols * this.samplesPerSymbol);
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
@@ -293,21 +312,16 @@ export class FskStreamDecoder {
   private trim(): void {
     if (this.candidateOffset !== undefined) {
       if (this.candidateOffset > 0) {
-        this.samples = this.samples.slice(this.candidateOffset);
-        this.streamPosition += this.candidateOffset;
+        this.discard(this.candidateOffset);
         this.searchOffset = 0; this.candidateOffset = 0;
-        for (const key of this.syncScanCache.keys()) {
-          if (key < this.streamPosition) this.syncScanCache.delete(key);
-        }
       }
-      return;
-    }
-    const retain = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
-    const removable = Math.max(0, this.searchOffset - retain);
-    if (removable > 0) {
-      this.samples = this.samples.slice(removable);
-      this.streamPosition += removable;
-      this.searchOffset -= removable;
+    } else {
+      const retain = Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol;
+      const removable = Math.max(0, this.searchOffset - retain);
+      if (removable > 0) {
+        this.discard(removable);
+        this.searchOffset -= removable;
+      }
     }
     for (const key of this.syncScanCache.keys()) {
       if (key < this.streamPosition) this.syncScanCache.delete(key);

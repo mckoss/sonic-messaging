@@ -36,6 +36,7 @@ export class AudioEngine {
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
   private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
+  private lastAnalysisAt?: number;
   private options: AudioEngineOptions;
   private stateValue: AudioEngineState = {
     supported: AudioEngine.isSupported(), running: false, listening: false, transmitting: false
@@ -74,8 +75,12 @@ export class AudioEngine {
   requestCapturedAudio(from: number, to: number, mode: 'raw' | 'fft'): Promise<{ samples: Float32Array; sampleRate: number }> {
     if (!this.worker) return Promise.resolve({ samples: new Float32Array(0), sampleRate: 48_000 });
     const requestId = crypto.randomUUID();
-    return new Promise(resolve => {
-      this.audioRequests.set(requestId, resolve);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.audioRequests.delete(requestId);
+        reject(new Error('Timed out fetching captured audio from the DSP worker'));
+      }, 10_000);
+      this.audioRequests.set(requestId, data => { clearTimeout(timer); resolve(data); });
       this.worker!.postMessage({ type: 'audio-request', requestId, from, to, mode } satisfies DspWorkerRequest);
     });
   }
@@ -85,10 +90,12 @@ export class AudioEngine {
   ): void {
     this.worker?.postMessage({ type: 'configure-detector', mode: 'FSK',
       fsk: { frequencies, symbolRate, squelchDbfs, confidenceThreshold } } satisfies DspWorkerRequest);
+    this.lastAnalysisAt = undefined;
   }
 
   disableDetector(): void {
     this.worker?.postMessage({ type: 'configure-detector', mode: 'off' } satisfies DspWorkerRequest);
+    this.lastAnalysisAt = undefined;
   }
 
   onState(listener: StateListener): () => void {
@@ -198,7 +205,14 @@ export class AudioEngine {
 
   private handleWorker(message: DspWorkerResponse): void {
     if (message.type === 'spectrum') this.spectrumListeners.forEach((listener) => listener(message));
-    else if (message.type === 'symbol-scores') this.symbolListeners.forEach((listener) => listener(message));
+    else if (message.type === 'symbol-scores') {
+      const now = performance.now();
+      if (this.lastAnalysisAt !== undefined && now - this.lastAnalysisAt > 250) {
+        console.warn(`DSP worker stall: ${Math.round(now - this.lastAnalysisAt)} ms between symbol analyses`);
+      }
+      this.lastAnalysisAt = now;
+      this.symbolListeners.forEach((listener) => listener(message));
+    }
     else if (message.type === 'packet') this.packetListeners.forEach((listener) => listener(message));
     else if (message.type === 'fsk-reception') this.receptionListeners.forEach((listener) => listener(message));
     else if (message.type === 'capture-gap') this.captureGapListeners.forEach((listener) => listener(message));

@@ -26,6 +26,21 @@ test('updates the symbol waterfall axis when tone settings change', async ({ pag
   await expect(labels.last()).toHaveText('S0 · 1000Hz');
 });
 
+test('offers and applies a suggested frequency plan when the symbol rate invalidates it', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  const suggest = page.getByRole('button', { name: /Use suggested plan/ });
+  await expect(suggest).toHaveCount(0);
+  await page.getByLabel('Symbol rate').fill('400');
+  await page.getByLabel('Symbol rate').press('Tab');
+  await suggest.click();
+  await expect(page.getByLabel('Lowest frequency')).toHaveValue('2800');
+  await expect(page.getByLabel('Tone spacing')).toHaveValue('800');
+  await expect(suggest).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByLabel('Lowest frequency')).toHaveValue('2800');
+  await expect(page.getByLabel('Tone spacing')).toHaveValue('800');
+});
+
 test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.goto('/sonic-messaging/');
   await expect(page.getByLabel('Lowest frequency')).toHaveValue('500');

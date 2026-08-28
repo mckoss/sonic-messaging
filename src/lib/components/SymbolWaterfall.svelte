@@ -226,7 +226,11 @@
     const tick = (now: number) => {
       frame = requestAnimationFrame(tick);
       if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
-      const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
+      const rawDt = lastTime > 0 ? (now - lastTime) / 1000 : 0;
+      if (rawDt > 0.25 && document.visibilityState === 'visible') {
+        console.warn(`Main-thread hitch: ${Math.round(rawDt * 1000)} ms between animation frames`);
+      }
+      const dt = Math.min(0.1, Math.max(0, rawDt));
       lastTime = now;
       // Free-run at the audio rate with bounded catch-up when the worker is behind,
       // easing to a stop within two hops ahead of the data so the live edge stays

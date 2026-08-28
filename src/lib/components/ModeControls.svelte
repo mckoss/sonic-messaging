@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fskCenterFrequency, fskFrequencies, fskPlanWarnings, fskToneSpan } from '../dsp/fsk-frequencies';
+  import { fskCenterFrequency, fskFrequencies, fskPlanWarnings, fskSuggestedPlan, fskToneSpan } from '../dsp/fsk-frequencies';
   import { dsssCodeLengths, normalizeDsssCodeLength } from '../dsp/dsss-code-options';
 
   type Mode = 'FSK' | 'CSS' | 'DSSS';
@@ -17,6 +17,17 @@
     : 0;
   $: spacingRatio = mode === 'FSK' ? toneSpacing / Number(settings.symbolRate) : 0;
   $: fskWarnings = mode === 'FSK' ? fskPlanWarnings(fskTones, toneSpacing, Number(settings.symbolRate)) : [];
+  $: fskSuggestion = mode === 'FSK' ? fskSuggestedPlan(Number(settings.symbolRate), Number(settings.tones)) : undefined;
+  $: fskSuggestionDiffers = !!fskSuggestion && fskWarnings.length > 0 &&
+    (Number(settings.lowestFrequency) !== fskSuggestion.lowestFrequency || toneSpacing !== fskSuggestion.toneSpacing);
+
+  function applyFskSuggestion(event: MouseEvent) {
+    if (!fskSuggestion) return;
+    settings.lowestFrequency = fskSuggestion.lowestFrequency;
+    settings.toneSpacing = fskSuggestion.toneSpacing;
+    // Bubble a change event so the host persists settings and reconfigures the detector.
+    (event.currentTarget as HTMLElement).dispatchEvent(new Event('change', { bubbles: true }));
+  }
   $: chipRate = Number(settings.chipRate);
   $: dsssLengths = dsssCodeLengths(String(settings.codeFamily));
   $: if (mode === 'DSSS') settings.codeLength = normalizeDsssCodeLength(
@@ -48,6 +59,11 @@
       <span>{fskTones.map(hz).join(' · ')}</span>
       <span class="detail">Center {hz(fskCenter)} · span {hz(fskSpan)} · spacing/rate {spacingRatio.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
       {#each fskWarnings as warning}<span class="warning">⚠ {warning}</span>{/each}
+      {#if fskSuggestion && fskSuggestionDiffers}
+        <button type="button" class="suggestion" on:click={applyFskSuggestion}>
+          Use suggested plan for {Number(settings.symbolRate).toLocaleString()} baud: lowest {fskSuggestion.lowestFrequency.toLocaleString()} Hz · spacing {fskSuggestion.toneSpacing.toLocaleString()} Hz
+        </button>
+      {/if}
     </div>
   {:else if mode === 'CSS'}
     <label>
@@ -83,5 +99,6 @@
   .frequency-plan strong { color: var(--muted); font: 650 12px system-ui, sans-serif; }
   .frequency-plan .detail { color: var(--dim); font: 12px system-ui, sans-serif; }
   .frequency-plan .warning { color: #f5c46b; font: 12px/1.4 system-ui, sans-serif; }
+  .suggestion { justify-self: start; margin-top: 3px; border: 1px solid #2c8e6f; border-radius: 7px; padding: 6px 10px; background: #0b2c22; color: #4ee8b4; font: 600 11px system-ui, sans-serif; cursor: pointer; text-align: left; }
   @media (max-width: 620px) { .controls-grid { grid-template-columns: 1fr; } }
 </style>
