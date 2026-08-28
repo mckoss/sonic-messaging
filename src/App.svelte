@@ -288,11 +288,11 @@
 
     <section class="card receiver">
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
-      <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition}
+      <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={listening}
         samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
-        <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
+        <SymbolWaterfall scores={symbolScores} sequence={symbolSequence} live={listening}
           messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} confidence={symbolConfidence}
           samplePosition={symbolSamplePosition} samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]}
           sampleRate={audio?.state.sampleRate ?? 48_000}

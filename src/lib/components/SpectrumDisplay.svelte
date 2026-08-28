@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DETECTOR_HOP_SAMPLES, dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, waterfallPixelAdvance } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_AHEAD_TRIM, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, WATERFALL_STALL_FREE_RUN_SECONDS, waterfallPixelAdvance } from '../audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples } from '../audio/scrub-store';
 
   export let spectrum: number[] | Float32Array = [];
@@ -11,6 +11,8 @@
   export let sequence = -1;
   export let samplePosition = -1;
   export let samplesPerCssPixel = WATERFALL_SAMPLES_PER_CSS_PIXEL;
+  /** While capturing, scroll on real time through worker stalls; late data backfills. */
+  export let live = false;
 
   let canvas: HTMLCanvasElement;
   let host: HTMLDivElement;
@@ -164,19 +166,24 @@
       if (renderedPosition < 0 || latestPosition < 0) { lastTime = now; return; }
       const dt = Math.min(0.1, Math.max(0, (now - lastTime) / 1000));
       lastTime = now;
-      // Free-run at the audio rate with bounded catch-up when the worker is behind,
-      // easing to a stop within two hops ahead of the data so the live edge stays
-      // pinned to the display's right edge instead of scrolling into blank canvas.
+      // Free-run at the audio rate with bounded catch-up when the worker is behind.
+      // While capturing (live), time keeps scrolling through worker stalls — blank
+      // columns appear at the live edge and late worker data backfills them — up to
+      // a bound so a dead worker or stopped capture halts the display eventually.
+      // When not live, ease to a stop within two hops of the data so the last
+      // painted audio stays pinned to the display's right edge.
       // More than a second behind (e.g. returning to a background-throttled tab):
       // jump to the data head; the scrub offset is delay-from-live, so it is kept.
       const lag = latestPosition - renderedPosition;
+      const aheadLimit = live ? WATERFALL_STALL_FREE_RUN_SECONDS * sampleRate : 2 * DETECTOR_HOP_SAMPLES;
       if (lag > sampleRate) {
         renderedPosition = latestPosition;
       } else {
         const factor = lag >= 0 ? Math.min(8, 1 + 2 * lag / sampleRate)
+          : live ? WATERFALL_AHEAD_TRIM
           : Math.max(0, 1 + lag / (2 * DETECTOR_HOP_SAMPLES));
         renderedPosition = Math.min(renderedPosition + dt * sampleRate * factor,
-          latestPosition + 2 * DETECTOR_HOP_SAMPLES);
+          latestPosition + aheadLimit);
       }
       ensureRing();
       ensureCleared(Math.floor(xOf(renderedPosition)));

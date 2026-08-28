@@ -8,6 +8,13 @@ export const DETECTOR_HOP_SAMPLES = 1024;
 export const WATERFALL_HISTORY_SECONDS = 60;
 /** Ring-canvas width cap; stays under every browser's canvas dimension limit. */
 export const WATERFALL_MAX_RING_PIXELS = 32_000;
+/** While capturing, lanes free-run this far past the last worker data before halting. */
+export const WATERFALL_STALL_FREE_RUN_SECONDS = 5;
+/**
+ * Free-run speed while ahead of worker data: a whisker under real time, so
+ * animation-clock drift bleeds off instead of accumulating into a standing gap.
+ */
+export const WATERFALL_AHEAD_TRIM = 0.995;
 
 export interface RingSpan { x: number; w: number }
 
