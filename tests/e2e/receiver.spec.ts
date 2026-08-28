@@ -26,6 +26,18 @@ test('updates the symbol waterfall axis when tone settings change', async ({ pag
   await expect(labels.last()).toHaveText('S0 · 1000Hz');
 });
 
+test('zooms the spectrogram to the tone band plus a 10% margin per side', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  const axis = page.getByTestId('spectrum-waterfall').locator('.axis span');
+  // Default 500-800 Hz band with 30 Hz margins: 830 Hz top, 470 Hz bottom.
+  await expect(axis.first()).toHaveText('0.8 kHz');
+  await expect(axis.last()).toHaveText('0.5 kHz');
+  await page.getByLabel('Tones').selectOption('16');
+  // 500-2,000 Hz band with 150 Hz margins: 2,150 Hz top, 350 Hz bottom.
+  await expect(axis.first()).toHaveText('2.2 kHz');
+  await expect(axis.last()).toHaveText('0.4 kHz');
+});
+
 test('shows the raw bit rate for the configured symbol rate and tone count', async ({ page }) => {
   await page.goto('/sonic-messaging/');
   const bitRate = page.getByTestId('fsk-bit-rate');

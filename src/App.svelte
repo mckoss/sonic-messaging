@@ -103,6 +103,18 @@
   }
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
+  // Zoom the spectrogram to the band in use plus a 10% margin on each side.
+  $: activeBand = (() => {
+    const s = settings[mode];
+    if (mode === 'FSK') {
+      const low = Number(s.lowestFrequency);
+      return { low, high: low + Number(s.toneSpacing) * (Number(s.tones) - 1) };
+    }
+    const center = Number(s.centerFrequency), half = Number(s.bandwidth) / 2;
+    return { low: center - half, high: center + half };
+  })();
+  $: spectrumMin = Math.max(0, activeBand.low - 0.1 * (activeBand.high - activeBand.low));
+  $: spectrumMax = Math.min(24000, activeBand.high + 0.1 * (activeBand.high - activeBand.low));
   function currentPreferences(): UserPreferences {
     return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed, inputDeviceId, payload };
   }
@@ -277,7 +289,7 @@
     <section class="card receiver">
       <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition}
-        samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={0} maxFrequency={24000} />
+        samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence}
