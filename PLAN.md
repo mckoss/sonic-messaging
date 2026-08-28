@@ -45,6 +45,10 @@
 - [ ] Add automatic multi-mode detection.
 - [ ] Add overlapping-user detection and successive decoding experiments.
 
+- [ ] Make CSS demodulation phase-insensitive: correlate against quadrature (sine and cosine) chirp templates and score by magnitude, since the current fixed-phase correlator collapses under real-channel phase shifts.
+- [ ] Make DSSS decodable without a phase reference: I/Q despreading plus differential encoding (DBPSK) or a carrier phase-tracking loop, since BPSK polarity inverts wholesale past a 90° phase offset.
+- [ ] Add random delay/phase offsets to the channel simulator so phase-fragile demodulators fail in simulation the way they would over the air.
+
 FSK now performs sync acquisition and CRC-validated live decoding. Add equivalent acquisition for CSS and DSSS before automatic mode classification.
 
 ## Messaging
