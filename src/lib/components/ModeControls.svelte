@@ -16,6 +16,7 @@
     ? fskCenterFrequency(Number(settings.lowestFrequency), toneSpacing, Number(settings.tones))
     : 0;
   $: spacingRatio = mode === 'FSK' ? toneSpacing / Number(settings.symbolRate) : 0;
+  $: fskBitsPerSecond = mode === 'FSK' ? Number(settings.symbolRate) * Math.log2(Number(settings.tones)) : 0;
   $: fskWarnings = mode === 'FSK' ? fskPlanWarnings(fskTones, toneSpacing, Number(settings.symbolRate)) : [];
   $: fskSuggestion = mode === 'FSK' ? fskSuggestedPlan(Number(settings.symbolRate), Number(settings.tones)) : undefined;
   $: fskSuggestionDiffers = !!fskSuggestion && fskWarnings.length > 0 &&
@@ -57,7 +58,7 @@
     <div class="frequency-plan" aria-live="polite">
       <strong>Generated tones</strong>
       <span>{fskTones.map(hz).join(' · ')}</span>
-      <span class="detail">Center {hz(fskCenter)} · span {hz(fskSpan)} · spacing/rate {spacingRatio.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+      <span class="detail">Center {hz(fskCenter)} · span {hz(fskSpan)} · spacing/rate {spacingRatio.toLocaleString(undefined, { maximumFractionDigits: 2 })} · <span data-testid="fsk-bit-rate">{fskBitsPerSecond.toLocaleString(undefined, { maximumFractionDigits: 0 })} bps</span></span>
       {#each fskWarnings as warning}<span class="warning">⚠ {warning}</span>{/each}
       {#if fskSuggestion && fskSuggestionDiffers}
         <button type="button" class="suggestion" on:click={applyFskSuggestion}>

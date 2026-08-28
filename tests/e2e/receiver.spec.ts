@@ -26,6 +26,17 @@ test('updates the symbol waterfall axis when tone settings change', async ({ pag
   await expect(labels.last()).toHaveText('S0 · 1000Hz');
 });
 
+test('shows the raw bit rate for the configured symbol rate and tone count', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  const bitRate = page.getByTestId('fsk-bit-rate');
+  await expect(bitRate).toHaveText('50 bps');
+  await page.getByLabel('Tones').selectOption('16');
+  await expect(bitRate).toHaveText('100 bps');
+  await page.getByLabel('Symbol rate').fill('400');
+  await page.getByLabel('Symbol rate').press('Tab');
+  await expect(bitRate).toHaveText('1,600 bps');
+});
+
 test('offers and applies a suggested frequency plan when the symbol rate invalidates it', async ({ page }) => {
   await page.goto('/sonic-messaging/');
   const suggest = page.getByRole('button', { name: /Use suggested plan/ });
