@@ -128,6 +128,18 @@ export class AudioEngine {
     this.stateListeners.forEach((listener) => listener(this.stateValue));
   }
 
+  private spawnWorker(): void {
+    this.worker = new Worker(new URL('../../workers/dsp.worker.ts', import.meta.url), { type: 'module' });
+    this.worker.onmessage = ({ data }: MessageEvent<DspWorkerResponse>) => this.handleWorker(data);
+    this.worker.onerror = (event) => {
+      console.error('DSP worker error:', event.message, `(${event.filename}:${event.lineno})`);
+      this.setWorkerHealth(false, `worker error: ${event.message || 'unknown'}`);
+    };
+    this.worker.postMessage({ type: 'configure-spectrum', options: {
+      fftSize: 2048, minDecibels: -110, maxDecibels: 0, ...this.options.spectrum
+    } } satisfies DspWorkerRequest);
+  }
+
   async start(): Promise<void> {
     if (this.state.running) { await this.context?.resume(); return; }
     if (!AudioEngine.isSupported()) throw new Error('This browser does not support microphone AudioWorklets');
@@ -142,15 +154,7 @@ export class AudioEngine {
         this.context.audioWorklet.addModule(`${workletBase}capture.worklet.js`),
         this.context.audioWorklet.addModule(`${workletBase}playback.worklet.js`)
       ]);
-      this.worker = new Worker(new URL('../../workers/dsp.worker.ts', import.meta.url), { type: 'module' });
-      this.worker.onmessage = ({ data }: MessageEvent<DspWorkerResponse>) => this.handleWorker(data);
-      this.worker.onerror = (event) => {
-        console.error('DSP worker error:', event.message, `(${event.filename}:${event.lineno})`);
-        this.setWorkerHealth(false, `worker error: ${event.message || 'unknown'}`);
-      };
-      this.worker.postMessage({ type: 'configure-spectrum', options: {
-        fftSize: 2048, minDecibels: -110, maxDecibels: 0, ...this.options.spectrum
-      } } satisfies DspWorkerRequest);
+      this.spawnWorker();
 
       this.playback = new AudioWorkletNode(this.context, 'sonic-playback', { outputChannelCount: [1] });
       this.playback.port.onmessage = ({ data }: MessageEvent<PlaybackWorkletMessage>) => {
@@ -206,12 +210,32 @@ export class AudioEngine {
     return (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput');
   }
 
-  stopListening(): void {
+  /**
+   * preserveCapture keeps the DSP worker (and its 60 s capture-history ring)
+   * alive for scrub-back replay — used when the stop is incidental, such as
+   * replaying visible audio or switching microphones.
+   */
+  stopListening(preserveCapture = false): void {
     if (this.healthTimer !== undefined) { clearInterval(this.healthTimer); this.healthTimer = undefined; }
     this.setWorkerHealth(true);
+    if (this.capture) this.capture.port.onmessage = null;
     this.capture?.disconnect(); this.source?.disconnect();
     this.stream?.getTracks().forEach((track) => track.stop());
     this.capture = undefined; this.source = undefined; this.stream = undefined;
+    // A stalled DSP worker can hold a multi-second FIFO backlog of queued sample
+    // messages, and every control message queues behind it — so the old decoder
+    // would keep replaying that captured audio long after the microphone stops.
+    // Terminating the worker is the only way to drop its queue; a fresh worker
+    // gives stop-listening true reset semantics at the cost of the capture
+    // history ring (scrub-back replay starts over on the next listen).
+    if (this.worker && !preserveCapture) {
+      this.worker.terminate();
+      this.spawnWorker();
+      const sampleRate = this.context?.sampleRate ?? 48_000;
+      this.audioRequests.forEach((resolve) => resolve({ samples: new Float32Array(0), sampleRate }));
+      this.audioRequests.clear();
+      this.lastAnalysisAt = undefined;
+    }
     this.update({ listening: false, inputSettings: undefined });
   }
 
@@ -262,8 +286,9 @@ export class AudioEngine {
   }
 
   async dispose(): Promise<void> {
-    this.stopListening(); this.stopTransmission();
+    // Drop the worker first so stopListening does not respawn one just to kill it.
     this.worker?.terminate(); this.worker = undefined;
+    this.stopListening(); this.stopTransmission();
     this.playback?.disconnect(); this.playback = undefined;
     const context = this.context; this.context = undefined;
     if (context && context.state !== 'closed') await context.close();
