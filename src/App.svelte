@@ -34,6 +34,13 @@
   let workerError = '';
   let receivedMarkerId = 0;
   let receptionDecoder = new TextDecoder();
+  let micSettings: MediaTrackSettings | undefined;
+  // Browser processing stages that corrupt modem tones; all requested off.
+  const MIC_PROCESSING: Array<{ key: 'autoGainControl' | 'echoCancellation' | 'noiseSuppression'; label: string }> = [
+    { key: 'autoGainControl', label: 'AGC' },
+    { key: 'echoCancellation', label: 'echo cancel' },
+    { key: 'noiseSuppression', label: 'noise supp' }
+  ];
 
   let mode: Mode = 'FSK';
   let listening = false;
@@ -77,9 +84,15 @@
           logs = [`Saved microphone unavailable · using system default`, ...logs].slice(0, 10);
           inputDeviceId = 'default'; persistPreferences(); await audio.startListening();
         }
-      } else { audio.stopListening(); audio.disableDetector(); }
+      } else {
+        audio.stopListening(); audio.disableDetector();
+        // Abandon any packet mid-read: the worker's decoder is reset by the
+        // detector reconfigure, so the RX lane must not keep the partial text.
+        receivingMessage = ''; receptionDecoder = new TextDecoder();
+      }
       if (next) await refreshInputDevices(true);
       listening = next;
+      micSettings = next ? audio.state.inputSettings : undefined;
       configureDetector();
       receiverState = next ? 'listening' : 'idle';
     } catch (error) {
@@ -305,6 +318,14 @@
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
       <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · noise' : mode : 'Standby'}</strong></div></div>
+      {#if listening && micSettings}
+        <div class="mic-settings" data-testid="mic-settings">
+          <span>Mic{micSettings.sampleRate ? ` · ${(micSettings.sampleRate / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : ''}</span>
+          {#each MIC_PROCESSING as stage}
+            <span class:on={micSettings[stage.key] === true}>{micSettings[stage.key] === undefined ? `${stage.label} ?` : micSettings[stage.key] ? `⚠ ${stage.label} ON` : `${stage.label} off`}</span>
+          {/each}
+        </div>
+      {/if}
       <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
       <div class="replay-row"><button class="replay" disabled={busy} on:click={() => void replayVisible('raw')}>▶ Replay visible audio</button><button class="replay" disabled={busy} on:click={() => void replayVisible('fft')}>▶ Replay FFT view</button></div>
     </section>
@@ -348,6 +369,7 @@
   .replay{border-radius:9px;border:1px solid #2a4a70;background:#122440;color:#cfe3ff;padding:9px;font-size:12px;font-weight:650;cursor:pointer}
   .replay:disabled{opacity:.4;cursor:default}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}
   .badge{font:10px ui-monospace,monospace;text-transform:uppercase;padding:5px 8px;border-radius:99px;background:#17263a;color:var(--dim)}.badge.listening,.badge.signal{color:var(--accent)}.readouts,.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.readouts div,.metrics div{padding:12px;background:#081321;border-radius:10px}.readouts span,.metrics span{display:block;color:var(--dim);font-size:10px}.readouts strong{font:600 12px ui-monospace,monospace}.metrics strong{display:block;font-size:22px;color:#d6e7fb;margin-bottom:3px}
+  .mic-settings{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:10px;color:var(--dim);font:11px ui-monospace,monospace}.mic-settings .on{color:#f5c46b;font-weight:700}
   .receiver-actions{display:flex!important;align-items:center;gap:8px!important}.receiver-actions label{display:flex;align-items:center;gap:5px;color:var(--dim);font:10px ui-monospace,monospace}.receiver-actions select{max-width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);font:10px ui-monospace,monospace}
   .detector-head{display:flex;justify-content:space-between;gap:10px;margin:14px 2px 7px;color:var(--muted);font-size:11px;font-weight:650}.detector-head small{color:var(--dim);font-weight:500}
   .sim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sim-grid label,.interference{display:grid;gap:8px}.sim-grid select{background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:10px}.sim-grid input,.interference input{width:100%;accent-color:var(--accent)}output{font:12px ui-monospace,monospace;color:var(--accent)}.switch-row{display:flex;gap:12px;align-items:start;padding:15px;margin-top:18px;border:1px solid var(--line);border-radius:11px}.switch-row input{margin-top:3px;accent-color:var(--accent)}.switch-row b,.switch-row small{display:block}.switch-row b{font-size:13px}.switch-row small{color:var(--dim);margin-top:3px;line-height:1.35}.interference{margin-top:16px}
