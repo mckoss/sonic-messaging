@@ -39,6 +39,13 @@ export type DspWorkerResponse =
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number; samplePosition: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number; samplePosition: number }
   | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; confidence: number }
+  /**
+   * Slot-aligned re-analysis of the span already painted before a sync lock
+   * existed (the sync's own airtime), emitted once per acquired lock so the
+   * display can repaint that region on true symbol boundaries.
+   */
+  | { type: 'symbol-backfill'; samplesPerSymbol: number;
+      slots: Array<{ position: number; scores: number[]; confidence: number }> }
   | { type: 'fsk-reception'; token: 'sync' | 'length' | 'byte' | 'crc-confirm' | 'crc-error';
       position: number; byte?: number; length?: number }
   | { type: 'capture-gap'; samples: number; sampleRate: number;

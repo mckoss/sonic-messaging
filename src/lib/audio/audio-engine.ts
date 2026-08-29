@@ -13,6 +13,7 @@ export type SymbolListener = (event: Extract<DspWorkerResponse, { type: 'symbol-
 export type PacketListener = (event: Extract<DspWorkerResponse, { type: 'packet' }>) => void;
 export type ReceptionListener = (event: Extract<DspWorkerResponse, { type: 'fsk-reception' }>) => void;
 export type CaptureGapListener = (event: Extract<DspWorkerResponse, { type: 'capture-gap' }>) => void;
+export type SymbolBackfillListener = (event: Extract<DspWorkerResponse, { type: 'symbol-backfill' }>) => void;
 export type StateListener = (state: Readonly<AudioEngineState>) => void;
 export type WorkerHealthListener = (event: { healthy: boolean; reason?: string }) => void;
 
@@ -45,6 +46,7 @@ export class AudioEngine {
   private packetListeners = new Set<PacketListener>();
   private receptionListeners = new Set<ReceptionListener>();
   private captureGapListeners = new Set<CaptureGapListener>();
+  private symbolBackfillListeners = new Set<SymbolBackfillListener>();
   private stateListeners = new Set<StateListener>();
   private drainWaiters: Array<() => void> = [];
   private workerHealthListeners = new Set<WorkerHealthListener>();
@@ -91,6 +93,11 @@ export class AudioEngine {
 
   onCaptureGaps(listener: CaptureGapListener): () => void {
     this.captureGapListeners.add(listener); return () => this.captureGapListeners.delete(listener);
+  }
+
+  /** Slot-aligned repaint data for the span painted before each sync lock existed. */
+  onSymbolBackfill(listener: SymbolBackfillListener): () => void {
+    this.symbolBackfillListeners.add(listener); return () => this.symbolBackfillListeners.delete(listener);
   }
 
   /** Notifies on transitions between a responsive and a stalled/errored DSP worker. */
@@ -314,6 +321,7 @@ export class AudioEngine {
     else if (message.type === 'packet') this.packetListeners.forEach((listener) => listener(message));
     else if (message.type === 'fsk-reception') this.receptionListeners.forEach((listener) => listener(message));
     else if (message.type === 'capture-gap') this.captureGapListeners.forEach((listener) => listener(message));
+    else if (message.type === 'symbol-backfill') this.symbolBackfillListeners.forEach((listener) => listener(message));
     else if (message.type === 'audio-data') {
       this.audioRequests.get(message.requestId)?.({ samples: message.samples, sampleRate: message.sampleRate });
       this.audioRequests.delete(message.requestId);
