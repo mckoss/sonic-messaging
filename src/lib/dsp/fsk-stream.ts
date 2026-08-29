@@ -1,5 +1,6 @@
 import { bitsToBytes } from './bits';
 import { decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, SYNC_BYTES, unframe } from './frame';
+import { golayRadiusForBitsPerSymbol } from './golay';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
@@ -64,6 +65,8 @@ export class FskStreamDecoder {
   private readonly samplesPerSymbol: number;
   private readonly bitsPerSymbol: number;
   private readonly phaseStep: number;
+  /** Golay correction radius for the length field, sized to one bad symbol. */
+  private readonly lengthRadius: number;
   private progress: FskStreamProgress[] = [];
   private reportedPayloadBytes = 0;
   private reportedLength = false;
@@ -93,6 +96,7 @@ export class FskStreamDecoder {
     this.samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
     this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
+    this.lengthRadius = golayRadiusForBitsPerSymbol(this.bitsPerSymbol);
   }
 
   push(input: Float32Array): FskStreamPacket[] {
@@ -257,7 +261,7 @@ export class FskStreamDecoder {
     // Golay-protected length: up to 2 corrupted bits (one bad 4-FSK symbol)
     // are corrected in place; a worse header is rejected here instead of
     // committing the decoder to an arbitrarily long bogus frame.
-    const payloadLength = decodeFrameLength(header, SYNC.length);
+    const payloadLength = decodeFrameLength(header, SYNC.length, this.lengthRadius);
     if (payloadLength === undefined) {
       this.progress.push({ type: 'crc-error',
         position: this.frameBytePosition(start, HEADER_BYTES) });
@@ -319,7 +323,7 @@ export class FskStreamDecoder {
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
-    const parsed = unframe(decoded.bytes);
+    const parsed = unframe(decoded.bytes, this.lengthRadius);
     const framePosition = this.frameBytePosition(start, frameBytes);
     if (!parsed.payload) {
       this.progress.push({ type: 'crc-error', position: framePosition });

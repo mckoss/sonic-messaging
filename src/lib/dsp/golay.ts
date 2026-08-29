@@ -41,21 +41,33 @@ function codewordTable(): Uint32Array {
 }
 
 /**
+ * Correction radius that covers one corrupted symbol of the given modulation
+ * without giving up more garbage rejection than that requires: at least 2
+ * (one bad 4-FSK symbol), at most the code's full radius 3 (one bad 8-FSK
+ * symbol; also the best partial cover for 16-FSK's 4-bit symbols).
+ */
+export function golayRadiusForBitsPerSymbol(bitsPerSymbol: number): number {
+  return Math.min(3, Math.max(2, bitsPerSymbol));
+}
+
+/**
  * Nearest-codeword decode over all 4096 codewords — run only once per validated
  * sync, so brute force beats table-based syndrome decoding in clarity for free.
  *
- * Decodes at radius 2 rather than the code's full radius 3: correction still
- * covers one corrupted 4-FSK symbol (two adjacent bits), while every 3-, 4-,
- * and 5-bit error pattern is now detected with certainty (at minimum distance
- * 8, such a word stays at least distance 3 from every other codeword). The
- * narrower radius also cuts the chance that arbitrary garbage — a false sync
- * inside payload data — "corrects" to a plausible length from 57% to 7%.
+ * The radius sets the correction/rejection trade: errors within it are
+ * corrected, and everything up to distance 8 − radius − 1 beyond it is
+ * detected with certainty (minimum distance 8). Radius 2 corrects one bad
+ * 4-FSK symbol and lets only 7% of arbitrary garbage — a false sync inside
+ * payload data — "correct" to a plausible length; the full radius 3 covers
+ * one bad 8-FSK symbol at 57% garbage acceptance, so callers should pass the
+ * smallest radius their modulation needs (golayRadiusForBitsPerSymbol).
  * Returns the corrected 12 data bits, or undefined on detected corruption.
  */
-export function golayDecode(word24: number): number | undefined {
+export function golayDecode(word24: number, radius = 2): number | undefined {
   const table = codewordTable();
+  const clamped = Math.max(0, Math.min(3, radius));
   for (let data = 0; data < 4096; data++) {
-    if (popcount(table[data] ^ word24) <= 2) return data;
+    if (popcount(table[data] ^ word24) <= clamped) return data;
   }
   return undefined;
 }

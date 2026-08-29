@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { golayDecode, golayEncode } from './golay';
+import { golayDecode, golayEncode, golayRadiusForBitsPerSymbol } from './golay';
 
 function popcount(value: number): number {
   let count = 0;
@@ -30,15 +30,24 @@ describe('extended Golay (24,12)', () => {
     }
   });
 
-  it('detects (refuses to decode) every 3-bit error pattern at the radius-2 decode', () => {
+  it('detects every 3-bit error at the default radius 2, and corrects it at radius 3', () => {
     const codeword = golayEncode(0x2a5);
     for (let a = 0; a < 24; a++) {
       for (let b = a + 1; b < 24; b++) {
         for (let c = b + 1; c < 24; c++) {
-          expect(golayDecode(codeword ^ (1 << a) ^ (1 << b) ^ (1 << c))).toBeUndefined();
+          const corrupted = codeword ^ (1 << a) ^ (1 << b) ^ (1 << c);
+          expect(golayDecode(corrupted)).toBeUndefined();
+          expect(golayDecode(corrupted, 3)).toBe(0x2a5);
         }
       }
     }
+  });
+
+  it('sizes the radius to one corrupted symbol of each FSK order', () => {
+    expect(golayRadiusForBitsPerSymbol(1)).toBe(2); // 2-FSK: two bad symbols still covered
+    expect(golayRadiusForBitsPerSymbol(2)).toBe(2); // 4-FSK: one bad symbol
+    expect(golayRadiusForBitsPerSymbol(3)).toBe(3); // 8-FSK: one bad symbol
+    expect(golayRadiusForBitsPerSymbol(4)).toBe(3); // 16-FSK: best partial cover
   });
 
   it('detects 4- and 5-bit error patterns', () => {

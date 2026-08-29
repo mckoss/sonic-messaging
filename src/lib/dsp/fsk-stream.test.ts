@@ -222,6 +222,23 @@ describe('continuous FSK receiver', () => {
     expect(rejecting.drainProgress().some(event => event.type === 'crc-error')).toBe(true);
   });
 
+  it('corrects one bad 8-FSK length symbol (3 bit errors) at the wider adaptive radius', () => {
+    const octal = {
+      sampleRate: 48_000, symbolRate: 400,
+      frequencies: Array.from({ length: 8 }, (_, i) => 2400 + 800 * i)
+    };
+    const payload = new TextEncoder().encode('radius 3');
+    const samples = encodeFsk(payload, octal).samples.slice();
+    const spp = Math.round(octal.sampleRate / octal.symbolRate);
+    // Length field = bits 32..55 → symbols 11..18 at 3 bits/symbol; symbol 12
+    // (bits 36-38) carries zeros for this short payload, so tone 7 flips 3 bits.
+    for (let i = 0; i < spp; i++) {
+      samples[12 * spp + i] = 0.8 * Math.sin(2 * Math.PI * octal.frequencies[7] * i / octal.sampleRate);
+    }
+    const packets = new FskStreamDecoder(octal).push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['radius 3']);
+  });
+
   it('decodes a 16-tone stream with byte-aligned symbols', () => {
     const wide = {
       sampleRate: 48_000, symbolRate: 400,
