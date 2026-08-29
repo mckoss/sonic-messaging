@@ -276,7 +276,10 @@
     });
     const offCaptureGaps = audio.onCaptureGaps(event => {
       const ms = Math.round(event.samples / event.sampleRate * 1000);
-      logs = [`${new Date().toLocaleTimeString()} · ⚠ Capture dropouts · ${ms} ms of zeroed audio — OS/browser pipeline glitch`, ...logs].slice(0, 10);
+      logs = [event.source === 'backpressure'
+        ? `${new Date().toLocaleTimeString()} · ⚠ DSP overload · dropped ${ms} ms of audio while the decoder lagged`
+        : `${new Date().toLocaleTimeString()} · ⚠ Capture dropouts · ${ms} ms of zeroed audio — OS/browser pipeline glitch`,
+        ...logs].slice(0, 10);
     });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
