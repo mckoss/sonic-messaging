@@ -25,7 +25,10 @@
   $: recentMessages = recentEntries.length ? `| ${recentEntries.join(' | ')} |` : '';
   $: scrubSamples = $waterfallScrubSamples;
 
-  const SYMBOL_HEIGHT = 150, CONFIDENCE_HEIGHT = 22, TIMELINE_HEIGHT = 34;
+  const MIN_SYMBOL_HEIGHT = 150, LABEL_ROW_CSS_PX = 14, CONFIDENCE_HEIGHT = 22, TIMELINE_HEIGHT = 34;
+  // The lane grows with the tone count so every label row keeps its band; a
+  // fixed height left 16-FSK labels overflowing while the canvas hugged the top.
+  $: symbolLaneHeight = Math.max(MIN_SYMBOL_HEIGHT, displayLabels.length * LABEL_ROW_CSS_PX);
 
   let canvas: HTMLCanvasElement;
   let confidenceCanvas: HTMLCanvasElement;
@@ -39,7 +42,7 @@
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
   // History lives in ring canvases; the visible canvases are a scrubable viewport.
   let rings: { symbol: HTMLCanvasElement; confidence: HTMLCanvasElement; timeline: HTMLCanvasElement } | undefined;
-  let ringWidth = 0, ringRatio = 1, ringSpp = WATERFALL_SAMPLES_PER_CSS_PIXEL, ringRate = 48_000;
+  let ringWidth = 0, ringRatio = 1, ringSpp = WATERFALL_SAMPLES_PER_CSS_PIXEL, ringRate = 48_000, ringLaneHeight = 0;
   let originPosition = 0, clearedX = 0;
 
   function pixelRatio(): number { return Math.max(1, window.devicePixelRatio || 1); }
@@ -54,11 +57,12 @@
 
   function ensureRings(): void {
     const ratio = pixelRatio();
-    if (rings && ringRatio === ratio && ringSpp === samplesPerCssPixel && ringRate === sampleRate) return;
-    ringRatio = ratio; ringSpp = samplesPerCssPixel; ringRate = sampleRate;
+    if (rings && ringRatio === ratio && ringSpp === samplesPerCssPixel && ringRate === sampleRate &&
+      ringLaneHeight === symbolLaneHeight) return;
+    ringRatio = ratio; ringSpp = samplesPerCssPixel; ringRate = sampleRate; ringLaneHeight = symbolLaneHeight;
     ringWidth = Math.min(WATERFALL_MAX_RING_PIXELS,
       Math.ceil(waterfallPixelAdvance(WATERFALL_HISTORY_SECONDS * sampleRate, ratio, samplesPerCssPixel)));
-    rings = { symbol: makeRing(SYMBOL_HEIGHT), confidence: makeRing(CONFIDENCE_HEIGHT), timeline: makeRing(TIMELINE_HEIGHT) };
+    rings = { symbol: makeRing(symbolLaneHeight), confidence: makeRing(CONFIDENCE_HEIGHT), timeline: makeRing(TIMELINE_HEIGHT) };
     originPosition = Math.max(0, latestPosition); clearedX = 0;
     lastPaintedPosition = latestPosition;
     waterfallScrubSamples.set(0);
@@ -318,7 +322,7 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="symbol-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label="FSK symbol likelihood waterfall; newest detections at right" role="img">
-  <div class="plot"><div class="labels">{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector scrub" class:scrubbed={scrubSamples > 0} role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
+  <div class="plot"><div class="labels" style={`height:${symbolLaneHeight}px`}>{#each displayLabels as label}<span>{label}</span>{/each}</div><div class="detector scrub" class:scrubbed={scrubSamples > 0} style={`height:${symbolLaneHeight}px`} role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} style={`height:${symbolLaneHeight}px`} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
   <div class="confidence"><span class="channel">CONF</span><div class="confidence-history scrub" aria-label="Scrolling FSK symbol confidence history" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={confidenceCanvas} aria-hidden="true"></canvas></div></div>
   <div class="timeline"><span class="channel">RX TIME</span><div class="timeline-history scrub" aria-label="Scrolling decoded FSK character timing" role="img" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={timelineCanvas} aria-hidden="true"></canvas></div></div>
   <div class="receive"><span class="channel">RX</span><div class="messages"><span>{#each [...recentMessages] as character}<i class:confirm={character === '✓'} class:error={character === '✕'}>{character}</i>{/each}</span></div></div>
@@ -326,12 +330,12 @@
 
 <style>
   .figure { width:100%; }
-  .plot { display:grid; grid-template-columns:62px 1fr; gap:7px; }
+  .plot { display:grid; grid-template-columns:80px 1fr; gap:7px; align-items:start; }
   .detector { position:relative; width:100%; min-width:0; height:150px; overflow:hidden; border-radius:12px; background:#050a18; }
   canvas { display:block; width:100%; height:150px; }
-  .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; }
+  .labels { display:grid; grid-template-rows:repeat(auto-fit,minmax(1px,1fr)); color:#8294aa; font:9px ui-monospace,monospace; white-space:nowrap; }
   .labels span { display:flex; align-items:center; justify-content:flex-end; }
-  .receive,.confidence,.timeline { display:grid; grid-template-columns:62px 1fr; gap:7px; margin-top:6px; min-width:0; }
+  .receive,.confidence,.timeline { display:grid; grid-template-columns:80px 1fr; gap:7px; margin-top:6px; min-width:0; }
   .channel { color:#8294aa; font:10px ui-monospace,monospace; text-align:right; padding-top:5px; }
   .confidence-history { height:22px; overflow:hidden; border:1px solid #203149; border-radius:5px; background:#050a18; }
   .confidence-history canvas { width:100%; height:22px; }

@@ -216,7 +216,7 @@
 
 <style>
   .figure { width: 100%; }
-  .plot { display:grid; grid-template-columns:62px 1fr; gap:6px; }
+  .plot { display:grid; grid-template-columns:80px 1fr; gap:6px; }
   .spectrum { position:relative; width: 100%; min-width:0; min-height:176px; overflow:hidden; border-radius:14px; background:#050a18; }
   canvas { display: block; width: 100%; height: 220px; }
   .scrub { cursor:grab; touch-action:none; }
