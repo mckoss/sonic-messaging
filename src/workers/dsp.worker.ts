@@ -73,9 +73,12 @@ function appendDetectorWindow(chunk: Float32Array): void {
 
 /**
  * Analyzes symbol-length windows on a fixed hop so the display scrolls smoothly.
- * While the packet decoder holds a sync lock, windows snap to its symbol boundaries
- * (each held until the next boundary passes) so the display mirrors the decoder's
- * actual per-symbol decisions; during sync search a trailing window slides freely.
+ * While the packet decoder holds a sync lock, score windows snap to its symbol
+ * boundaries (each held until the next boundary passes) so the display mirrors
+ * the decoder's actual per-symbol decisions, and the reported confidence is the
+ * discriminator margin integrated from the current symbol's boundary through the
+ * newest sample — cumulative evidence that ramps up as the slot is read and
+ * resets at each boundary. During sync search a trailing window slides freely.
  */
 function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkBase: number): void {
   if (!detector) return;
@@ -103,6 +106,7 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
     if (detectorFilled < samplesPerSymbol) continue;
     const anchor = fskStreamDecoder?.lockedSymbolAnchor();
     let detection: FskSymbolDetection | undefined;
+    let rampConfidence: number | undefined;
     if (anchor !== undefined && anchor <= detectorSamplePosition - samplesPerSymbol) {
       const boundary = anchor + samplesPerSymbol *
         Math.floor((detectorSamplePosition - anchor) / samplesPerSymbol);
@@ -117,6 +121,21 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
       alignedDetection = undefined;
       alignedBoundary = -1;
     }
+    if (anchor !== undefined && anchor <= detectorSamplePosition) {
+      // Cumulative evidence for the symbol being read right now: run the same
+      // discriminator the decoder applies to a full slot, but only over the
+      // samples received since the current slot's boundary. Confidence then
+      // ramps toward the decoder's full-slot decision statistic as evidence
+      // accumulates, and resets to zero at each symbol boundary.
+      const slotStart = anchor + samplesPerSymbol *
+        Math.floor((detectorSamplePosition - anchor) / samplesPerSymbol);
+      const received = detectorSamplePosition - slotStart;
+      rampConfidence = received > 0 && received <= detectorFilled
+        ? detectFskSymbol(
+            detectorWindow.subarray(detectorFilled - received, detectorFilled),
+            sampleRate, detector.frequencies).confidence
+        : 0;
+    }
     detection ??= detectFskSymbol(
       detectorWindow.subarray(detectorFilled - samplesPerSymbol, detectorFilled),
       sampleRate, detector.frequencies);
@@ -124,7 +143,8 @@ function acceptDetectorSamples(samples: Float32Array, sampleRate: number, chunkB
     // Copy the scores: aligned results are re-emitted until the next boundary,
     // so the cached array must survive the transfer.
     const scores = result.scores.slice();
-    send({ type: 'symbol-scores', mode: 'FSK', ...result, scores, sequence: detectorSequence++,
+    send({ type: 'symbol-scores', mode: 'FSK', ...result, scores,
+      confidence: rampConfidence ?? result.confidence, sequence: detectorSequence++,
       samplePosition: detectorSamplePosition },
       [scores.buffer as ArrayBuffer]);
   }

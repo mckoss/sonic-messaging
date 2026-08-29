@@ -2,8 +2,12 @@ export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
 export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 512;
 export const WATERFALL_SPEED_SAMPLES = { Slow: 1024, Medium: 512, Fast: 256 } as const;
-/** Detector display cadence; matches the spectrum lane's hop so both scroll equally smoothly. */
-export const DETECTOR_HOP_SAMPLES = 1024;
+/**
+ * Detector display cadence. Half the spectrum lane's 1024-sample hop so the
+ * confidence lane resolves several cumulative-evidence points within one
+ * symbol even at low baud rates.
+ */
+export const DETECTOR_HOP_SAMPLES = 512;
 /** Scrub-back history retained by the waterfall lanes. */
 export const WATERFALL_HISTORY_SECONDS = 60;
 /** Ring-canvas width cap; stays under every browser's canvas dimension limit. */
