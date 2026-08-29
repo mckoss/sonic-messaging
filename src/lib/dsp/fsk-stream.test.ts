@@ -239,6 +239,32 @@ describe('continuous FSK receiver', () => {
     expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['radius 3']);
   });
 
+  it('reports no 2-FSK sync on a steady tone parked at the mark frequency', () => {
+    // The unbalanced 32-bit sync (19 ones, 13 zeros) once let a constant tone
+    // at one frequency — e.g. a mains-hum harmonic — fire continuous false
+    // syncs through the plain margin statistic.
+    const binary = { sampleRate: 48_000, symbolRate: 25, frequencies: [500, 600] };
+    const samples = new Float32Array(3 * binary.sampleRate);
+    let seed = 42;
+    const random = () => ((seed = (seed * 1_664_525 + 1_013_904_223) >>> 0) / 0xffffffff - 0.5);
+    for (let i = 0; i < samples.length; i++) {
+      samples[i] = 0.05 * Math.sin(2 * Math.PI * 600 * i / binary.sampleRate) + 0.005 * random();
+    }
+    const receiver = new FskStreamDecoder(binary);
+    receiver.push(samples);
+    expect(receiver.drainProgress().filter(event => event.type === 'sync')).toEqual([]);
+  });
+
+  it('decodes a 2-FSK stream with the balanced sync statistic', () => {
+    const binary = { sampleRate: 48_000, symbolRate: 400, frequencies: [2400, 3200] };
+    const payload = new TextEncoder().encode('two tones');
+    const waveform = encodeFsk(payload, binary).samples;
+    const samples = new Float32Array(150 + waveform.length + 150);
+    samples.set(waveform, 150);
+    const packets = new FskStreamDecoder(binary).push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['two tones']);
+  });
+
   it('decodes a 16-tone stream with byte-aligned symbols', () => {
     const wide = {
       sampleRate: 48_000, symbolRate: 400,
