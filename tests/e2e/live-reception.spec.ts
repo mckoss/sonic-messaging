@@ -114,10 +114,15 @@ test('sweeps a playback cursor across the waterfalls while replaying visible aud
     const sweeps = page.getByTestId('replay-sweep');
     await expect(sweeps).toHaveCount(2, { timeout: 5_000 });
 
-    const sweep = sweeps.first();
-    const leftAt = async () => parseFloat(await sweep.evaluate(element => (element as HTMLElement).style.left));
+    // The view spans 64 symbols, so at 100 baud the replay lasts well under a
+    // second: poll for advancement, treating a finished (removed) sweep as
+    // having swept past the right edge.
+    const leftAt = () => page.evaluate(() => {
+      const element = document.querySelector<HTMLElement>('[data-testid="replay-sweep"]');
+      return element ? parseFloat(element.style.left) : Number.POSITIVE_INFINITY;
+    });
     const first = await leftAt();
-    await page.waitForTimeout(800);
-    const second = await leftAt();
-    expect(second).toBeGreaterThan(first);
+    if (Number.isFinite(first)) {
+      await expect.poll(leftAt, { timeout: 5_000 }).toBeGreaterThan(first);
+    }
 });

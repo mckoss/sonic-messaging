@@ -1,7 +1,17 @@
 export const WATERFALL_FLOOR_DB = -110;
 export const WATERFALL_CEILING_DB = -12;
 export const WATERFALL_SAMPLES_PER_CSS_PIXEL = 512;
-export const WATERFALL_SPEED_SAMPLES = { Slow: 1024, Medium: 512, Fast: 256 } as const;
+/** Symbols spanning one waterfall view; scroll speed follows the symbol rate. */
+export const WATERFALL_VIEW_SYMBOLS = 64;
+
+/** Samples per CSS pixel that fit WATERFALL_VIEW_SYMBOLS symbols across the view width. */
+export function waterfallSamplesPerCssPixel(
+  sampleRate: number, symbolRate: number, viewWidthCssPx: number
+): number {
+  const width = Math.max(280, viewWidthCssPx);
+  return Math.max(1, Math.round(
+    (WATERFALL_VIEW_SYMBOLS * sampleRate) / Math.max(1, symbolRate) / width));
+}
 /**
  * Detector display cadence. Half the spectrum lane's 1024-sample hop so the
  * confidence lane resolves several cumulative-evidence points within one

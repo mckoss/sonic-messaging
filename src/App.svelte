@@ -7,7 +7,7 @@
   import { ModemLabWorker, type SimulationResult } from './lib/modem-lab';
   import { fskFrequencies } from './lib/dsp';
   import { loadUserPreferences, saveUserPreferences, type Mode, type UserPreferences } from './lib/preferences';
-  import { WATERFALL_SPEED_SAMPLES } from './lib/audio/waterfall';
+  import { waterfallSamplesPerCssPixel } from './lib/audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
   import { get } from 'svelte/store';
 
@@ -57,7 +57,12 @@
   let interferer = false;
   let interfererPower = -6;
   let preferencesReady = false;
-  let scrollSpeed: 'Slow' | 'Medium' | 'Fast' = 'Medium';
+  let receiverWidth = 900;
+  // Quantize so window-resize jitter doesn't reset the waterfall rings each pixel.
+  $: waterfallWidth = Math.max(280, Math.round((receiverWidth - 110) / 50) * 50);
+  // Scroll speed follows the symbol rate: 64 symbols span one view width.
+  $: samplesPerCssPixel = waterfallSamplesPerCssPixel(
+    audio?.state.sampleRate ?? 48_000, Number(settings.FSK.symbolRate), waterfallWidth);
   let inputDeviceId = 'default';
   let inputDevices: Array<{ deviceId: string; label: string }> = [];
   let packets = [
@@ -132,7 +137,7 @@
   $: spectrumMin = Math.max(0, activeBand.low - 0.1 * (activeBand.high - activeBand.low));
   $: spectrumMax = Math.min(24000, activeBand.high + 0.1 * (activeBand.high - activeBand.low));
   function currentPreferences(): UserPreferences {
-    return { mode, settings, snr, noiseType, interferer, interfererPower, scrollSpeed, inputDeviceId, payload };
+    return { mode, settings, snr, noiseType, interferer, interfererPower, inputDeviceId, payload };
   }
   function persistPreferences() {
     if (preferencesReady) saveUserPreferences(window.localStorage, currentPreferences());
@@ -217,7 +222,7 @@
     const restored = loadUserPreferences(window.localStorage, currentPreferences());
     mode = restored.mode; settings = restored.settings; snr = restored.snr; noiseType = restored.noiseType;
     interferer = restored.interferer; interfererPower = restored.interfererPower;
-    scrollSpeed = restored.scrollSpeed; inputDeviceId = restored.inputDeviceId; payload = restored.payload;
+    inputDeviceId = restored.inputDeviceId; payload = restored.payload;
     preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
     void refreshInputDevices(false);
@@ -318,16 +323,16 @@
       <button class="primary" disabled={!payload || busy} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
 
-    <section class="card receiver">
-      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><label>Scroll <select bind:value={scrollSpeed} on:change={persistPreferences} aria-label="Waterfall scroll speed"><option>Slow</option><option>Medium</option><option>Fast</option></select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
+    <section class="card receiver" bind:clientWidth={receiverWidth}>
+      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       {#if workerError}<div class="worker-error" role="alert" data-testid="worker-error">⚠ Receiver stalled · {workerError}</div>{/if}
       <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={listening}
-        samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
+        {samplesPerCssPixel} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence} live={listening}
           messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} backfill={symbolBackfill} confidence={symbolConfidence}
-          samplePosition={symbolSamplePosition} samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]}
+          samplePosition={symbolSamplePosition} {samplesPerCssPixel}
           sampleRate={audio?.state.sampleRate ?? 48_000}
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
