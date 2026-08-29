@@ -75,7 +75,7 @@
     } finally { busy = false; }
   }
 
-  async function onListenToggle(next: boolean, preserveCapture = false) {
+  async function onListenToggle(next: boolean) {
     try {
       if (next) {
         try { await audio.startListening(inputDeviceId); }
@@ -85,9 +85,9 @@
           inputDeviceId = 'default'; persistPreferences(); await audio.startListening();
         }
       } else {
-        audio.stopListening(preserveCapture); audio.disableDetector();
-        // Abandon any packet mid-read: the worker's decoder is reset by the
-        // detector reconfigure, so the RX lane must not keep the partial text.
+        audio.stopListening(); audio.disableDetector();
+        // Abandon any packet mid-read in the display; the worker itself is
+        // kept for history replay and replaced on the next start.
         receivingMessage = ''; receptionDecoder = new TextDecoder();
       }
       if (next) await refreshInputDevices(true);
@@ -155,7 +155,7 @@
   async function onInputDeviceChange() {
     persistPreferences();
     if (listening) {
-      audio.stopListening(true); listening = false;
+      audio.stopListening(); listening = false;
       await onListenToggle(true);
     }
   }
@@ -171,7 +171,7 @@
   async function replayVisible(replayMode: 'raw' | 'fft') {
     busy = true;
     try {
-      if (listening) await onListenToggle(false, true);
+      if (listening) await onListenToggle(false);
       const view = get(waterfallView);
       if (view.position < 0) {
         logs = [`${new Date().toLocaleTimeString()} · No capture history yet — start listening first`, ...logs].slice(0, 10);
@@ -229,6 +229,9 @@
       symbolSamplePosition = event.samplePosition; symbolConfidence = event.confidence; symbolPower = event.powerDbfs;
     });
     const offPackets = audio.onPackets(event => {
+      // The worker survives a stop for history replay; anything its queued
+      // backlog still decodes afterward must not reach the display.
+      if (!listening) return;
       const decoded = new TextDecoder('utf-8', { fatal: true });
       try {
         const text = decoded.decode(event.payload);
@@ -239,6 +242,7 @@
       }
     });
     const offReception = audio.onReception(event => {
+      if (!listening) return;
       const bitsPerSymbol = Math.log2(Number(settings.FSK.tones));
       const addMarker = (label: string, byteCount: number) => {
         receivedMarkers = [...receivedMarkers, {
