@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DETECTOR_HOP_SAMPLES, dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_AHEAD_TRIM, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, WATERFALL_STALL_FREE_RUN_SECONDS, waterfallPixelAdvance } from '../audio/waterfall';
+  import { DETECTOR_HOP_SAMPLES, dbToIntensity, estimateNoiseFloorDb, frequencyBinRange, intensityToRgb, ringSpans, WATERFALL_AHEAD_TRIM, WATERFALL_FLOOR_DB, WATERFALL_HISTORY_SECONDS, WATERFALL_MAX_RING_PIXELS, WATERFALL_SAMPLES_PER_CSS_PIXEL, WATERFALL_STALL_FREE_RUN_SECONDS, waterfallPixelAdvance } from '../audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples } from '../audio/scrub-store';
 
   export let spectrum: number[] | Float32Array = [];
@@ -25,6 +25,14 @@
   let originPosition = 0, clearedX = 0;
 
   $: scrubSamples = $waterfallScrubSamples;
+
+  // Adaptive color floor: a smoothed low percentile of the displayed band, so
+  // the ambient background renders dark in any room while signals span the
+  // palette. Clamped so a strong wideband signal cannot push the floor absurdly
+  // high, and smoothed (~0.4 s) so the scale does not flicker frame to frame.
+  const FLOOR_SMOOTHING = 0.05;
+  let adaptiveFloorDb: number | undefined;
+  $: displayedFloorDb = adaptiveFloorDb === undefined ? undefined : Math.round(adaptiveFloorDb);
 
   function pixelRatio(): number { return Math.max(1, window.devicePixelRatio || 1); }
 
@@ -62,13 +70,19 @@
     latestPosition = samplePosition;
     if (renderedPosition < 0) renderedPosition = samplePosition;
     ensureRing();
+    const { start, end } = frequencyBinRange(spectrum.length, sampleRate, minFrequency, maxFrequency);
+    const estimate = estimateNoiseFloorDb(spectrum, start, end);
+    if (estimate !== undefined) {
+      const clamped = Math.max(WATERFALL_FLOOR_DB, Math.min(-30, estimate));
+      adaptiveFloorDb = adaptiveFloorDb === undefined
+        ? clamped : adaptiveFloorDb + (clamped - adaptiveFloorDb) * FLOOR_SMOOTHING;
+    }
     if (lastPaintedPosition < 0) { lastPaintedPosition = samplePosition; return; }
     const columnWidth = Math.floor(waterfallPixelAdvance(samplePosition - lastPaintedPosition, ringRatio, ringSpp));
     if (columnWidth < 1) return;
     const columnEnd = Math.floor(xOf(samplePosition));
     ensureCleared(columnEnd);
     const ctx = ring!.getContext('2d', { alpha: false })!;
-    const { start, end } = frequencyBinRange(spectrum.length, sampleRate, minFrequency, maxFrequency);
     const span = end - start;
     for (const segment of ringSpans(columnEnd - columnWidth, columnWidth, ringWidth)) {
       const column = ctx.createImageData(segment.w, ringHeight);
@@ -81,7 +95,8 @@
           const value = spectrum[bin];
           if (Number.isFinite(value)) peakDb = Math.max(peakDb, value);
         }
-        const [red, green, blue] = intensityToRgb(dbToIntensity(peakDb));
+        const [red, green, blue] = intensityToRgb(
+          dbToIntensity(peakDb, adaptiveFloorDb ?? WATERFALL_FLOOR_DB));
         for (let x = 0; x < segment.w; x++) {
           const offset = (y * segment.w + x) * 4;
           column.data[offset] = red;
@@ -196,7 +211,7 @@
 </script>
 
 <div class="figure" bind:this={host} data-testid="spectrum-waterfall" data-samples-per-css-pixel={samplesPerCssPixel} aria-label={`${label}; waterfall display, newest samples at right`} role="img">
-  <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum scrub" role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}</div></div>
+  <div class="plot"><div class="axis"><span>{Math.round(maxFrequency / 100) / 10} kHz</span><span>{Math.round(minFrequency / 100) / 10} kHz</span></div><div class="spectrum scrub" role="presentation" on:pointerdown={scrubStart} on:pointermove={scrubMove} on:pointerup={scrubEnd} on:pointercancel={scrubEnd}><canvas bind:this={canvas} aria-hidden="true"></canvas>{#if sweepLeft >= 0}<div class="sweep" data-testid="replay-sweep" style={`left:${sweepLeft.toFixed(2)}px`} aria-hidden="true"></div>{/if}{#if scrubSamples > 0}<button class="live" on:pointerdown|stopPropagation on:click={() => waterfallScrubSamples.set(0)}>◀ {(scrubSamples / sampleRate).toFixed(1)}s · LIVE ▶</button>{/if}{#if displayedFloorDb !== undefined}<span class="floor" data-testid="spectrum-floor" aria-label="Adaptive display noise floor">floor {displayedFloorDb} dBFS</span>{/if}</div></div>
 </div>
 
 <style>
@@ -208,6 +223,7 @@
   .scrub:active { cursor:grabbing; }
   .live { position:absolute; top:7px; right:9px; border:1px solid #2c8e6f; border-radius:99px; padding:4px 10px; background:#0b2c22e6; color:#4ee8b4; font:600 10px ui-monospace,monospace; cursor:pointer; }
   .sweep { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#ff4b63; box-shadow:0 0 7px #ff4b63b0; pointer-events:none; }
+  .floor { position:absolute; bottom:7px; right:9px; padding:3px 8px; border-radius:99px; background:#050a18cc; color:#8294aa; font:10px ui-monospace,monospace; pointer-events:none; }
   .axis { color: #8294aa; font: 10px/1.2 ui-monospace, monospace; pointer-events: none; }
   .axis { display:flex; flex-direction:column; justify-content:space-between; padding:1px 0; text-align:right; }
   @media (max-width: 559px) { canvas { height: 176px; } }

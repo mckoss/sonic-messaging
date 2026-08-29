@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dbToIntensity, frequencyBinRange, intensityToRgb, ringSpans, waterfallPixelAdvance } from './waterfall';
+import { dbToIntensity, estimateNoiseFloorDb, frequencyBinRange, intensityToRgb, ringSpans, waterfallPixelAdvance } from './waterfall';
 
 describe('waterfall mapping', () => {
   it('maps a selected frequency span to a bounded half-open bin range', () => {
@@ -41,6 +41,21 @@ describe('waterfall mapping', () => {
     expect(ringSpans(5, 2000, 1000)).toEqual([{ x: 5, w: 995 }, { x: 0, w: 5 }]);
     expect(ringSpans(5, 0, 1000)).toEqual([]);
     expect(ringSpans(5, 10, 0)).toEqual([]);
+  });
+
+  it('estimates the noise floor from the background, ignoring narrowband tones', () => {
+    // 90 background bins near -80 with 10 strong tone bins must report the background.
+    const spectrum = new Float32Array(100).fill(-80);
+    for (let bin = 40; bin < 50; bin++) spectrum[bin] = -30;
+    expect(estimateNoiseFloorDb(spectrum, 0, 100)).toBe(-80);
+    // Restricting the range to mostly-signal bins raises the estimate.
+    expect(estimateNoiseFloorDb(spectrum, 40, 50)).toBe(-30);
+  });
+
+  it('handles out-of-range, non-finite, and empty spectra safely', () => {
+    expect(estimateNoiseFloorDb(new Float32Array(0), 0, 10)).toBeUndefined();
+    expect(estimateNoiseFloorDb([Number.NaN, -70, Number.POSITIVE_INFINITY], -5, 99)).toBe(-70);
+    expect(estimateNoiseFloorDb([-60, -50], 2, 5)).toBeUndefined();
   });
 
 });

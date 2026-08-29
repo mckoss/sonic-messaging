@@ -20,6 +20,25 @@ export const WATERFALL_STALL_FREE_RUN_SECONDS = 5;
  */
 export const WATERFALL_AHEAD_TRIM = 0.995;
 
+/**
+ * Noise-floor estimate for one spectrum frame: the 25th percentile of the
+ * finite bin levels in [start, end). A low percentile tracks the background
+ * even while narrowband tones occupy part of the displayed band.
+ */
+export function estimateNoiseFloorDb(
+  spectrum: ArrayLike<number>, start: number, end: number
+): number | undefined {
+  const values: number[] = [];
+  const to = Math.min(spectrum.length, end);
+  for (let bin = Math.max(0, start); bin < to; bin++) {
+    const value = spectrum[bin];
+    if (Number.isFinite(value)) values.push(value);
+  }
+  if (!values.length) return undefined;
+  values.sort((a, b) => a - b);
+  return values[Math.floor((values.length - 1) * 0.25)];
+}
+
 export interface RingSpan { x: number; w: number }
 
 /** Maps the unwrapped pixel range [start, start+width) onto 1-2 ring-canvas spans. */
