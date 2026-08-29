@@ -75,7 +75,7 @@
     } finally { busy = false; }
   }
 
-  async function onListenToggle(next: boolean) {
+  async function onListenToggle(next: boolean, preserveCapture = false) {
     try {
       if (next) {
         try { await audio.startListening(inputDeviceId); }
@@ -85,7 +85,7 @@
           inputDeviceId = 'default'; persistPreferences(); await audio.startListening();
         }
       } else {
-        audio.stopListening(); audio.disableDetector();
+        audio.stopListening(preserveCapture); audio.disableDetector();
         // Abandon any packet mid-read: the worker's decoder is reset by the
         // detector reconfigure, so the RX lane must not keep the partial text.
         receivingMessage = ''; receptionDecoder = new TextDecoder();
@@ -155,7 +155,7 @@
   async function onInputDeviceChange() {
     persistPreferences();
     if (listening) {
-      audio.stopListening(); listening = false;
+      audio.stopListening(true); listening = false;
       await onListenToggle(true);
     }
   }
@@ -171,7 +171,7 @@
   async function replayVisible(replayMode: 'raw' | 'fft') {
     busy = true;
     try {
-      if (listening) await onListenToggle(false);
+      if (listening) await onListenToggle(false, true);
       const view = get(waterfallView);
       if (view.position < 0) {
         logs = [`${new Date().toLocaleTimeString()} · No capture history yet — start listening first`, ...logs].slice(0, 10);
