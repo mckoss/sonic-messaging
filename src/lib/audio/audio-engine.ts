@@ -18,6 +18,14 @@ export type WorkerHealthListener = (event: { healthy: boolean; reason?: string }
 
 /** Listening with no worker output for this long is reported as a stalled/dead worker. */
 const WORKER_STALL_ERROR_MS = 5_000;
+/**
+ * Maximum seconds the DSP worker may lag behind posted capture before further
+ * chunks are dropped at the source. Bounds the worker's message backlog so
+ * control messages always apply within about this long, and a stalled worker
+ * cannot balloon memory with queued sample buffers. Must exceed the worker's
+ * baseline reporting slack (an FFT window plus a capture chunk, well under 0.2 s).
+ */
+const WORKER_BACKPRESSURE_SECONDS = 1;
 
 const DEFAULT_CONSTRAINTS: MediaTrackConstraints = {
   channelCount: { ideal: 1 }, echoCancellation: { ideal: false },
@@ -45,6 +53,10 @@ export class AudioEngine {
   private healthTimer?: ReturnType<typeof setInterval>;
   /** Set on stop: the worker still serves history replay but is replaced on the next listen. */
   private staleWorker = false;
+  /** Backpressure accounting: samples posted to vs. processed by the current worker. */
+  private postedSamples = 0;
+  private processedSamples = 0;
+  private droppedSamples = 0;
   private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
   private lastAnalysisAt?: number;
   private options: AudioEngineOptions;
@@ -190,6 +202,7 @@ export class AudioEngine {
       this.audioRequests.forEach((resolve) => resolve({ samples: new Float32Array(0), sampleRate }));
       this.audioRequests.clear();
       this.lastAnalysisAt = undefined;
+      this.postedSamples = 0; this.processedSamples = 0; this.droppedSamples = 0;
     }
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -200,6 +213,24 @@ export class AudioEngine {
       this.capture = new AudioWorkletNode(this.context!, 'sonic-capture', { numberOfOutputs: 0 });
       this.capture.port.onmessage = ({ data }: MessageEvent<CaptureWorkletMessage>) => {
         if (data.type === 'samples' && this.worker) {
+          // Backpressure: a worker running behind real time queues sample
+          // messages without bound, and every control message applies only
+          // after that backlog drains. Once the worker lags by more than the
+          // allowance, drop chunks at the source instead of posting them; the
+          // loss is reported as a capture gap when posting resumes.
+          if (this.postedSamples - this.processedSamples >
+              data.sampleRate * WORKER_BACKPRESSURE_SECONDS) {
+            this.droppedSamples += data.samples.length;
+            return;
+          }
+          if (this.droppedSamples > 0) {
+            console.warn(`DSP backpressure: dropped ${this.droppedSamples} samples while the worker lagged`);
+            const gap = { type: 'capture-gap', samples: this.droppedSamples,
+              sampleRate: data.sampleRate, source: 'backpressure' } as const;
+            this.captureGapListeners.forEach((listener) => listener(gap));
+            this.droppedSamples = 0;
+          }
+          this.postedSamples += data.samples.length;
           const request: DspWorkerRequest = {
             type: 'samples', samples: data.samples, sampleRate: data.sampleRate, sequence: data.sequence
           };
@@ -266,6 +297,11 @@ export class AudioEngine {
   private handleWorker(message: DspWorkerResponse): void {
     this.lastWorkerMessageAt = performance.now();
     this.setWorkerHealth(true);
+    // Both position-bearing streams count cumulative processed capture samples
+    // (within one analysis window), which is what backpressure compares against.
+    if (message.type === 'spectrum' || message.type === 'symbol-scores') {
+      this.processedSamples = Math.max(this.processedSamples, message.samplePosition);
+    }
     if (message.type === 'spectrum') this.spectrumListeners.forEach((listener) => listener(message));
     else if (message.type === 'symbol-scores') {
       const now = performance.now();
