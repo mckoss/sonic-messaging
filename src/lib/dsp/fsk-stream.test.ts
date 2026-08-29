@@ -255,6 +255,30 @@ describe('continuous FSK receiver', () => {
     expect(receiver.drainProgress().filter(event => event.type === 'sync')).toEqual([]);
   });
 
+  it('reports no sync on fluctuating in-band rumble thanks to hard symbol verification', () => {
+    // Both tones amplitude-modulated by independent slow random walks, mimicking
+    // ambient room rumble under a low-frequency tone plan. The soft statistic
+    // alone crossed its margin several times per ten seconds; the per-symbol
+    // hard check makes random energy match ≥31 of 32 sync symbols effectively never.
+    const binary = { sampleRate: 48_000, symbolRate: 30, frequencies: [210, 300] };
+    let seed = 7;
+    const random = () => ((seed = (seed * 1_664_525 + 1_013_904_223) >>> 0) / 0xffffffff - 0.5);
+    const samples = new Float32Array(10 * binary.sampleRate);
+    let a0 = 0.05, a1 = 0.05;
+    for (let i = 0; i < samples.length; i++) {
+      if (i % 480 === 0) {
+        a0 = Math.max(0, Math.min(0.12, a0 + 0.02 * random()));
+        a1 = Math.max(0, Math.min(0.12, a1 + 0.02 * random()));
+      }
+      const t = i / binary.sampleRate;
+      samples[i] = a0 * Math.sin(2 * Math.PI * 210 * t) + a1 * Math.sin(2 * Math.PI * 300 * t)
+        + 0.01 * random();
+    }
+    const receiver = new FskStreamDecoder(binary);
+    receiver.push(samples);
+    expect(receiver.drainProgress().filter(event => event.type === 'sync')).toEqual([]);
+  });
+
   it('decodes a 2-FSK stream with the balanced sync statistic', () => {
     const binary = { sampleRate: 48_000, symbolRate: 400, frequencies: [2400, 3200] };
     const payload = new TextEncoder().encode('two tones');

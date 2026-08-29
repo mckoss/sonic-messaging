@@ -20,6 +20,17 @@ const MAX_LIVE_FRAME_SECONDS = 60;
  * a true sync accumulates positive margin on every template symbol.
  */
 const SYNC_DETECT_MARGIN = 0.1;
+/**
+ * Hard verification after the soft prefilter: at the refined alignment, every
+ * sync symbol but at most this many must decode to its expected tone. One
+ * mismatch is tolerated so a single impulse hit does not drop an otherwise
+ * clean packet; the false-sync rate stays ~(1+3K)·M^-K per trial (months
+ * between false syncs), where soft-score-only gating fired constantly on
+ * fluctuating in-band interference. A frame whose sync symbols cannot be read
+ * would not survive the payload CRC anyway, so the hard gate costs no real
+ * sensitivity.
+ */
+const SYNC_VERIFY_MAX_MISMATCHES = 1;
 /** Consecutive collapsed-power symbol windows that abandon a mid-frame candidate. */
 const CARRIER_LOSS_ABORT_SYMBOLS = 4;
 /**
@@ -228,8 +239,15 @@ export class FskStreamDecoder {
     // One symbol plus one phase step of lookahead lets phase refinement trial
     // offsets past the coarse match without running off the buffer.
     while (this.searchOffset + required + this.samplesPerSymbol + this.phaseStep <= this.sampleCount) {
+      // The soft score is only a cheap prefilter; the hard per-symbol check at
+      // the refined alignment is what actually establishes sync.
       if (this.syncScoreAt(this.searchOffset) >= SYNC_DETECT_MARGIN) {
-        this.candidateOffset = this.refineSyncPhase(this.searchOffset);
+        const refined = this.refineSyncPhase(this.searchOffset);
+        if (!this.verifySyncSymbols(refined)) {
+          this.searchOffset += this.phaseStep;
+          continue;
+        }
+        this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false;
         this.candidateSymbols = []; this.candidateConfidences = [];
@@ -248,6 +266,24 @@ export class FskStreamDecoder {
       this.searchOffset += this.phaseStep;
     }
     return false;
+  }
+
+  /** Hard sync check: every symbol at the refined alignment must decode to its
+   * expected tone, with at most SYNC_VERIFY_MAX_MISMATCHES exceptions. */
+  private verifySyncSymbols(offset: number): boolean {
+    let mismatches = 0;
+    for (let index = 0; index < this.syncTemplate.length; index++) {
+      const start = offset + index * this.samplesPerSymbol;
+      const decision = detectFskSymbol(
+        this.samples.subarray(start, start + this.samplesPerSymbol),
+        this.config.sampleRate, this.config.frequencies);
+      let winner = 0;
+      for (let tone = 1; tone < decision.scores.length; tone++) {
+        if (decision.scores[tone] > decision.scores[winner]) winner = tone;
+      }
+      if (winner !== this.syncTemplate[index] && ++mismatches > SYNC_VERIFY_MAX_MISMATCHES) return false;
+    }
+    return true;
   }
 
   /** Locks sync timing to the sample by maximizing the matched-filter alignment score. */
