@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SYNC_BYTES } from './frame';
+import { golayEncode } from './golay';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { simulateChannel } from './channel';
@@ -182,9 +183,11 @@ describe('continuous FSK receiver', () => {
     expect(syncs).toHaveLength(2);
   });
 
-  it('abandons a truncated frame with a corrupt length once the carrier disappears', () => {
-    // Sync plus a header claiming 200 payload bytes, then only a moment of data.
-    const bogus = frameSymbolWaveform(config, [...SYNC_BYTES, 0x00, 0xc8, 0x55, 0xaa]);
+  it('abandons a truncated frame with a valid length once the carrier disappears', () => {
+    // Sync plus a well-formed header claiming 200 payload bytes, then only a moment of data.
+    const length = golayEncode(200);
+    const bogus = frameSymbolWaveform(config,
+      [...SYNC_BYTES, (length >>> 16) & 0xff, (length >>> 8) & 0xff, length & 0xff, 0x55]);
     const clean = encodeFsk(new TextEncoder().encode('after'), config).samples;
     const gap = new Float32Array(20 * Math.round(config.sampleRate / config.symbolRate));
     const samples = new Float32Array(bogus.length + gap.length + clean.length);
@@ -195,6 +198,28 @@ describe('continuous FSK receiver', () => {
     const progress = receiver.drainProgress();
     expect(progress.some(event => event.type === 'crc-error')).toBe(true);
     expect(progress.some(event => event.type === 'length' && event.length === 200)).toBe(true);
+  });
+
+  it('corrects a corrupted length-field symbol and rejects an unrecoverable one', () => {
+    const payload = new TextEncoder().encode('fec length');
+    const spp = Math.round(config.sampleRate / config.symbolRate);
+    // Length field = header bytes 4-6 = symbols 16..27 at 2 bits/symbol.
+    const corruptSymbols = (indices: number[]) => {
+      const samples = encodeFsk(payload, config).samples.slice();
+      for (const symbol of indices) {
+        for (let i = 0; i < spp; i++) {
+          samples[symbol * spp + i] = 0.8 * Math.sin(2 * Math.PI * config.frequencies[3] * i / config.sampleRate);
+        }
+      }
+      return samples;
+    };
+    // One wrong symbol (2 bit errors) is inside the Golay correction radius.
+    const recovered = new FskStreamDecoder(config).push(corruptSymbols([18]));
+    expect(recovered.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['fec length']);
+    // Three wrong symbols are detected as uncorrectable: no bogus frame commit.
+    const rejecting = new FskStreamDecoder(config);
+    expect(rejecting.push(corruptSymbols([17, 20, 23]))).toEqual([]);
+    expect(rejecting.drainProgress().some(event => event.type === 'crc-error')).toBe(true);
   });
 
   it('decodes a 16-tone stream with byte-aligned symbols', () => {

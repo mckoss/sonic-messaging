@@ -1,12 +1,12 @@
 import { bitsToBytes } from './bits';
-import { SYNC_BYTES, unframe } from './frame';
+import { decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, SYNC_BYTES, unframe } from './frame';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
 const SYNC = SYNC_BYTES;
-const HEADER_BYTES = 6;
+const HEADER_BYTES = SYNC.length + LENGTH_BYTES;
 const TRAILER_BYTES = 2;
-const MAX_LIVE_PAYLOAD_BYTES = 4096;
+const MAX_LIVE_PAYLOAD_BYTES = MAX_PAYLOAD_BYTES;
 /**
  * A corrupted length field must not leave the decoder waiting on a frame for minutes.
  * Matches the one-minute capture history so legitimate very-low-baud frames still fit.
@@ -254,7 +254,16 @@ export class FskStreamDecoder {
     const headerSymbols = Math.ceil((HEADER_BYTES * 8) / this.bitsPerSymbol);
     if (start + headerSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
     const header = this.decodeCandidateBytes(HEADER_BYTES).bytes;
-    const payloadLength = (header[4] << 8) | header[5];
+    // Golay-protected length: up to 2 corrupted bits (one bad 4-FSK symbol)
+    // are corrected in place; a worse header is rejected here instead of
+    // committing the decoder to an arbitrarily long bogus frame.
+    const payloadLength = decodeFrameLength(header, SYNC.length);
+    if (payloadLength === undefined) {
+      this.progress.push({ type: 'crc-error',
+        position: this.frameBytePosition(start, HEADER_BYTES) });
+      this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
+      return null;
+    }
     const maxPayload = Math.min(MAX_LIVE_PAYLOAD_BYTES, Math.floor(
       (MAX_LIVE_FRAME_SECONDS * this.config.symbolRate * this.bitsPerSymbol) / 8
     ) - HEADER_BYTES - TRAILER_BYTES);

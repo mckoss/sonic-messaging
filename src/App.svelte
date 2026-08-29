@@ -254,7 +254,7 @@
         receptionDecoder = new TextDecoder(); receivingMessage = '';
         addMarker('<SYNC>', 4);
       } else if (event.token === 'length') {
-        addMarker(`LEN ${event.length ?? '?'}`, 2);
+        addMarker(`LEN ${event.length ?? '?'}`, 3);
       } else if (event.token === 'crc-confirm') {
         receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
         addMarker('✓', 2);
