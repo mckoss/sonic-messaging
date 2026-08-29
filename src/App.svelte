@@ -31,8 +31,10 @@
   let receivedMessages: string[] = [];
   let receivingMessage = '';
   let receivedMarkers: Array<{ id: number; label: string; symbols: number; position: number }> = [];
+  let symbolBackfill: Array<{ id: number; position: number; samplesPerSymbol: number; scores: number[]; confidence: number }> = [];
   let workerError = '';
   let receivedMarkerId = 0;
+  let symbolBackfillId = 0;
   let receptionDecoder = new TextDecoder();
   let micSettings: MediaTrackSettings | undefined;
   // Browser processing stages that corrupt modem tones; all requested off.
@@ -281,10 +283,16 @@
         : `${new Date().toLocaleTimeString()} · ⚠ Capture dropouts · ${ms} ms of zeroed audio — OS/browser pipeline glitch`,
         ...logs].slice(0, 10);
     });
+    const offBackfill = audio.onSymbolBackfill(event => {
+      symbolBackfill = [...symbolBackfill, ...event.slots.map(slot => ({
+        id: symbolBackfillId++, position: slot.position, samplesPerSymbol: event.samplesPerSymbol,
+        scores: slot.scores, confidence: slot.confidence
+      }))].slice(-128);
+    });
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); offBackfill(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -318,7 +326,7 @@
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
         <SymbolWaterfall scores={symbolScores} sequence={symbolSequence} live={listening}
-          messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} confidence={symbolConfidence}
+          messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} backfill={symbolBackfill} confidence={symbolConfidence}
           samplePosition={symbolSamplePosition} samplesPerCssPixel={WATERFALL_SPEED_SAMPLES[scrollSpeed]}
           sampleRate={audio?.state.sampleRate ?? 48_000}
           symbolRate={Number(settings.FSK.symbolRate)}

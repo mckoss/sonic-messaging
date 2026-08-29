@@ -9,6 +9,8 @@
   export let messages: string[] = [];
   export let currentMessage = '';
   export let markers: Array<{ id: number; label: string; symbols: number; position: number }> = [];
+  /** Slot-aligned repaint of the span drawn before a sync lock existed; position is the slot's end. */
+  export let backfill: Array<{ id: number; position: number; samplesPerSymbol: number; scores: number[]; confidence: number }> = [];
   export let confidence = 0;
   export let sampleRate = 48_000;
   export let symbolRate = 100;
@@ -33,7 +35,7 @@
   // The lanes advance on their own animation clock (sample-time at the live edge),
   // rate-locked to the worker's sample positions; late worker data backfills history.
   let renderedPosition = -1, latestPosition = -1;
-  let lastSequence = -1, lastPaintedPosition = -1, lastMarkerId = -1;
+  let lastSequence = -1, lastPaintedPosition = -1, lastMarkerId = -1, lastBackfillId = -1;
   let pendingScores = new Float32Array(0), pendingConfidence = 0;
   // History lives in ring canvases; the visible canvases are a scrubable viewport.
   let rings: { symbol: HTMLCanvasElement; confidence: HTMLCanvasElement; timeline: HTMLCanvasElement } | undefined;
@@ -167,6 +169,42 @@
     }
   }
 
+  /** Repaints the pre-lock span slot-aligned: the columns painted while the sync
+   * was still on the air used the unlocked sliding window; once the decoder
+   * locks it re-analyzes them on true boundaries and this overwrites history. */
+  function drawBackfill() {
+    if (!rings || renderedPosition < 0) return;
+    const symbolCtx = rings.symbol.getContext('2d', { alpha: false })!;
+    const confidenceCtx = rings.confidence.getContext('2d', { alpha: false })!;
+    const symbolHeight = rings.symbol.height, confidenceHeight = rings.confidence.height;
+    for (const slot of backfill) {
+      if (slot.id <= lastBackfillId) continue;
+      // Defer slots the animation clock has not reached yet; keep arrival order.
+      if (slot.position > renderedPosition) break;
+      lastBackfillId = slot.id;
+      const right = Math.floor(xOf(slot.position));
+      const columnWidth = Math.max(1, Math.round(waterfallPixelAdvance(slot.samplesPerSymbol, ringRatio, ringSpp)));
+      // Skip slots already scrolled beyond the ring's history.
+      if (right - columnWidth < Math.max(0, Math.floor(xOf(renderedPosition)) - ringWidth + 1)) continue;
+      ensureCleared(right);
+      for (const span of ringSpans(right - columnWidth, columnWidth, ringWidth)) {
+        for (let tone = 0; tone < slot.scores.length; tone++) {
+          const [red, green, blue] = intensityToRgb(Math.sqrt(Math.max(0, Math.min(1, slot.scores[tone]))));
+          symbolCtx.fillStyle = `rgb(${red},${green},${blue})`;
+          const top = Math.round(symbolHeight * (1 - (tone + 1) / slot.scores.length));
+          const bottom = Math.round(symbolHeight * (1 - tone / slot.scores.length));
+          symbolCtx.fillRect(span.x, top, span.w, bottom - top);
+        }
+        const value = Math.max(0, Math.min(1, slot.confidence));
+        const barHeight = Math.max(1, Math.round(value * confidenceHeight));
+        confidenceCtx.fillStyle = '#050a18';
+        confidenceCtx.fillRect(span.x, 0, span.w, confidenceHeight);
+        confidenceCtx.fillStyle = confidenceColor(value);
+        confidenceCtx.fillRect(span.x, confidenceHeight - barHeight, span.w, barHeight);
+      }
+    }
+  }
+
   function maxScrubSamples(): number {
     if (!rings || renderedPosition < 0) return 0;
     const capacityPx = Math.max(0, ringWidth - Math.round(width * ringRatio));
@@ -232,6 +270,7 @@
 
   $: scores, confidence, sequence, samplePosition, samplesPerCssPixel, ingest();
   $: markers, drawTimelineMarkers();
+  $: backfill, drawBackfill();
 
   onMount(() => {
     const resize = new ResizeObserver(([entry]) => { width = Math.max(280, Math.floor(entry.contentRect.width)); });
@@ -268,6 +307,7 @@
       ensureRings();
       ensureCleared(Math.floor(xOf(renderedPosition)));
       drawTimelineMarkers();
+      drawBackfill();
       blit();
       updateSweep();
       waterfallView.set({ position: renderedPosition, viewSamples: width * samplesPerCssPixel });

@@ -57,6 +57,7 @@ function configureDetector(mode: 'off' | 'FSK', fsk?: {
   detectorSampleRate = 0;
   alignedDetection = undefined;
   alignedBoundary = -1;
+  backfilledAnchor = -1;
 }
 
 function appendDetectorWindow(chunk: Float32Array): void {
@@ -214,6 +215,36 @@ function detectCaptureGaps(samples: Float32Array, sampleRate: number): void {
   }
 }
 
+/** Anchor of the lock most recently backfilled, so each lock repaints once. */
+let backfilledAnchor = -1;
+/** Safety cap: a lock is acquired just after the sync, so few slots ever need repainting. */
+const BACKFILL_MAX_SLOTS = 64;
+
+/**
+ * Alignment is only known retroactively: the matched filter needs the whole
+ * sync in the buffer, so the sync's own airtime was already painted from the
+ * unlocked sliding window. On each newly acquired lock, re-analyze that span
+ * slot-aligned from the capture history so the display can repaint it on true
+ * symbol boundaries.
+ */
+function backfillOnNewLock(sampleRate: number): void {
+  const anchor = fskStreamDecoder?.lockedSymbolAnchor();
+  if (anchor === undefined || anchor === backfilledAnchor || !detector) return;
+  backfilledAnchor = anchor;
+  const samplesPerSymbol = Math.max(1, Math.round(sampleRate / detector.symbolRate));
+  const slots: Array<{ position: number; scores: number[]; confidence: number }> = [];
+  for (let slot = 0; slot < BACKFILL_MAX_SLOTS; slot++) {
+    const start = anchor + slot * samplesPerSymbol;
+    const end = start + samplesPerSymbol;
+    if (end > captureSamples) break;
+    const window = extractCapturedAudio(start, end, 'raw');
+    if (window.length < samplesPerSymbol) break;
+    const detection = detectFskSymbol(window, sampleRate, detector.frequencies);
+    slots.push({ position: end, scores: [...detection.scores], confidence: detection.confidence });
+  }
+  if (slots.length) send({ type: 'symbol-backfill', samplesPerSymbol, slots });
+}
+
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
   const chunkBase = captureSamples;
   storeCapturedAudio(samples, sampleRate);
@@ -237,6 +268,7 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
     for (const packet of packets) {
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
     }
+    backfillOnNewLock(sampleRate);
   }
   let sourceOffset = 0;
   while (sourceOffset < samples.length) {
@@ -322,7 +354,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
           [samples.buffer as ArrayBuffer]);
         break;
       }
-      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); fskStreamDecoder = undefined; detectorSampleRate = 0; break;
+      case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); fskStreamDecoder = undefined; detectorSampleRate = 0; backfilledAnchor = -1; break;
       case 'decode':
         if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);
