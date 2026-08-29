@@ -8,7 +8,6 @@ export interface UserPreferences {
   noiseType: string;
   interferer: boolean;
   interfererPower: number;
-  scrollSpeed: 'Slow' | 'Medium' | 'Fast';
   inputDeviceId: string;
   payload: string;
 }
@@ -44,8 +43,6 @@ export function loadUserPreferences(storage: Pick<Storage, 'getItem'>, defaults:
       interferer: typeof value.interferer === 'boolean' ? value.interferer : defaults.interferer,
       interfererPower: typeof value.interfererPower === 'number' && Number.isFinite(value.interfererPower)
         ? value.interfererPower : defaults.interfererPower,
-      scrollSpeed: value.scrollSpeed === 'Slow' || value.scrollSpeed === 'Medium' || value.scrollSpeed === 'Fast'
-        ? value.scrollSpeed : defaults.scrollSpeed,
       inputDeviceId: typeof value.inputDeviceId === 'string' ? value.inputDeviceId : defaults.inputDeviceId,
       // Match the payload editor's maxlength so storage can't overflow the UI limit.
       payload: typeof value.payload === 'string' ? value.payload.slice(0, 256) : defaults.payload
