@@ -64,3 +64,17 @@ test('stopping mid-packet abandons the partial read and re-acquires sync on rest
   await page.getByRole('button', { name: 'Start listening' }).click();
   await expect(waterfall).toContainText(`${PAYLOAD} ✓`, { timeout: 30_000 });
 });
+
+test('keeps the capture history through a stop so replay still works', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
+  await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByRole('button', { name: 'Start listening' }).click();
+  await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Stop listening' }).click();
+
+  // The worker (and its 60 s audio ring) must survive an explicit stop:
+  // replaying the visible window still produces audio and sweep cursors.
+  await page.getByRole('button', { name: '▶ Replay visible audio' }).click();
+  await expect(page.getByTestId('replay-sweep')).toHaveCount(2, { timeout: 5_000 });
+});

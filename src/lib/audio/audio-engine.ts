@@ -43,6 +43,8 @@ export class AudioEngine {
   private workerHealthy = true;
   private lastWorkerMessageAt?: number;
   private healthTimer?: ReturnType<typeof setInterval>;
+  /** Set on stop: the worker still serves history replay but is replaced on the next listen. */
+  private staleWorker = false;
   private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
   private lastAnalysisAt?: number;
   private options: AudioEngineOptions;
@@ -175,6 +177,20 @@ export class AudioEngine {
   async startListening(deviceId?: string): Promise<void> {
     await this.start();
     if (this.stream) return;
+    // Each listen is a fresh session: replace a worker left over from a prior
+    // one so its FIFO backlog of queued sample messages — behind which every
+    // control message waits, replaying old audio through the decoder — and its
+    // capture-history ring are both discarded. (The ring survives the stop
+    // itself so scrub-back and replay keep working until the restart.)
+    if (this.staleWorker) {
+      this.staleWorker = false;
+      this.worker?.terminate();
+      this.spawnWorker();
+      const sampleRate = this.context?.sampleRate ?? 48_000;
+      this.audioRequests.forEach((resolve) => resolve({ samples: new Float32Array(0), sampleRate }));
+      this.audioRequests.clear();
+      this.lastAnalysisAt = undefined;
+    }
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { ...DEFAULT_CONSTRAINTS, ...this.options.constraints,
@@ -211,31 +227,18 @@ export class AudioEngine {
   }
 
   /**
-   * preserveCapture keeps the DSP worker (and its 60 s capture-history ring)
-   * alive for scrub-back replay — used when the stop is incidental, such as
-   * replaying visible audio or switching microphones.
+   * The DSP worker — with its 60 s capture-history ring — survives a stop, so
+   * scrub-back and replay keep working; the reset happens on the next
+   * startListening instead (see staleWorker there).
    */
-  stopListening(preserveCapture = false): void {
+  stopListening(): void {
     if (this.healthTimer !== undefined) { clearInterval(this.healthTimer); this.healthTimer = undefined; }
     this.setWorkerHealth(true);
     if (this.capture) this.capture.port.onmessage = null;
     this.capture?.disconnect(); this.source?.disconnect();
     this.stream?.getTracks().forEach((track) => track.stop());
     this.capture = undefined; this.source = undefined; this.stream = undefined;
-    // A stalled DSP worker can hold a multi-second FIFO backlog of queued sample
-    // messages, and every control message queues behind it — so the old decoder
-    // would keep replaying that captured audio long after the microphone stops.
-    // Terminating the worker is the only way to drop its queue; a fresh worker
-    // gives stop-listening true reset semantics at the cost of the capture
-    // history ring (scrub-back replay starts over on the next listen).
-    if (this.worker && !preserveCapture) {
-      this.worker.terminate();
-      this.spawnWorker();
-      const sampleRate = this.context?.sampleRate ?? 48_000;
-      this.audioRequests.forEach((resolve) => resolve({ samples: new Float32Array(0), sampleRate }));
-      this.audioRequests.clear();
-      this.lastAnalysisAt = undefined;
-    }
+    if (this.worker) this.staleWorker = true;
     this.update({ listening: false, inputSettings: undefined });
   }
 
