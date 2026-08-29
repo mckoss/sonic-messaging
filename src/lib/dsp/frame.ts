@@ -23,9 +23,13 @@ export const MAX_PAYLOAD_BYTES = 0xfff;
 /** Frame layout: SYNC(4) + Golay(24,12) length(3) + payload + CRC16(2). */
 export const LENGTH_BYTES = 3;
 
-/** Reads the protected length field, correcting up to 2 bit errors; undefined if uncorrectable. */
-export function decodeFrameLength(bytes: Uint8Array, offset: number): number | undefined {
-  return golayDecode((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]);
+/**
+ * Reads the protected length field, correcting bit errors up to the Golay
+ * radius for the caller's modulation (golayRadiusForBitsPerSymbol); undefined
+ * if uncorrectable.
+ */
+export function decodeFrameLength(bytes: Uint8Array, offset: number, radius = 2): number | undefined {
+  return golayDecode((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2], radius);
 }
 
 export function frame(payload: Uint8Array): Uint8Array {
@@ -43,11 +47,12 @@ export function frame(payload: Uint8Array): Uint8Array {
   return out;
 }
 
-export function unframe(input: Uint8Array): { payload?: Uint8Array; error?: string; offset?: number } {
+/** lengthRadius: Golay correction radius for the length field, from the caller's modulation. */
+export function unframe(input: Uint8Array, lengthRadius = 2): { payload?: Uint8Array; error?: string; offset?: number } {
   const headerBytes = SYNC.length + LENGTH_BYTES;
   outer: for (let start = 0; start <= input.length - headerBytes - 2; start++) {
     for (let j = 0; j < SYNC.length; j++) if (input[start + j] !== SYNC[j]) continue outer;
-    const length = decodeFrameLength(input, start + SYNC.length);
+    const length = decodeFrameLength(input, start + SYNC.length, lengthRadius);
     if (length === undefined) return { error: 'length field uncorrectable', offset: start };
     const end = start + headerBytes + length;
     if (end + 2 > input.length) return { error: 'truncated frame', offset: start };
