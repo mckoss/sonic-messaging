@@ -154,11 +154,32 @@ export class FskStreamDecoder {
   /**
    * Matched-filter sync statistic: mean margin of the template's expected tone over
    * the best other tone, accumulated softly across every fully-known sync symbol.
+   *
+   * Two tones need a balanced variant. The plain margin at 2-FSK reduces to
+   * ±(score₀ − score₁) per symbol, and the 32-bit sync is unbalanced (19 ones
+   * to 13 zeros), so a steady interferer parked on one tone — a mains-hum
+   * harmonic at 600 Hz, say — biases every trial offset by imbalance × its
+   * score and fires continuous false syncs. Correlating the per-symbol tone
+   * difference against the zero-meaned ±1 template cancels any constant bias
+   * exactly while a genuine sync keeps 1 − (6/32)² ≈ 96% of its statistic.
+   * With four or more tones the max over the other tones already biases noise
+   * and steady interferers negative, so the plain margin stands.
    */
   private syncScoreAt(searchOffset: number): number {
     const absolute = this.streamPosition + searchOffset;
+    const count = this.syncTemplate.length;
+    if (this.config.frequencies.length === 2) {
+      let sumDiff = 0, sumSigned = 0, signTotal = 0;
+      for (let index = 0; index < count; index++) {
+        const scores = this.scanScoresAt(absolute + index * this.samplesPerSymbol);
+        const diff = scores[0] - scores[1];
+        const sign = this.syncTemplate[index] === 0 ? 1 : -1;
+        sumDiff += diff; sumSigned += sign * diff; signTotal += sign;
+      }
+      return (sumSigned - (signTotal / count) * sumDiff) / count;
+    }
     let sum = 0;
-    for (let index = 0; index < this.syncTemplate.length; index++) {
+    for (let index = 0; index < count; index++) {
       const scores = this.scanScoresAt(absolute + index * this.samplesPerSymbol);
       const expected = this.syncTemplate[index];
       let other = 0;
@@ -167,7 +188,7 @@ export class FskStreamDecoder {
       }
       sum += scores[expected] - other;
     }
-    return sum / this.syncTemplate.length;
+    return sum / count;
   }
 
   /** Sum of expected-tone scores at a trial offset; sharp in alignment, cheap to evaluate. */
