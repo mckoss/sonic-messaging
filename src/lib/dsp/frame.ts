@@ -1,3 +1,5 @@
+import { golayDecode, golayEncode } from './golay';
+
 /**
  * CCSDS attached sync marker: chosen for low aperiodic autocorrelation, so a
  * matched-filter search sees one sharp peak instead of the half-length false
@@ -16,13 +18,25 @@ export function crc16(data: Uint8Array): number {
   return crc;
 }
 
+/** Maximum payload representable by the Golay-protected 12-bit length field. */
+export const MAX_PAYLOAD_BYTES = 0xfff;
+/** Frame layout: SYNC(4) + Golay(24,12) length(3) + payload + CRC16(2). */
+export const LENGTH_BYTES = 3;
+
+/** Reads the protected length field, correcting up to 2 bit errors; undefined if uncorrectable. */
+export function decodeFrameLength(bytes: Uint8Array, offset: number): number | undefined {
+  return golayDecode((bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]);
+}
+
 export function frame(payload: Uint8Array): Uint8Array {
-  if (payload.length > 0xffff) throw new RangeError('payload exceeds 65535 bytes');
-  const out = new Uint8Array(SYNC.length + 2 + payload.length + 2);
+  if (payload.length > MAX_PAYLOAD_BYTES) throw new RangeError('payload exceeds 4095 bytes');
+  const out = new Uint8Array(SYNC.length + LENGTH_BYTES + payload.length + 2);
   out.set(SYNC);
-  out[4] = payload.length >>> 8;
-  out[5] = payload.length;
-  out.set(payload, 6);
+  const length = golayEncode(payload.length);
+  out[4] = length >>> 16;
+  out[5] = length >>> 8;
+  out[6] = length;
+  out.set(payload, 7);
   const crc = crc16(payload);
   out[out.length - 2] = crc >>> 8;
   out[out.length - 1] = crc;
@@ -30,12 +44,14 @@ export function frame(payload: Uint8Array): Uint8Array {
 }
 
 export function unframe(input: Uint8Array): { payload?: Uint8Array; error?: string; offset?: number } {
-  outer: for (let start = 0; start <= input.length - 8; start++) {
+  const headerBytes = SYNC.length + LENGTH_BYTES;
+  outer: for (let start = 0; start <= input.length - headerBytes - 2; start++) {
     for (let j = 0; j < SYNC.length; j++) if (input[start + j] !== SYNC[j]) continue outer;
-    const length = (input[start + 4] << 8) | input[start + 5];
-    const end = start + 6 + length;
+    const length = decodeFrameLength(input, start + SYNC.length);
+    if (length === undefined) return { error: 'length field uncorrectable', offset: start };
+    const end = start + headerBytes + length;
     if (end + 2 > input.length) return { error: 'truncated frame', offset: start };
-    const payload = input.slice(start + 6, end);
+    const payload = input.slice(start + headerBytes, end);
     const expected = (input[end] << 8) | input[end + 1];
     if (crc16(payload) !== expected) return { error: 'CRC mismatch', offset: start };
     return { payload, offset: start };
