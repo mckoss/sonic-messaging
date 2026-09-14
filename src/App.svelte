@@ -77,6 +77,14 @@
   let interferer = false;
   let interfererPower = -6;
   let preferencesReady = false;
+  type AppView = 'send' | 'receive' | 'simulation' | 'tests';
+  const appViews: Array<{ id: AppView; label: string; detail: string }> = [
+    { id: 'send', label: 'Send Single', detail: 'Compose & transmit' },
+    { id: 'receive', label: 'Receive', detail: 'Listen & decode' },
+    { id: 'simulation', label: 'Simulation', detail: 'Model the channel' },
+    { id: 'tests', label: 'Test Suite', detail: 'Two-device trials' }
+  ];
+  let appView: AppView = 'send';
   let receiverWidth = 900;
   // Quantize so window-resize jitter doesn't reset the waterfall rings each pixel.
   $: waterfallWidth = Math.max(280, Math.round((receiverWidth - 110) / 50) * 50);
@@ -319,8 +327,27 @@
   function toggleListen() { void onListenToggle(!listening); }
   function simulate() { void onRunSimulation({ mode, payload, settings: { ...settings[mode] }, snr, interferer, interfererPower }); }
   function onInstall() { void installPrompt?.prompt(); }
+  function viewFromHash(): AppView | undefined {
+    const value = window.location.hash.slice(1);
+    return appViews.some(view => view.id === value) ? value as AppView : undefined;
+  }
+  function selectAppView(next: AppView) {
+    appView = next;
+    window.history.replaceState(null, '', `#${next}`);
+  }
+  function onAppViewKeydown(event: KeyboardEvent, index: number) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? appViews.length - 1
+      : (index + (event.key === 'ArrowRight' ? 1 : -1) + appViews.length) % appViews.length;
+    selectAppView(appViews[nextIndex].id);
+    document.getElementById(`app-tab-${appViews[nextIndex].id}`)?.focus();
+  }
 
   onMount(() => {
+    appView = viewFromHash() ?? appView;
+    const hashHandler = () => { appView = viewFromHash() ?? 'send'; };
+    window.addEventListener('hashchange', hashHandler);
     const restored = loadUserPreferences(window.localStorage, currentPreferences());
     mode = restored.mode; settings = restored.settings; snr = restored.snr; noiseType = restored.noiseType;
     interferer = restored.interferer; interfererPower = restored.interfererPower;
@@ -411,7 +438,7 @@
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offState(); offCapture(); offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); offBackfill(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offState(); offCapture(); offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); offBackfill(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); window.removeEventListener('hashchange', hashHandler); };
   });
 </script>
 
@@ -428,18 +455,30 @@
 <main>
   <section class="intro"><div><p class="eyebrow">ACOUSTIC MODEM WORKBENCH</p><h1>Shape signals. Test channels.<br /><em>Hear what survives.</em></h1><p>Explore modulation, coding, and multi-user rejection across real and simulated acoustic channels.</p></div><div class="status-pill"><span class:live={listening || receiverState !== 'idle'}></span>{replaying ? 'Recording replay' : listening ? 'Microphone live' : 'Audio idle'}</div></section>
 
+  <div class="app-tabs" role="tablist" aria-label="Application mode">
+    {#each appViews as view, index}
+      <button type="button" id="app-tab-{view.id}" role="tab" aria-controls="app-panel-{view.id}" aria-selected={appView === view.id}
+        tabindex={appView === view.id ? 0 : -1} class:active={appView === view.id}
+        disabled={experimentActive && appView !== view.id} on:click={() => selectAppView(view.id)} on:keydown={(event) => onAppViewKeydown(event, index)}>
+        {view.label}<small>{view.detail}</small>
+      </button>
+    {/each}
+  </div>
+
   <fieldset disabled={experimentActive}>
-  <div class="layout">
+  <div id="app-panel-send" class="app-panel composer-page" role="tabpanel" aria-labelledby="app-tab-send" hidden={appView !== 'send'}>
     <section class="card composer">
-      <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
+      <div class="section-head"><div><span class="step">TX</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
       <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" disabled={!!captureSession || replaying} aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
       <fieldset disabled={!!captureSession || replaying} on:change={onSettingsChange}><ModeControls {mode} settings={settings[mode]} /></fieldset>
       <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3" on:input={persistPreferences}></textarea></label>
       <button class="primary" disabled={!payload || busy || replaying} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
+  </div>
 
+  <div id="app-panel-receive" class="app-panel" role="tabpanel" aria-labelledby="app-tab-receive" hidden={appView !== 'receive'}>
     <section class="card receiver" bind:clientWidth={receiverWidth}>
-      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select disabled={!!captureSession || replaying} bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
+      <div class="section-head"><div><span class="step">RX</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select disabled={!!captureSession || replaying} bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       {#if workerError}<div class="worker-error" role="alert" data-testid="worker-error">⚠ Receiver stalled · {workerError}</div>{/if}
       {#key receiverSession}
       <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={receiving}
@@ -490,9 +529,13 @@
         {#if recordingError}<p role="alert">{recordingError}</p>{/if}
       </div>
     </section>
+  </div>
 
+  <div id="app-panel-simulation" class="app-panel" role="tabpanel" aria-labelledby="app-tab-simulation" hidden={appView !== 'simulation'}>
+  <div class="layout">
     <section class="card simulation" on:change={persistPreferences}>
-      <div class="section-head"><div><span class="step">03</span><h2>Channel simulation</h2></div><span class="hint">Worker isolated</span></div>
+      <div class="section-head"><div><span class="step">SIM</span><h2>Channel simulation</h2></div><span class="hint">Worker isolated</span></div>
+      <div class="signal-summary"><span>Current signal</span><strong>{mode} · {new TextEncoder().encode(payload).length} byte payload</strong><button class="text-button" on:click={() => selectAppView('send')}>Edit signal</button></div>
       <div class="sim-grid"><label><span>SNR <output>{snr} dB</output></span><input type="range" min="-30" max="40" bind:value={snr} /></label><label><span>Noise model</span><select bind:value={noiseType}><option>White noise</option><option>Pink noise</option><option>Impulse noise</option><option>Room response</option></select></label></div>
       <label class="switch-row"><input type="checkbox" bind:checked={interferer} /><span><b>Competing transmitter</b><small>Add an overlapping user with a different code or packet.</small></span></label>
       {#if interferer}<label class="interference"><span>Interferer relative power <output>{interfererPower} dB</output></span><input type="range" min="-30" max="20" bind:value={interfererPower} /></label>{/if}
@@ -500,15 +543,18 @@
     </section>
 
     <section class="card results">
-      <div class="section-head"><div><span class="step">04</span><h2>Results</h2></div><button class="text-button" on:click={() => logs = []}>Clear log</button></div>
+      <div class="section-head"><div><span class="step">OUT</span><h2>Results</h2></div><button class="text-button" on:click={() => logs = []}>Clear log</button></div>
       <div class="metrics"><div><strong>{lastResult ? (lastResult.ok ? '0%' : '100%') : '—'}</strong><span>Packet error</span></div><div><strong>{lastResult?.userScores ? lastResult.userScores[0]?.index ?? '—' : '—'}</strong><span>Top DSSS user</span></div><div><strong>{lastResult ? `${lastResult.elapsedMs.toFixed(1)}ms` : '—'}</strong><span>Decode time</span></div></div>
       <div class="packet-list" aria-live="polite">{#each packets as packet}<article><time>{packet.time}</time><span class="packet-mode">{packet.mode}</span><code>{packet.payload}</code><span>{packet.quality}</span></article>{/each}</div>
       <div class="log">{#each logs as entry}<p>{entry}</p>{:else}<p class="empty">Log cleared</p>{/each}</div>
     </section>
   </div>
+  </div>
   </fieldset>
+  <div id="app-panel-tests" class="app-panel" role="tabpanel" aria-labelledby="app-tab-tests" hidden={appView !== 'tests'}>
   <ExperimentPanel bind:active={experimentActive} unavailable={listening || replaying || !!captureSession || busy}
     {inputDeviceId} beforeStart={async () => { if (listening) await onListenToggle(false); audio.stopTransmission(); }} />
+  </div>
 </main>
 
 <footer><span>Sonic Messaging · local-first experiment</span><span>Microphone data stays on this device</span></footer>
@@ -524,6 +570,7 @@
   .install,.text-button{border:0;background:transparent;color:var(--muted);cursor:pointer}
   .app-state{justify-self:end;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.dot{width:7px;height:7px;border-radius:50%;background:#f5b84b}.dot.ready{background:var(--accent)}.install{color:var(--accent);margin-left:8px}
   main { max-width:1320px; margin:auto; padding:56px 24px 72px; }.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:34px}.eyebrow{color:var(--accent)!important;font:700 11px ui-monospace,monospace;letter-spacing:.18em}.intro h1{font-size:clamp(34px,5vw,58px);line-height:1.04;letter-spacing:-.045em;margin:8px 0 15px}.intro h1 em{font-style:normal;color:#84b9ff}.intro p{color:var(--muted);max-width:680px;line-height:1.6;margin:0}.status-pill{display:flex;align-items:center;gap:9px;border:1px solid var(--line);padding:9px 12px;border-radius:99px;color:var(--muted);font-size:12px;white-space:nowrap}.status-pill span{width:8px;height:8px;border-radius:50%;background:#506078}.status-pill span.live{background:var(--accent);box-shadow:0 0 0 4px #4ee8b422}
+  .app-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;position:sticky;top:76px;z-index:9;margin-bottom:22px;padding:6px;border:1px solid var(--line);border-radius:15px;background:rgba(7,17,30,.94);backdrop-filter:blur(16px)}.app-tabs button{min-width:0;border:1px solid transparent;border-radius:10px;padding:10px 8px;background:transparent;color:var(--muted);font-weight:750;cursor:pointer}.app-tabs button small{display:block;margin-top:3px;color:var(--dim);font-size:10px;font-weight:500}.app-tabs button.active{border-color:#375272;background:#152740;color:var(--text)}.app-tabs button.active small{color:#9eb3cc}.app-tabs button:disabled{cursor:default}.app-panel[hidden]{display:none}.composer-page .composer{max-width:760px;margin:auto}
   .layout{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;align-items:start}.card{background:linear-gradient(145deg,rgba(15,29,48,.94),rgba(8,18,31,.96));border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 18px 40px #0003}.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.section-head>div{display:flex;align-items:center;gap:10px}.section-head h2{font-size:16px;margin:0}.step{font:11px ui-monospace,monospace;color:var(--accent);border:1px solid #4ee8b444;border-radius:6px;padding:4px}.hint{font-size:11px;color:var(--dim)}
   .tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:5px;background:#07111e;border-radius:12px;margin-bottom:24px}.tabs button{border:1px solid transparent;border-radius:9px;padding:9px;background:transparent;color:var(--muted);font-weight:750;cursor:pointer}.tabs button small{display:block;font-size:10px;font-weight:500;color:var(--dim);margin-top:2px}.tabs button.active{border-color:#375272;background:#152740;color:var(--text)}.tabs button.active small{color:#9eb3cc}
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
@@ -539,8 +586,9 @@
   .receiver-actions{display:flex!important;align-items:center;gap:8px!important}.receiver-actions label{display:flex;align-items:center;gap:5px;color:var(--dim);font:10px ui-monospace,monospace}.receiver-actions select{max-width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--text);font:10px ui-monospace,monospace}
   .detector-head{display:flex;justify-content:space-between;gap:10px;margin:14px 2px 7px;color:var(--muted);font-size:11px;font-weight:650}.detector-head small{color:var(--dim);font-weight:500}
   .sim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sim-grid label,.interference{display:grid;gap:8px}.sim-grid select{background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:10px}.sim-grid input,.interference input{width:100%;accent-color:var(--accent)}output{font:12px ui-monospace,monospace;color:var(--accent)}.switch-row{display:flex;gap:12px;align-items:start;padding:15px;margin-top:18px;border:1px solid var(--line);border-radius:11px}.switch-row input{margin-top:3px;accent-color:var(--accent)}.switch-row b,.switch-row small{display:block}.switch-row b{font-size:13px}.switch-row small{color:var(--dim);margin-top:3px;line-height:1.35}.interference{margin-top:16px}
+  .signal-summary{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin:-4px 0 20px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#081321;font-size:11px;color:var(--dim)}.signal-summary strong{overflow:hidden;text-overflow:ellipsis;color:var(--muted);white-space:nowrap}.signal-summary .text-button{color:var(--accent)}
   .text-button{font-size:11px}.packet-list{margin-top:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}.packet-list article{display:grid;grid-template-columns:60px 55px 1fr auto;gap:9px;padding:10px 12px;align-items:center;color:var(--dim);font-size:11px}.packet-mode{color:var(--blue)}code{overflow:hidden;text-overflow:ellipsis;color:var(--muted)}.log{margin-top:12px;max-height:110px;overflow:auto;background:#06101c;padding:8px 12px;border-radius:10px;font:10px/1.5 ui-monospace,monospace;color:#7890ab}.log p{margin:3px 0}.empty{font-style:italic}
   footer{display:flex;justify-content:space-between;gap:20px;max-width:1320px;margin:auto;border-top:1px solid var(--line);padding:20px 24px 32px;color:var(--dim);font-size:11px}
-  @media(max-width:850px){.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}.status-pill{align-self:flex-start}main{padding-top:38px}.app-state>span:not(.dot){display:none}}
-  @media(max-width:520px){header{padding:0 15px}main{padding:28px 14px 56px}.card{padding:17px;border-radius:14px}.intro h1{font-size:36px}.receiver .section-head{align-items:flex-start}.receiver-actions{align-items:flex-end;flex-direction:column}.readouts,.metrics{grid-template-columns:1fr 1fr}.sim-grid{grid-template-columns:1fr}.packet-list article{grid-template-columns:50px 45px 1fr}.packet-list article>:last-child{display:none}footer{padding-inline:15px;flex-direction:column}}
+  @media(max-width:850px){.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}.status-pill{align-self:flex-start}main{padding-top:38px}.app-state>span:not(.dot){display:none}.app-tabs{top:72px}}
+  @media(max-width:520px){header{padding:0 15px}main{padding:28px 14px 56px}.card{padding:17px;border-radius:14px}.intro{margin-bottom:24px}.intro h1{font-size:36px}.app-tabs{grid-template-columns:1fr 1fr;top:70px;margin-inline:-2px}.app-tabs button{padding:8px 5px}.receiver .section-head{align-items:flex-start}.receiver-actions{align-items:flex-end;flex-direction:column}.readouts,.metrics{grid-template-columns:1fr 1fr}.sim-grid{grid-template-columns:1fr}.signal-summary{grid-template-columns:1fr auto}.signal-summary>span{display:none}.packet-list article{grid-template-columns:50px 45px 1fr}.packet-list article>:last-child{display:none}footer{padding-inline:15px;flex-direction:column}}
 </style>

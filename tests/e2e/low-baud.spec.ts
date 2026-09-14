@@ -48,6 +48,7 @@ test('decodes a 10 baud packet live, spanning multi-second sync acquisition', as
   await page.goto('/sonic-messaging/');
   await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
   await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   await page.getByRole('button', { name: 'Start listening' }).click();
   // 16 sync symbols alone take 1.6 s; the 44-symbol frame about 4.4 s.
   await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 25_000 });

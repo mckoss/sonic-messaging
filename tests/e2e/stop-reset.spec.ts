@@ -48,6 +48,7 @@ test('stopping mid-packet abandons the partial read and re-acquires sync on rest
   await page.goto('/sonic-messaging/');
   await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
   await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   await page.getByRole('button', { name: 'Start listening' }).click();
   await expect(page.getByTestId('mic-settings')).toBeVisible();
 
@@ -69,6 +70,7 @@ test('keeps the capture history through a stop so replay still works', async ({ 
   await page.goto('/sonic-messaging/');
   await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
   await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   await page.getByRole('button', { name: 'Start listening' }).click();
   await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 30_000 });
   await page.getByRole('button', { name: 'Stop listening' }).click();

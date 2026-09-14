@@ -16,7 +16,7 @@ test('imports and repeatedly decodes original samples without microphone or spea
     navigator.mediaDevices.getUserMedia = async () => { throw new Error('Replay must not request a microphone'); };
     window.AudioContext = class { constructor() { throw new Error('Replay must not open audio hardware'); } } as unknown as typeof AudioContext;
   });
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   await page.getByLabel('Load recording WAV').setInputFiles({ name: 'fixture.wav', mimeType: 'audio/wav', buffer });
   await expect(page.getByLabel('Symbol rate')).toHaveValue('100');
@@ -33,7 +33,7 @@ test('imports and repeatedly decodes original samples without microphone or spea
 });
 
 test('rejects a malformed recording and can cancel then restart a valid replay', async ({ page }) => {
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   const input = page.getByLabel('Load recording WAV');
   await input.setInputFiles({ name: 'broken.wav', mimeType: 'audio/wav', buffer: Buffer.from('broken') });

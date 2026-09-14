@@ -49,6 +49,7 @@ test('streams decoded characters into the RX lane and paints RX TIME markers', a
     await page.goto('/sonic-messaging/');
     await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
     await page.getByLabel('Symbol rate').press('Tab');
+    await page.getByRole('tab', { name: /Receive/ }).click();
     await page.getByRole('button', { name: 'Start listening' }).click();
 
     const waterfall = page.getByTestId('symbol-waterfall');
@@ -94,7 +95,7 @@ test('shows a red receiver error when the DSP worker dies', async ({ page }) => 
       }
     } as typeof Worker;
   });
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   await page.getByRole('button', { name: 'Start listening' }).click();
   await expect(page.getByTestId('spectrum-waterfall')).toBeVisible();
   await expect(page.getByTestId('worker-error')).toHaveCount(0);
@@ -108,6 +109,7 @@ test('sweeps a playback cursor across the waterfalls while replaying visible aud
     await page.goto('/sonic-messaging/');
     await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
     await page.getByLabel('Symbol rate').press('Tab');
+    await page.getByRole('tab', { name: /Receive/ }).click();
     await page.getByRole('button', { name: 'Start listening' }).click();
     await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 20_000 });
 
@@ -133,6 +135,7 @@ test('saves real capture-path samples and re-decodes the downloaded recording', 
   await page.goto('/sonic-messaging/');
   await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
   await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   await page.getByLabel('Recording notes').fill('Two-device fixture capture');
   await page.getByRole('button', { name: '● Record microphone', exact: true }).click();
   await expect(page.getByTestId('recording-status')).toContainText('Recording microphone audio');
