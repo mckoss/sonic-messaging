@@ -20,7 +20,7 @@ test('imports and repeatedly decodes original samples without microphone or spea
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   await page.getByLabel('Load recording WAV').setInputFiles({ name: 'fixture.wav', mimeType: 'audio/wav', buffer });
   await expect(page.getByLabel('Symbol rate')).toHaveValue('100');
-  await expect(page.getByLabel('Lowest frequency')).toHaveValue('1000');
+  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('1000');
   for (let run = 0; run < 2; run++) {
     await page.getByRole('button', { name: '▶ Decode recording', exact: true }).click();
     await expect(page.getByTestId('recording-status')).toHaveText('Replay complete.');

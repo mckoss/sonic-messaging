@@ -1,4 +1,5 @@
 import type { FskDetectorOptions } from './contracts';
+import { validatePlan, validateTransmitterLog, type ExperimentPlan, type ExperimentReport, type TransmitterLog } from '../experiment';
 
 // Bound memory on mobile; recordings remain available to download at the limit.
 export const MAX_RECORDING_SECONDS = 120;
@@ -13,6 +14,7 @@ export interface RecordingMetadata {
   inputSettings: MediaTrackSettings;
   userAgent: string;
   notes: string;
+  experiment?: { plan: ExperimentPlan; report?: ExperimentReport; transmitterLog?: TransmitterLog };
 }
 export interface Recording { metadata: RecordingMetadata; samples: Float32Array }
 
@@ -30,6 +32,10 @@ export function validateMetadata(value: unknown): RecordingMetadata {
         (i > 0 && Math.abs(f - a[0] - i * (a[1] - a[0])) > 0.001)) ||
       m.fsk.frequencies[1] <= m.fsk.frequencies[0]) {
     throw new Error('Unsupported or invalid Sonic Messaging recording settings');
+  }
+  if (m.experiment) {
+    m.experiment.plan = validatePlan(m.experiment.plan);
+    if (m.experiment.transmitterLog) validateTransmitterLog(m.experiment.transmitterLog, m.experiment.plan);
   }
   return m;
 }

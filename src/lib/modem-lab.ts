@@ -1,4 +1,5 @@
 import type { DspWorkerRequest, DspWorkerResponse } from './audio/contracts';
+import type { ExperimentPlan } from './experiment';
 
 export type LabMode = 'FSK' | 'CSS' | 'DSSS';
 
@@ -71,8 +72,11 @@ export class ModemLabWorker {
   encode(request: Omit<SimulationRequest, 'snr' | 'interferer' | 'interfererPower'>): Promise<EncodeResult> {
     return this.request('encode', request) as Promise<EncodeResult>;
   }
+  encodeExperiment(plan: ExperimentPlan, sampleRate: number): Promise<EncodeResult> {
+    return this.request('experiment-encode', { mode: 'FSK', plan, sampleRate }) as Promise<EncodeResult>;
+  }
 
-  private request(command: 'simulate' | 'encode', request: unknown): Promise<SimulationResult | EncodeResult> {
+  private request(command: 'simulate' | 'encode' | 'experiment-encode', request: unknown): Promise<SimulationResult | EncodeResult> {
     const requestId = crypto.randomUUID();
     const modem = (request as { mode: LabMode }).mode;
     const message: DspWorkerRequest = { type: 'decode', requestId, modem, command, payload: request };

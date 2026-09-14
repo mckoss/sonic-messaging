@@ -57,6 +57,8 @@ function syncSymbolTemplate(bitsPerSymbol: number): number[] {
 export interface FskStreamPacket {
   payload: Uint8Array;
   confidence: number;
+  startPosition: number;
+  endPosition: number;
 }
 
 /** position is the absolute stream sample index where the reported item ends. */
@@ -390,12 +392,13 @@ export class FskStreamDecoder {
       return null;
     }
     this.progress.push({ type: 'crc-confirm', position: framePosition });
+    const startPosition = this.streamPosition + start;
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
-    return { payload: parsed.payload, confidence: decoded.confidence };
+    return { payload: parsed.payload, confidence: decoded.confidence, startPosition, endPosition: framePosition };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {

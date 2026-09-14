@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import SpectrumDisplay from './lib/components/SpectrumDisplay.svelte';
   import SymbolWaterfall from './lib/components/SymbolWaterfall.svelte';
+  import ExperimentPanel from './lib/components/ExperimentPanel.svelte';
+  let experimentActive = false;
   import ModeControls from './lib/components/ModeControls.svelte';
   import { AudioEngine } from './lib/audio';
   import { ModemLabWorker, type SimulationResult } from './lib/modem-lab';
@@ -193,6 +195,7 @@
     try {
       if (file.size > MAX_RECORDING_BYTES) throw new Error('Recording file exceeds the 100 MB import limit');
       const loaded = decodeRecording(await file.arrayBuffer());
+      if (loaded.metadata.experiment) throw new Error('Use Load experiment WAV in the shared-schedule panel for this recording');
       if (listening) await onListenToggle(false);
       replaySeconds = 0;
       recording = loaded; recordingSeconds = loaded.samples.length / loaded.metadata.sampleRate;
@@ -425,6 +428,7 @@
 <main>
   <section class="intro"><div><p class="eyebrow">ACOUSTIC MODEM WORKBENCH</p><h1>Shape signals. Test channels.<br /><em>Hear what survives.</em></h1><p>Explore modulation, coding, and multi-user rejection across real and simulated acoustic channels.</p></div><div class="status-pill"><span class:live={listening || receiverState !== 'idle'}></span>{replaying ? 'Recording replay' : listening ? 'Microphone live' : 'Audio idle'}</div></section>
 
+  <fieldset disabled={experimentActive}>
   <div class="layout">
     <section class="card composer">
       <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
@@ -502,6 +506,9 @@
       <div class="log">{#each logs as entry}<p>{entry}</p>{:else}<p class="empty">Log cleared</p>{/each}</div>
     </section>
   </div>
+  </fieldset>
+  <ExperimentPanel bind:active={experimentActive} unavailable={listening || replaying || !!captureSession || busy}
+    {inputDeviceId} beforeStart={async () => { if (listening) await onListenToggle(false); audio.stopTransmission(); }} />
 </main>
 
 <footer><span>Sonic Messaging · local-first experiment</span><span>Microphone data stays on this device</span></footer>

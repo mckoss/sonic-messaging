@@ -8,6 +8,8 @@ import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '.
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
+import { encodeExperiment, ExperimentReceiver } from '../lib/dsp/experiment';
+import type { ExperimentPlan } from '../lib/experiment';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -26,6 +28,7 @@ let detectorSampleRate = 0;
 /** Boundary-aligned detection held while the decoder is locked; -1 boundary means none. */
 let alignedDetection: FskSymbolDetection | undefined;
 let alignedBoundary = -1;
+let experiment: ExperimentReceiver | undefined;
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
@@ -246,6 +249,7 @@ function backfillOnNewLock(sampleRate: number): void {
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+  experiment?.push(samples);
   const chunkBase = captureSamples;
   storeCapturedAudio(samples, sampleRate);
   detectCaptureGaps(samples, sampleRate);
@@ -345,6 +349,13 @@ function simulate(request: SimulationRequest): SimulationResult {
 scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
   try {
     switch (data.type) {
+      case 'configure-experiment':
+        experiment = new ExperimentReceiver(data.plan, data.sampleRate,
+          report => send({ type: 'experiment-report', report }), fsk => configureDetector('FSK', fsk));
+        break;
+      case 'finish-experiment':
+        if (experiment) send({ type: 'experiment-report', report: experiment.finish(data.captureLoss), final: true });
+        break;
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
@@ -363,7 +374,11 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       }
       case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); fskStreamDecoder = undefined; detectorSampleRate = 0; backfilledAnchor = -1; break;
       case 'decode':
-        if (data.command === 'simulate') {
+        if (data.command === 'experiment-encode') {
+          const request = data.payload as { plan: ExperimentPlan; sampleRate: number };
+          const samples = encodeExperiment(request.plan, request.sampleRate);
+          send({ type: 'decode-result', requestId: data.requestId, modem: 'FSK', result: { samples, sampleRate: request.sampleRate } }, [samples.buffer]);
+        } else if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);
           send({ type: 'decode-result', requestId: data.requestId, modem: data.modem, result },
             [result.spectrum.buffer as ArrayBuffer]);

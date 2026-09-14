@@ -4,6 +4,7 @@ import type {
 } from './contracts';
 import type { FskDetectorOptions } from './contracts';
 import { validateMetadata, type Recording } from './recording';
+import type { ExperimentPlan, ExperimentReport } from '../experiment';
 
 export interface AudioEngineOptions {
   constraints?: MediaTrackConstraints;
@@ -67,6 +68,10 @@ export class AudioEngine {
   private captureListeners = new Set<(event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void>();
   private replayGeneration = 0;
   private replayAck?: { sequence: number; resolve: () => void; reject: (error: Error) => void };
+  private experimentListeners = new Set<(report: ExperimentReport) => void>();
+  private experimentConfigured = false;
+  private experimentFinish?: (report: ExperimentReport) => void;
+  private playbackClears = new Map<string, () => void>();
   private stateValue: AudioEngineState = {
     supported: AudioEngine.isSupported(), running: false, listening: false, transmitting: false
   };
@@ -83,6 +88,20 @@ export class AudioEngine {
   /** Synchronous observers must copy samples before ownership transfers to DSP. */
   onCapture(listener: (event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void): () => void {
     this.captureListeners.add(listener); return () => this.captureListeners.delete(listener);
+  }
+  onExperiment(listener: (report: ExperimentReport) => void): () => void {
+    this.experimentListeners.add(listener); return () => this.experimentListeners.delete(listener);
+  }
+  configureExperiment(plan: ExperimentPlan, sampleRate: number): void {
+    this.experimentConfigured = true;
+    this.worker?.postMessage({ type: 'configure-experiment', plan, sampleRate } satisfies DspWorkerRequest);
+  }
+  finishExperiment(): Promise<ExperimentReport> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { this.experimentFinish = undefined; reject(new Error('Experiment worker timed out')); }, 10000);
+      this.experimentFinish = report => { clearTimeout(timeout); this.experimentFinish = undefined; resolve(report); };
+      this.worker?.postMessage({ type: 'finish-experiment' } satisfies DspWorkerRequest);
+    });
   }
 
   onSpectrum(listener: SpectrumListener): () => void {
@@ -160,6 +179,7 @@ export class AudioEngine {
   }
 
   private spawnWorker(): void {
+    this.experimentConfigured = false;
     this.worker?.terminate();
     this.audioRequests.forEach(resolve => resolve({ samples: new Float32Array(0), sampleRate: this.state.sampleRate ?? 48000 }));
     this.audioRequests.clear();
@@ -179,7 +199,12 @@ export class AudioEngine {
   }
 
   async start(): Promise<void> {
-    if (this.state.running) { await this.context?.resume(); return; }
+    if (this.state.running) {
+      await this.context?.resume();
+      // Replay reports the recording's clock; transmission uses the hardware clock.
+      this.update({ sampleRate: this.context!.sampleRate });
+      return;
+    }
     if (!AudioEngine.isSupported()) throw new Error('This browser does not support microphone AudioWorklets');
     if (!window.isSecureContext && location.hostname !== 'localhost') {
       throw new Error('Microphone access requires HTTPS (or localhost)');
@@ -196,7 +221,9 @@ export class AudioEngine {
 
       this.playback = new AudioWorkletNode(this.context, 'sonic-playback', { outputChannelCount: [1] });
       this.playback.port.onmessage = ({ data }: MessageEvent<PlaybackWorkletMessage>) => {
-        if (data.type === 'playback-drained') {
+        if (data.type === 'playback-progress') this.update({ playbackSamples: data.samples });
+        else if (data.type === 'playback-cleared') { this.playbackClears.get(data.requestId)?.(); this.playbackClears.delete(data.requestId); }
+        else if (data.type === 'playback-drained') {
           this.update({ transmitting: false });
           this.drainWaiters.splice(0).forEach((resolve) => resolve());
         }
@@ -246,6 +273,10 @@ export class AudioEngine {
           // loss is reported as a capture gap when posting resumes.
           if (this.postedSamples - this.processedSamples >
               data.sampleRate * WORKER_BACKPRESSURE_SECONDS) {
+            if (this.experimentConfigured) {
+              this.worker.postMessage({ type: 'finish-experiment', captureLoss: true } satisfies DspWorkerRequest);
+              this.experimentConfigured = false;
+            }
             this.droppedSamples += data.samples.length;
             return;
           }
@@ -305,6 +336,7 @@ export class AudioEngine {
     this.stopReplay();
     await this.start();
     if (!samples.length) return;
+    this.update({ playbackSamples: 0 });
     const copy = samples.slice();
     this.playback!.port.postMessage({ type: 'set-gain', gain });
     this.playback!.port.postMessage({ type: 'enqueue', samples: copy }, [copy.buffer]);
@@ -321,6 +353,18 @@ export class AudioEngine {
     this.update({ transmitting: false });
     this.drainWaiters.splice(0).forEach((resolve) => resolve());
   }
+  /** Wait for the worklet's exact consumed-sample count before finalizing an interrupted trial log. */
+  async stopTransmissionPrecisely(): Promise<void> {
+    if (!this.playback) return;
+    const requestId = crypto.randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { this.playbackClears.delete(requestId); reject(new Error('Playback stop timed out')); }, 5000);
+      this.playbackClears.set(requestId, () => { clearTimeout(timer); resolve(); });
+      this.playback!.port.postMessage({ type: 'clear', requestId });
+    });
+    this.update({ transmitting: false });
+    this.drainWaiters.splice(0).forEach(resolve => resolve());
+  }
 
   /** Decode original samples without audio hardware or resampling; ack bounds the queue. */
   async replayRecording(recording: Recording, fsk: FskDetectorOptions,
@@ -330,6 +374,7 @@ export class AudioEngine {
     const generation = this.replayGeneration;
     this.spawnWorker(); this.staleWorker = true;
     this.configureFskDetector(fsk.frequencies, fsk.symbolRate);
+    if (recording.metadata.experiment) this.configureExperiment(recording.metadata.experiment.plan, recording.metadata.sampleRate);
     this.update({ replaying: true, sampleRate: recording.metadata.sampleRate });
     const started = performance.now();
     try {
@@ -351,6 +396,7 @@ export class AudioEngine {
         const delay = seconds * 1000 - (performance.now() - started);
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
       }
+      if (recording.metadata.experiment && generation === this.replayGeneration) await this.finishExperiment();
     } catch (error) {
       if (generation === this.replayGeneration) { this.worker?.terminate(); this.worker = undefined; }
       throw error;
@@ -372,6 +418,11 @@ export class AudioEngine {
   }
 
   private handleWorker(message: DspWorkerResponse): void {
+    if (message.type === 'experiment-report') {
+      this.experimentListeners.forEach(listener => listener(message.report));
+      if (message.final) this.experimentFinish?.(message.report);
+      return;
+    }
     if (message.type === 'replay-ack') {
       if (this.replayAck?.sequence === message.sequence) this.replayAck.resolve();
       return;

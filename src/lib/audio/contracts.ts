@@ -1,3 +1,4 @@
+import type { ExperimentPlan, ExperimentReport } from '../experiment';
 export type TransferableSamples = Float32Array;
 
 export type CaptureWorkletMessage =
@@ -14,6 +15,8 @@ export type PlaybackWorkletCommand =
 
 export type PlaybackWorkletMessage =
   | { type: 'playback-drained' }
+  | { type: 'playback-progress'; samples: number }
+  | { type: 'playback-cleared'; requestId: string }
   | { type: 'playback-state'; queuedSamples: number };
 
 export interface SpectrumOptions {
@@ -28,6 +31,8 @@ export interface FskDetectorOptions {
 }
 
 export type DspWorkerRequest =
+  | { type: 'configure-experiment'; plan: ExperimentPlan; sampleRate: number }
+  | { type: 'finish-experiment'; captureLoss?: boolean }
   | { type: 'replay-samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
   | { type: 'configure-spectrum'; options: SpectrumOptions }
   | { type: 'configure-detector'; mode: 'off' | 'FSK'; fsk?: FskDetectorOptions }
@@ -37,6 +42,7 @@ export type DspWorkerRequest =
   | { type: 'reset' };
 
 export type DspWorkerResponse =
+  | { type: 'experiment-report'; report: ExperimentReport; final?: boolean }
   | { type: 'replay-ack'; sequence: number }
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number; samplePosition: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number; samplePosition: number }
@@ -63,6 +69,7 @@ export interface AudioEngineState {
   listening: boolean;
   transmitting: boolean;
   replaying?: boolean;
+  playbackSamples?: number;
   sampleRate?: number;
   inputSettings?: MediaTrackSettings;
 }

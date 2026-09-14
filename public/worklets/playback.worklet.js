@@ -5,9 +5,18 @@ class SonicPlaybackProcessor extends AudioWorkletProcessor {
     this.offset = 0;
     this.gain = 1;
     this.wasPlaying = false;
+    this.playedSamples = 0;
+    this.lastReported = 0;
     this.port.onmessage = ({ data }) => {
-      if (data?.type === 'enqueue' && data.samples instanceof Float32Array) this.queue.push(data.samples);
-      if (data?.type === 'clear') { this.queue = []; this.offset = 0; }
+      if (data?.type === 'enqueue' && data.samples instanceof Float32Array) {
+        if (!this.queue.length && !this.wasPlaying) { this.playedSamples = 0; this.lastReported = 0; }
+        this.queue.push(data.samples);
+      }
+      if (data?.type === 'clear') {
+        this.queue = []; this.offset = 0; this.wasPlaying = false;
+        this.port.postMessage({ type: 'playback-progress', samples: this.playedSamples });
+        if (data.requestId) this.port.postMessage({ type: 'playback-cleared', requestId: data.requestId });
+      }
       if (data?.type === 'set-gain') this.gain = Math.max(0, Number(data.gain) || 0);
     };
   }
@@ -28,6 +37,11 @@ class SonicPlaybackProcessor extends AudioWorkletProcessor {
     }
     for (let channel = 1; channel < channels.length; channel++) channels[channel].set(mono);
     if (destination > 0) this.wasPlaying = true;
+    this.playedSamples += destination;
+    if (this.playedSamples - this.lastReported >= sampleRate / 10 || (this.wasPlaying && !this.queue.length)) {
+      this.lastReported = this.playedSamples;
+      this.port.postMessage({ type: 'playback-progress', samples: this.playedSamples });
+    }
     if (this.wasPlaying && this.queue.length === 0 && destination < mono.length) {
       this.wasPlaying = false;
       this.port.postMessage({ type: 'playback-drained' });

@@ -2,7 +2,7 @@
 
 ## Current direction
 
-Build experimental mode before further FSK tuning: first capture and replay real received audio, then automate controlled two-device trials, then use those recordings and measurements to optimize FSK. Keep experiments local to the static PWA with downloadable files and no required backend. Extend the same framework to other modulations and encodings as their live receivers become ready.
+Capture/replay and shared-schedule FSK trials are implemented. Next collect physical two-device baselines and estimate received SNR, then use those recordings and measurements to optimize FSK. Keep experiments local to the static PWA with downloadable files and no required backend. Extend the same framework to other modulations and encodings as their live receivers become ready.
 
 ## Foundation
 
@@ -38,13 +38,18 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 
 ### 2. Automate controlled two-device experiments
 
-- [ ] Define a shared, versioned experiment file with known payloads, random seed, trial identifiers, modem/encoding settings, transmit amplitudes, repetitions, and quiet intervals. *(Current: next implementation milestone.)*
-- [ ] Add transmitter and receiver roles on distinct devices at a fixed distance. Load the same experiment definition on both, start capture first, and establish the trial schedule with synchronization markers and clock-drift handling.
-- [ ] Maintain a complete trial ledger independent of successful packet decoding, including missed transmissions and uncertain schedule alignment. Save transmitter execution results so interrupted runs do not count unsent trials as reception failures.
-- [ ] Run an initial FSK transmit-amplitude sweep automatically, retaining the full received recording and trial metadata for replay.
-- [ ] Estimate received in-band SNR from quiet-window noise power and scheduled signal-plus-noise power using the same analysis band. Retain raw power measurements, flag unresolved estimates near the noise floor, and distinguish transmit amplitude from measured SNR.
+- [x] Define a shared, versioned experiment file with seeded known payloads, indexed trials, per-trial FSK settings/amplitudes, repeated configurations, and quiet intervals. *(Payload coding is explicitly none for the baseline.)*
+- [x] Add transmitter and receiver roles on distinct devices at a fixed distance. Load the same experiment definition on both, start capture first, and establish the trial schedule with synchronization markers and clock-drift handling.
+- [x] Maintain a complete trial ledger independent of successful packet decoding, including missed transmissions and uncertain schedule alignment. Save transmitter execution results so interrupted runs do not count unsent trials as reception failures.
+- [x] Automatically play the complete per-trial waveform at the playback device sample rate; retain received audio, shared plan, checkpoints, and measured results in one replayable WAV.
+- [x] Export worklet-consumed sample counts for completed/interrupted transmissions and apply that log at the receiver to exclude trials not fully sent.
+- [x] Report per-trial acquisition, raw BER before protected-header correction/CRC gating, CRC validity, and exact-payload recovery; keep BER unavailable without independent packet acquisition.
+- [x] Validate mixed-tone schedules, corrupt/missing packets, lost checkpoints, clock drift, wrong schedules, interrupted runs, and browser capture/save/replay with deterministic fixtures.
+- [ ] Run an initial physical two-device FSK amplitude sweep and retain its field recording.
+- [ ] Estimate received in-band SNR from quiet-window noise power and scheduled signal-plus-noise power using the same analysis band. Retain raw power measurements, flag unresolved estimates near the noise floor, and distinguish transmit amplitude from measured SNR. *(Current: next implementation milestone.)*
 - [ ] Report acquisition rate, CRC-valid packet delivery, raw bit errors where alignment permits comparison, recovery after error correction, quiet-interval false detections, and delivered payload bits per elapsed second. Include trial counts, uncertainty, bandwidth, and airtime.
-- [ ] Interleave configurations with a reproducible order to reduce bias from changing noise; support repeated runs and export per-trial and aggregate CSV/JSON results with recording references.
+- [x] Interleave configurations in the default shared plan and export per-trial JSON results with plan, recording timestamp, receiver version, and transmitter-log context.
+- [ ] Add CSV export, uncertainty estimates, throughput/airtime comparisons, and cross-run aggregation.
 
 ### 3. Optimize FSK using measured results
 
