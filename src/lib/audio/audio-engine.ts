@@ -4,7 +4,7 @@ import type {
 } from './contracts';
 import type { FskDetectorOptions } from './contracts';
 import { validateMetadata, type Recording } from './recording';
-import type { ExperimentPlan, ExperimentReport } from '../experiment';
+import type { SearchSettings, CooperativeEvent } from '../experiment';
 
 export interface AudioEngineOptions {
   constraints?: MediaTrackConstraints;
@@ -68,9 +68,9 @@ export class AudioEngine {
   private captureListeners = new Set<(event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void>();
   private replayGeneration = 0;
   private replayAck?: { sequence: number; resolve: () => void; reject: (error: Error) => void };
-  private experimentListeners = new Set<(report: ExperimentReport) => void>();
-  private experimentConfigured = false;
-  private experimentFinish?: (report: ExperimentReport) => void;
+  private cooperativeListeners = new Set<(event: CooperativeEvent) => void>();
+  private cooperativeConfigured = false;
+  private cooperativeGeneration = 0;
   private playbackClears = new Map<string, () => void>();
   private stateValue: AudioEngineState = {
     supported: AudioEngine.isSupported(), running: false, listening: false, transmitting: false
@@ -89,19 +89,19 @@ export class AudioEngine {
   onCapture(listener: (event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void): () => void {
     this.captureListeners.add(listener); return () => this.captureListeners.delete(listener);
   }
-  onExperiment(listener: (report: ExperimentReport) => void): () => void {
-    this.experimentListeners.add(listener); return () => this.experimentListeners.delete(listener);
+  onCooperative(listener: (event: CooperativeEvent) => void): () => void {
+    this.cooperativeListeners.add(listener); return () => this.cooperativeListeners.delete(listener);
   }
-  configureExperiment(plan: ExperimentPlan, sampleRate: number): void {
-    this.experimentConfigured = true;
-    this.worker?.postMessage({ type: 'configure-experiment', plan, sampleRate } satisfies DspWorkerRequest);
+  configureCooperative(role: 'controller' | 'partner' | 'replay', config: SearchSettings, session = 0): void {
+    this.cooperativeGeneration++;
+    this.cooperativeConfigured = role !== 'replay';
+    this.worker?.postMessage({ type: 'configure-cooperative', role, config, session,
+      sampleRate: this.state.sampleRate! } satisfies DspWorkerRequest);
   }
-  finishExperiment(): Promise<ExperimentReport> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { this.experimentFinish = undefined; reject(new Error('Experiment worker timed out')); }, 10000);
-      this.experimentFinish = report => { clearTimeout(timeout); this.experimentFinish = undefined; resolve(report); };
-      this.worker?.postMessage({ type: 'finish-experiment' } satisfies DspWorkerRequest);
-    });
+  stopCooperative(reason?: string): void {
+    this.cooperativeConfigured = false; this.cooperativeGeneration++;
+    this.worker?.postMessage({ type: 'stop-cooperative', reason } satisfies DspWorkerRequest);
+    this.stopTransmission();
   }
 
   onSpectrum(listener: SpectrumListener): () => void {
@@ -179,7 +179,7 @@ export class AudioEngine {
   }
 
   private spawnWorker(): void {
-    this.experimentConfigured = false;
+    this.cooperativeConfigured = false;
     this.worker?.terminate();
     this.audioRequests.forEach(resolve => resolve({ samples: new Float32Array(0), sampleRate: this.state.sampleRate ?? 48000 }));
     this.audioRequests.clear();
@@ -273,9 +273,9 @@ export class AudioEngine {
           // loss is reported as a capture gap when posting resumes.
           if (this.postedSamples - this.processedSamples >
               data.sampleRate * WORKER_BACKPRESSURE_SECONDS) {
-            if (this.experimentConfigured) {
-              this.worker.postMessage({ type: 'finish-experiment', captureLoss: true } satisfies DspWorkerRequest);
-              this.experimentConfigured = false;
+            if (this.cooperativeConfigured) {
+              this.stopCooperative('Live capture dropped samples; replay the saved audio. This run is not safe to optimize.');
+              this.cooperativeConfigured = false;
             }
             this.droppedSamples += data.samples.length;
             return;
@@ -374,8 +374,9 @@ export class AudioEngine {
     const generation = this.replayGeneration;
     this.spawnWorker(); this.staleWorker = true;
     this.configureFskDetector(fsk.frequencies, fsk.symbolRate);
-    if (recording.metadata.experiment) this.configureExperiment(recording.metadata.experiment.plan, recording.metadata.sampleRate);
+
     this.update({ replaying: true, sampleRate: recording.metadata.sampleRate });
+    if (recording.metadata.cooperative) this.configureCooperative('replay', recording.metadata.cooperative.config);
     const started = performance.now();
     try {
       for (let offset = 0, sequence = 0; offset < recording.samples.length; offset += 4096, sequence++) {
@@ -396,7 +397,6 @@ export class AudioEngine {
         const delay = seconds * 1000 - (performance.now() - started);
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
       }
-      if (recording.metadata.experiment && generation === this.replayGeneration) await this.finishExperiment();
     } catch (error) {
       if (generation === this.replayGeneration) { this.worker?.terminate(); this.worker = undefined; }
       throw error;
@@ -418,9 +418,17 @@ export class AudioEngine {
   }
 
   private handleWorker(message: DspWorkerResponse): void {
-    if (message.type === 'experiment-report') {
-      this.experimentListeners.forEach(listener => listener(message.report));
-      if (message.final) this.experimentFinish?.(message.report);
+    if (message.type === 'cooperative-event') {
+      this.cooperativeListeners.forEach(listener => listener(message.event)); return;
+    }
+    if (message.type === 'cooperative-audio') {
+      if (!this.cooperativeConfigured) return;
+      const worker = this.worker, generation = this.cooperativeGeneration;
+      void this.transmit(message.samples).then(() => this.waitForPlayback()).then(() => {
+        if (worker === this.worker && generation === this.cooperativeGeneration) {
+          worker?.postMessage({ type: 'cooperative-played', token: message.token } satisfies DspWorkerRequest);
+        }
+      }).catch(error => this.stopCooperative(String(error)));
       return;
     }
     if (message.type === 'replay-ack') {
@@ -459,7 +467,7 @@ export class AudioEngine {
   }
 
   async dispose(): Promise<void> {
-    this.stopReplay();
+    this.stopCooperative(); this.stopReplay();
     // Drop the worker first so stopListening does not respawn one just to kill it.
     this.worker?.terminate(); this.worker = undefined;
     this.stopListening(); this.stopTransmission();

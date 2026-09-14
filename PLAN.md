@@ -2,7 +2,7 @@
 
 ## Current direction
 
-Capture/replay and shared-schedule FSK trials are implemented. Next collect physical two-device baselines and estimate received SNR, then use those recordings and measurements to optimize FSK. Keep experiments local to the static PWA with downloadable files and no required backend. Extend the same framework to other modulations and encodings as their live receivers become ready.
+Cooperative acoustic FSK experiments replace the shared-schedule runner. Use a stronger bidirectional control link to negotiate known-data trials and return raw errors for parameter search. Unknown timing belongs exclusively to receiver-side replay of the same recording. Keep raw symbol detection, acquisition, and payload FEC experiments separate. Next validate the cooperative link on two physical devices and estimate received SNR. Preserve the static PWA and downloadable recordings.
 
 ## Foundation
 
@@ -36,20 +36,19 @@ Capture/replay and shared-schedule FSK trials are implemented. Next collect phys
 
 Recordings preserve the acoustic conditions of a particular transmission. They allow comparison of decoder settings and implementations against identical input; a different transmitted modulation, encoding, or waveform requires a new capture. Keep original recordings unchanged and associate each replay result with its recording, decoder version, and settings.
 
-### 2. Automate controlled two-device experiments
+### 2. Cooperative controlled two-device experiments
 
-- [x] Define a shared, versioned experiment file with seeded known payloads, indexed trials, per-trial FSK settings/amplitudes, repeated configurations, and quiet intervals. *(Payload coding is explicitly none for the baseline.)*
-- [x] Add transmitter and receiver roles on distinct devices at a fixed distance. Load the same experiment definition on both, start capture first, and establish the trial schedule with synchronization markers and clock-drift handling.
-- [x] Maintain a complete trial ledger independent of successful packet decoding, including missed transmissions and uncertain schedule alignment. Save transmitter execution results so interrupted runs do not count unsent trials as reception failures.
-- [x] Automatically play the complete per-trial waveform at the playback device sample rate; retain received audio, shared plan, checkpoints, and measured results in one replayable WAV.
-- [x] Export worklet-consumed sample counts for completed/interrupted transmissions and apply that log at the receiver to exclude trials not fully sent.
-- [x] Report per-trial acquisition, raw BER before protected-header correction/CRC gating, CRC validity, and exact-payload recovery; keep BER unavailable without independent packet acquisition.
-- [x] Validate mixed-tone schedules, corrupt/missing packets, lost checkpoints, clock drift, wrong schedules, interrupted runs, and browser capture/save/replay with deterministic fixtures.
-- [ ] Run an initial physical two-device FSK amplitude sweep and retain its field recording.
-- [ ] Estimate received in-band SNR from quiet-window noise power and scheduled signal-plus-noise power using the same analysis band. Retain raw power measurements, flag unresolved estimates near the noise floor, and distinguish transmit amplitude from measured SNR. *(Current: next implementation milestone.)*
-- [ ] Report acquisition rate, CRC-valid packet delivery, raw bit errors where alignment permits comparison, recovery after error correction, quiet-interval false detections, and delivered payload bits per elapsed second. Include trial counts, uncertainty, bandwidth, and airtime.
-- [x] Interleave configurations in the default shared plan and export per-trial JSON results with plan, recording timestamp, receiver version, and transmitter-log context.
-- [ ] Add CSV export, uncertainty estimates, throughput/airtime comparisons, and cross-run aggregation.
+- [x] Replace shared schedules with per-trial acoustic negotiation, readiness, sample-timed start/end markers, raw error feedback, acknowledgements and bounded retries.
+- [x] Keep coordination on a fixed stronger 4-FSK profile; retry control messages without repeating measured transmissions.
+- [x] Measure payload SER/BER from independent marker alignment even when test acquisition fails; retain confidence and confusion matrices.
+- [x] Search base frequency, tone spacing or tone count using measured symbol error rates, repeated references and local refinement.
+- [x] Record the real conversation, embed versioned configuration and measurements in WAV, and recompute from unchanged samples.
+- [x] Evaluate unknown timing internally on the receiver using fresh decoder offsets; report acquisition/CRC/exact recovery independently. Payload FEC remains none.
+- [x] Retire shared-plan imports and transmitter logs; preserve historical WAV audio import in the general recording panel.
+- [ ] Validate coordination reliability and parameter search on two physical devices; save field baselines. **Current: next milestone.**
+- [ ] Estimate in-band SNR using quiet-window noise and signal-plus-noise power; distinguish measured SNR from transmitter amplitude.
+- [ ] Add uncertainty intervals, CSV export, throughput/bandwidth comparisons and cross-run aggregation.
+- [ ] Add payload FEC experiments separately, comparing correction against raw error rates with new transmitted waveforms.
 
 ### 3. Optimize FSK using measured results
 

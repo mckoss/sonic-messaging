@@ -59,22 +59,22 @@ test('offers and applies a suggested frequency plan when the symbol rate invalid
   await page.getByLabel('Symbol rate').press('Tab');
   await suggest.click();
   await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('2800');
-  await expect(page.getByLabel('Tone spacing')).toHaveValue('800');
+  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('800');
   await expect(suggest).toHaveCount(0);
   await page.reload();
   await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('2800');
-  await expect(page.getByLabel('Tone spacing')).toHaveValue('800');
+  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('800');
 });
 
 test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.goto('/sonic-messaging/');
   await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('500');
-  await expect(page.getByLabel('Tone spacing')).toHaveValue('100');
+  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('100');
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('4');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('25');
   const slowScale = Number(await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel'));
   await page.locator('.composer').getByLabel('Lowest frequency').fill('4100');
-  await page.getByLabel('Tone spacing').fill('900');
+  await page.locator('.composer').getByLabel('Tone spacing').fill('900');
   await page.locator('.composer').getByLabel('Tones').selectOption('8');
   await page.getByLabel('Symbol rate').fill('125');
   await page.getByLabel(/Test payload/).fill('PERSIST ME');
@@ -82,7 +82,7 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.reload();
   await expect(page.getByLabel(/Test payload/)).toHaveValue('PERSIST ME');
   await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('4100');
-  await expect(page.getByLabel('Tone spacing')).toHaveValue('900');
+  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('900');
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('8');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
   // The 5x symbol rate scrolls 5x faster (fewer samples per pixel), same on both lanes.

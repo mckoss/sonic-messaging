@@ -1,5 +1,5 @@
 import type { FskDetectorOptions } from './contracts';
-import { validatePlan, validateTransmitterLog, type ExperimentPlan, type ExperimentReport, type TransmitterLog } from '../experiment';
+import { validateSearch, type SearchSettings, type TrialMeasurement } from '../experiment';
 
 // Bound memory on mobile; recordings remain available to download at the limit.
 export const MAX_RECORDING_SECONDS = 120;
@@ -14,7 +14,9 @@ export interface RecordingMetadata {
   inputSettings: MediaTrackSettings;
   userAgent: string;
   notes: string;
-  experiment?: { plan: ExperimentPlan; report?: ExperimentReport; transmitterLog?: TransmitterLog };
+  /** Retained only to preserve audio from retired shared-schedule WAVs. */
+  experiment?: unknown;
+  cooperative?: { version: 1; config: SearchSettings; measurements?: TrialMeasurement[] };
 }
 export interface Recording { metadata: RecordingMetadata; samples: Float32Array }
 
@@ -33,9 +35,9 @@ export function validateMetadata(value: unknown): RecordingMetadata {
       m.fsk.frequencies[1] <= m.fsk.frequencies[0]) {
     throw new Error('Unsupported or invalid Sonic Messaging recording settings');
   }
-  if (m.experiment) {
-    m.experiment.plan = validatePlan(m.experiment.plan);
-    if (m.experiment.transmitterLog) validateTransmitterLog(m.experiment.transmitterLog, m.experiment.plan);
+  if (m.cooperative) {
+    if (m.cooperative.version !== 1) throw new Error('Unsupported cooperative recording version');
+    m.cooperative.config = validateSearch(m.cooperative.config);
   }
   return m;
 }
@@ -105,7 +107,7 @@ export function decodeRecording(buffer: ArrayBuffer): Recording {
           view.getUint16(start + 12, true) !== 4) return fail();
       sampleRate = view.getUint32(start + 4, true);
     } else if (id === 'sMET') {
-      if (metadata || size > 65536) return fail();
+      if (metadata || size > 1024 * 1024) return fail();
       metadata = validateMetadata(JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, start, size))));
     } else if (id === 'data') {
       if (data || size % 4) return fail();

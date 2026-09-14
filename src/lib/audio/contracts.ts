@@ -1,4 +1,4 @@
-import type { ExperimentPlan, ExperimentReport } from '../experiment';
+import type { SearchSettings, CooperativeEvent } from '../experiment';
 export type TransferableSamples = Float32Array;
 
 export type CaptureWorkletMessage =
@@ -31,8 +31,9 @@ export interface FskDetectorOptions {
 }
 
 export type DspWorkerRequest =
-  | { type: 'configure-experiment'; plan: ExperimentPlan; sampleRate: number }
-  | { type: 'finish-experiment'; captureLoss?: boolean }
+  | { type: 'configure-cooperative'; role: 'controller' | 'partner' | 'replay'; config: SearchSettings; session: number; sampleRate: number }
+  | { type: 'cooperative-played'; token: number }
+  | { type: 'stop-cooperative'; reason?: string }
   | { type: 'replay-samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
   | { type: 'configure-spectrum'; options: SpectrumOptions }
   | { type: 'configure-detector'; mode: 'off' | 'FSK'; fsk?: FskDetectorOptions }
@@ -42,7 +43,8 @@ export type DspWorkerRequest =
   | { type: 'reset' };
 
 export type DspWorkerResponse =
-  | { type: 'experiment-report'; report: ExperimentReport; final?: boolean }
+  | { type: 'cooperative-event'; event: CooperativeEvent }
+  | { type: 'cooperative-audio'; token: number; samples: TransferableSamples; sampleRate: number }
   | { type: 'replay-ack'; sequence: number }
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number; samplePosition: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number; samplePosition: number }

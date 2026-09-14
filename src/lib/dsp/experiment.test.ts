@@ -1,92 +1,113 @@
-import { describe, expect, it } from 'vitest';
-import { encodeExperiment, ExperimentReceiver } from './experiment';
-import { applyTransmitterLog, experimentTimeline, planId, trialPayload, validatePlan, type ExperimentPlan } from '../experiment';
-import { frame } from './frame';
-import { bytesToBits } from './bits';
 import { simulateChannel } from './channel';
-import { decodeRecording, encodeRecording } from '../audio/recording';
-
-const rate = 8000;
-const plan: ExperimentPlan = validatePlan({ format: 'sonic-experiment', version: 1, seed: 719, payloadBytes: 4, guardSeconds: 0.25,
-  trials: [2, 4, 8].map(tones => ({ tones, lowestFrequency: 1000, spacing: 200, symbolRate: 100, amplitude: 0.8, coding: 'none' })) });
-function receive(samples: Float32Array, input = plan, chunkSize = 128) {
-  const receiver = new ExperimentReceiver(input, rate);
-  for (let offset = 0; offset < samples.length; offset += chunkSize) receiver.push(samples.subarray(offset, offset + chunkSize));
-  return receiver.finish();
+import { describe, expect, it } from 'vitest';
+import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialLayout, trialWave } from './experiment';
+import { defaultSearch, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
+import { CooperativeSession, type Outgoing } from '../cooperative-session';
+const rate=8000,config=validateSearch(defaultSearch()),proposal={session:719,trial:0,settings:config.trial};
+export function fixture(sampleRate=rate) {
+  const a=guardedWave(controlWave({kind:'propose',...proposal},sampleRate),sampleRate), b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
+  const out=new Float32Array(a.length+b.length);out.set(a);out.set(b,a.length);return out;
 }
-
-describe('shared-schedule experiments', () => {
-  it('has canonical identities and deterministic distinct payloads, and validates scope and duration', () => {
-    expect(planId(JSON.parse(JSON.stringify(plan)))).toBe(planId(plan));
-    expect(trialPayload(plan, 0)).toEqual(trialPayload(plan, 0));
-    expect(trialPayload(plan, 0)).not.toEqual(trialPayload(plan, 1));
-    expect(() => validatePlan({ ...plan, trials: [{ ...plan.trials[0], coding: 'rs' }] })).toThrow();
-    expect(() => validatePlan({ ...plan, payloadBytes: 128, trials: Array(32).fill({ ...plan.trials[0], symbolRate: 10 }) })).toThrow('100 seconds');
+function analyze(samples:Float32Array) {
+  const results:TrialMeasurement[]=[],problems:string[]=[];
+  const analyzer=new CooperativeAnalyzer(rate,()=>{},r=>results.push(r),e=>problems.push(e));
+  for(let i=0;i<samples.length;i+=128)analyzer.push(samples.subarray(i,i+128));
+  return {results,problems};
+}
+describe('cooperative acoustic measurement',()=>{
+  it('decodes control and measures known payload, with independent internal acquisition',()=>{
+    const first=analyze(fixture());expect(first.problems).toEqual([]);expect(first.results).toHaveLength(1);
+    expect(first.results[0].raw.bitErrors).toBe(0);expect(first.results[0].raw.bits).toBe(128);
+    expect(first.results[0].acquisition.every(a=>a.exact&&a.acquired)).toBe(true);
+    expect(analyze(fixture())).toEqual(first);
   });
-
-  it('acquires arbitrary recording offsets and measures clean 2/4/8-FSK with identical replay outcomes', () => {
-    const wave = encodeExperiment(plan, rate), samples = new Float32Array(wave.length + 555);
-    samples.set(wave, 555);
-    const first = receive(samples);
-    expect(first.complete).toBe(true);
-    expect(first.checkpoints).toHaveLength(3);
-    expect(first.results.every(r => r.acquired && r.messageOk && r.crcOk && r.bitErrors === 0)).toBe(true);
-    expect(first.results.map(r => r.comparedBits)).toEqual([104, 104, 104]);
-    expect(receive(samples)).toEqual(first);
-    expect(receive(samples, plan, 4096).results.map(r => [r.acquired, r.bitErrors, r.messageOk]))
-      .toEqual(first.results.map(r => [r.acquired, r.bitErrors, r.messageOk]));
+  it('scores raw data despite destroyed test sync',()=>{
+    const samples=fixture(),m=analyze(samples).results[0];
+    samples.fill(0,Math.round(m.testStart),Math.round(m.testStart+16*m.samplesPerSymbol));
+    const result=analyze(samples).results[0];expect(result.raw.bitErrors).toBe(0);
+    expect(result.acquisition.every(a=>!a.acquired&&!a.exact)).toBe(true);
   });
-
-  it('counts a corrupt payload and a missed packet separately; BER is unavailable without acquisition', () => {
-    const wave = encodeExperiment(plan, rate), timeline = experimentTimeline(plan, rate);
-    const bits = bytesToBits(frame(trialPayload(plan, 1))), tone = ((bits[56] * 2 + bits[57]) + 1) % 4;
-    const offset = timeline[1].packetStart + 28 * 80;
-    for (let i = 0; i < 80; i++) wave[offset + i] = 0.8 * Math.sin(2 * Math.PI * (1000 + tone * 200) * i / rate);
-    wave.fill(0, timeline[2].packetStart, timeline[2].packetEnd);
-    const report = receive(simulateChannel(wave, { snrDb: 25, seed: 919 }));
-    expect(report.complete).toBe(true);
-    expect(report.results[0].messageOk).toBe(true);
-    expect(report.results[1]).toMatchObject({ acquired: true, crcOk: false, messageOk: false });
-    expect(report.results[1].bitErrors).toBeGreaterThan(0);
-    expect(report.results[2]).toMatchObject({ status: 'measured', acquired: false, messageOk: false });
-    expect(report.results[2].comparedBits).toBeUndefined();
+  it('counts payload corruption without relying on successful CRC',()=>{
+    const samples=fixture(),m=analyze(samples).results[0];
+    samples.fill(0,Math.round(m.testStart+28*m.samplesPerSymbol),Math.round(m.testEnd));
+    const result=analyze(samples).results[0];expect(result.raw.bitErrors).toBeGreaterThan(20);
+    expect(result.acquisition.every(a=>!a.exact)).toBe(true);
   });
-
-  it('retains the schedule when a checkpoint is missed and rejects a different schedule', () => {
-    const wave = encodeExperiment(plan, rate), timeline = experimentTimeline(plan, rate);
-    wave.fill(0, timeline[1].markerStart, timeline[1].packetStart);
-    const report = receive(wave);
-    expect(report.checkpoints.map(c => c.index)).toEqual([0, 2]);
-    expect(report.results.every(r => r.messageOk)).toBe(true);
-    expect(receive(wave, { ...plan, seed: 720 }).results.every(r => r.status === 'unsynchronized')).toBe(true);
+  it('retains reliable measurements through seeded noise and clock drift',()=>{
+    const clean=fixture(),factor=1.0005,stretched=new Float32Array(Math.ceil(clean.length*factor));
+    for(let i=0;i<stretched.length;i++){const x=i/factor,lo=Math.floor(x),f=x-lo;stretched[i]=(clean[lo]??0)*(1-f)+(clean[lo+1]??0)*f;}
+    const result=analyze(simulateChannel(stretched,{snrDb:20,seed:918}));
+    expect(result.problems).toEqual([]);expect(result.results).toHaveLength(1);
+    expect(result.results[0].raw.bitErrors).toBe(0);
+    expect(result.results[0].samplesPerSymbol).toBeGreaterThan(80);
   });
-
-  it('tracks checkpoint clock drift and keeps sample-rate and schedule metadata through WAV round trips', () => {
-    const wave = encodeExperiment(plan, rate), factor = 1.0005;
-    const stretched = Float32Array.from({ length: Math.floor(wave.length * factor) }, (_, i) => {
-      const x = i / factor, a = Math.floor(x), fraction = x - a;
-      return wave[a] * (1 - fraction) + (wave[a + 1] ?? 0) * fraction;
-    });
-    const recording = decodeRecording(encodeRecording({ samples: stretched, metadata: {
-      format: 'sonic-recording', version: 1, appVersion: 'test', createdAt: '2026-09-14', sampleRate: rate,
-      fsk: { frequencies: [1000,1200,1400,1600], symbolRate: 100 }, inputSettings: {}, userAgent: 'test', notes: '', experiment: { plan }
-    } }));
-    const report = receive(recording.samples, recording.metadata.experiment!.plan);
-    expect(report.results.every(r => r.messageOk)).toBe(true);
-    expect(report.checkpoints.slice(-1)[0]!.samplesPerSecond).toBeGreaterThan(rate + 1);
+  it('rejects inconsistent marker timing and does not score missing markers',()=>{
+    const wave=trialWave(proposal,rate),l=trialLayout(proposal,rate);
+    expect(()=>measureTrial(wave,rate,proposal,0,l.endMarker*1.02,rate)).toThrow('timing');
+    expect(analyze(fixture().subarray(0,16000)).results).toEqual([]);
   });
-
-  it('does not score truncated capture or trials not fully transmitted', () => {
-    const wave = encodeExperiment(plan, rate), timeline = experimentTimeline(plan, rate);
-    const cut = timeline[1].packetStart + 10;
-    const report = receive(wave.subarray(0, cut));
-    expect(report.results[0].status).toBe('measured');
-    expect(report.results[1].status).toBe('incomplete');
-    const rows = applyTransmitterLog(report, plan, { format: 'sonic-transmission', version: 1,
-      planId: planId(plan), sampleRate: rate, playedSamples: cut, completed: false, appVersion: 'test' });
-    expect(rows.map(r => r.status)).toEqual(['measured', 'not-transmitted', 'not-transmitted']);
-    const receiver = new ExperimentReceiver(plan, rate);
-    receiver.push(wave.subarray(0, cut));
-    expect(receiver.finish(true).captureLoss).toBe(true);
+  it.each([2,4,8,16])('measures %i tones with payload-only bit counts',tones=>{
+    const p={...proposal,settings:validateTrial({...proposal.settings,tones,lowestFrequency:800})},wave=trialWave(p,rate),l=trialLayout(p,rate);
+    const m=measureTrial(wave,rate,p,0,l.endMarker,rate);expect(m.raw.bits).toBe(128);expect(m.raw.bitErrors).toBe(0);
+  });
+});
+describe('control protocol and search',()=>{
+  it.each([0.01,0.15,0.5])('round trips power boundary %s',amplitude=>{
+    const m:ControlMessage={kind:'propose',...proposal,settings:validateTrial({...proposal.settings,amplitude})};
+    expect(decodeControl(encodeControl(m))).toEqual(m);
+  });
+  it('rejects malformed and impossible feedback',()=>{
+    expect(decodeControl(new Uint8Array(10))).toBeUndefined();
+    expect(decodeControl(encodeControl({kind:'result',session:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1}}))).toBeUndefined();
+  });
+  it('retries lost results without retransmitting measured data, and deduplicates feedback',()=>{
+    const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[];
+    const c=new CooperativeSession('controller',{...config,budget:1},719,a=>cq.push(a),e=>events.push(e.kind));
+    const p=new CooperativeSession('partner',config,0,a=>pq.push(a),()=>{});
+    c.start(0);p.start(0);
+    const propose=cq.shift()!;if(propose.kind!=='control')throw Error();c.sent(0);p.receive(propose.message);
+    const ready=pq.shift()!;if(ready.kind!=='control')throw Error();p.sent(0);c.receive(ready.message);
+    expect(cq.shift()?.kind).toBe('trial');c.sent(1000);
+    p.measured(analyze(fixture()).results[0]);pq.shift();p.sent(2000); // lose result
+    c.tick(22000);const query=cq.shift()!;expect(query.kind).toBe('control');
+    if(query.kind!=='control')throw Error();expect(query.message.kind).toBe('query');p.receive(query.message);
+    const result=pq.shift()!;if(result.kind!=='control')throw Error();c.receive(result.message);c.receive(result.message);
+    expect(events.filter(e=>e==='feedback')).toHaveLength(1);expect(cq).toHaveLength(1);
+    c.sent(23000);expect(cq[cq.length-1]?.kind).toBe('control');
+  });
+  it('runs two cooperative devices through actual acoustic control decoding',()=>{
+    const queue:{from:number;action:Outgoing}[]=[],observations:number[]=[];
+    const settings={...config,budget:2};let now=0;
+    const sessions=[new CooperativeSession('controller',settings,719,a=>queue.push({from:0,action:a}),e=>{if(e.kind==='feedback')observations.push(e.observation.raw.bitErrors);}),
+      new CooperativeSession('partner',settings,0,a=>queue.push({from:1,action:a}),()=>{})];
+    const controls:ControlMessage[][]=[[],[]];
+    const analyzers=[0,1].map(i=>new CooperativeAnalyzer(rate,m=>controls[i].push(m),m=>sessions[i].measured(m),e=>{throw Error(e);},i===1));
+    sessions[1].start(now);sessions[0].start(now);
+    let bursts=0;
+    for(let count=0;queue.length&&count<30;count++){
+      const {from,action}=queue.shift()!;if(action.kind==='trial')bursts++;
+      const wave=guardedWave(action.kind==='control'?controlWave(action.message,rate):trialWave(action.proposal,rate),rate);
+      const noisy=simulateChannel(wave,{snrDb:25,seed:count+15});
+      for(let offset=0;offset<wave.length;offset+=128){
+        for(let i=0;i<2;i++)analyzers[i].push((i===from?wave:noisy).subarray(offset,offset+128));
+      }
+      now+=wave.length/rate*1000;sessions[from].sent(now);
+      for(let i=0;i<2;i++)for(const m of controls[i].splice(0))sessions[i].receive(m);
+    }
+    expect(observations).toEqual([0,0]);expect(bursts).toBe(2);expect(queue).toHaveLength(0);
+  });
+  it('bounds silence retries and rejects stale feedback',()=>{
+    const queue:Outgoing[]=[],finished:string[]=[];
+    const session=new CooperativeSession('controller',config,719,a=>queue.push(a),e=>{if(e.kind==='status'&&e.finished)finished.push(e.detail);});
+    session.start(0);
+    session.receive({kind:'ready',session:718,trial:0});expect(queue).toHaveLength(1);
+    for(let i=0;i<4;i++){session.sent(i*21000);session.tick((i+1)*21000);}
+    expect(queue).toHaveLength(4);expect(finished[0]).toContain('timed out');
+  });
+  it('searches using measured symbol error rates and obeys its budget',()=>{
+    const s=new ParameterSearch({...config,budget:8});
+    for(let i=0;i<8;i++){const settings=s.next()!;expect(settings).toBeDefined();s.add({session:1,trial:i,settings,raw:{symbolErrors:settings.lowestFrequency===600?0:10,symbols:64,bits:128,bitErrors:10,confidence:.8}});}
+    expect(s.next()).toBeUndefined();expect(s.best()?.value).toBe(600);
+    expect(s.add(s.observations[0])).toBe(false);
   });
 });

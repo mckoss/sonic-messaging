@@ -195,7 +195,7 @@
     try {
       if (file.size > MAX_RECORDING_BYTES) throw new Error('Recording file exceeds the 100 MB import limit');
       const loaded = decodeRecording(await file.arrayBuffer());
-      if (loaded.metadata.experiment) throw new Error('Use Load experiment WAV in the shared-schedule panel for this recording');
+      if (loaded.metadata.cooperative) throw new Error('Use Load experiment WAV in the cooperative panel for this recording');
       if (listening) await onListenToggle(false);
       replaySeconds = 0;
       recording = loaded; recordingSeconds = loaded.samples.length / loaded.metadata.sampleRate;

@@ -8,8 +8,9 @@ import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '.
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
-import { encodeExperiment, ExperimentReceiver } from '../lib/dsp/experiment';
-import type { ExperimentPlan } from '../lib/experiment';
+import { CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
+import { CooperativeSession, type Outgoing } from '../lib/cooperative-session';
+import type { ControlMessage, CooperativeEvent } from '../lib/experiment';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -28,7 +29,24 @@ let detectorSampleRate = 0;
 /** Boundary-aligned detection held while the decoder is locked; -1 boundary means none. */
 let alignedDetection: FskSymbolDetection | undefined;
 let alignedBoundary = -1;
-let experiment: ExperimentReceiver | undefined;
+let cooperativeAnalyzer: CooperativeAnalyzer | undefined;
+let cooperativeSession: CooperativeSession | undefined;
+let cooperativeTimer: ReturnType<typeof setInterval> | undefined;
+let outgoing: Outgoing[] = [], deferredControl: ControlMessage[] = [];
+let activeToken = 0, nextToken = 0, cooperativeRate = 48000;
+function cooperativeEvent(event: CooperativeEvent) { send({ type: 'cooperative-event', event }); }
+function drainOutgoing() {
+  if (activeToken || !outgoing.length) return;
+  const action = outgoing.shift()!;
+  const samples = guardedWave(action.kind === 'control' ? controlWave(action.message, cooperativeRate)
+    : trialWave(action.proposal, cooperativeRate), cooperativeRate);
+  activeToken = ++nextToken;
+  send({ type: 'cooperative-audio', token: activeToken, samples, sampleRate: cooperativeRate }, [samples.buffer]);
+}
+function receiveControl(message: ControlMessage) {
+  if (activeToken) { if (deferredControl.length < 16) deferredControl.push(message); }
+  else cooperativeSession?.receive(message);
+}
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer);
@@ -249,7 +267,7 @@ function backfillOnNewLock(sampleRate: number): void {
 }
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
-  experiment?.push(samples);
+  cooperativeAnalyzer?.push(samples);
   const chunkBase = captureSamples;
   storeCapturedAudio(samples, sampleRate);
   detectCaptureGaps(samples, sampleRate);
@@ -349,12 +367,33 @@ function simulate(request: SimulationRequest): SimulationResult {
 scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
   try {
     switch (data.type) {
-      case 'configure-experiment':
-        experiment = new ExperimentReceiver(data.plan, data.sampleRate,
-          report => send({ type: 'experiment-report', report }), fsk => configureDetector('FSK', fsk));
+      case 'configure-cooperative':
+        if (cooperativeTimer) clearInterval(cooperativeTimer);
+        outgoing = []; deferredControl = []; activeToken = 0; cooperativeSession = undefined;
+        cooperativeRate = data.sampleRate;
+        configureDetector('off');
+        cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, receiveControl, measurement => {
+          cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement);
+        }, detail => cooperativeEvent({ kind: 'status', phase: 'unscored', detail }), data.role !== 'controller');
+        if (data.role !== 'replay') {
+          cooperativeSession = new CooperativeSession(data.role, data.config, data.session,
+            action => { outgoing.push(action); drainOutgoing(); }, cooperativeEvent);
+          cooperativeSession.start(performance.now());
+          cooperativeTimer = setInterval(() => cooperativeSession?.tick(performance.now()), 250);
+        }
         break;
-      case 'finish-experiment':
-        if (experiment) send({ type: 'experiment-report', report: experiment.finish(data.captureLoss), final: true });
+      case 'cooperative-played':
+        if (data.token !== activeToken) break;
+        activeToken = 0;
+        cooperativeSession?.sent(performance.now());
+        while (!activeToken && deferredControl.length) cooperativeSession?.receive(deferredControl.shift()!);
+        drainOutgoing();
+        break;
+      case 'stop-cooperative':
+        if (cooperativeTimer) clearInterval(cooperativeTimer);
+        cooperativeTimer = undefined; cooperativeAnalyzer = undefined;
+        outgoing = []; deferredControl = []; activeToken = 0;
+        cooperativeSession?.stop(data.reason); cooperativeSession = undefined;
         break;
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
@@ -374,11 +413,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       }
       case 'reset': pendingLength = 0; pending.fill(0); spectrumSequence = 0; spectrumSamplePosition = 0; detectorFilled = 0; detectorSinceEmit = 0; detectorWindow.fill(0); fskStreamDecoder = undefined; detectorSampleRate = 0; backfilledAnchor = -1; break;
       case 'decode':
-        if (data.command === 'experiment-encode') {
-          const request = data.payload as { plan: ExperimentPlan; sampleRate: number };
-          const samples = encodeExperiment(request.plan, request.sampleRate);
-          send({ type: 'decode-result', requestId: data.requestId, modem: 'FSK', result: { samples, sampleRate: request.sampleRate } }, [samples.buffer]);
-        } else if (data.command === 'simulate') {
+        if (data.command === 'simulate') {
           const result = simulate(data.payload as SimulationRequest);
           send({ type: 'decode-result', requestId: data.requestId, modem: data.modem, result },
             [result.spectrum.buffer as ArrayBuffer]);
