@@ -4,6 +4,8 @@
 
 Cooperative acoustic FSK experiments replace the shared-schedule runner. Use a stronger bidirectional control link to negotiate known-data trials and return raw errors for parameter search. Unknown timing belongs exclusively to receiver-side replay of the same recording. Keep raw symbol detection, acquisition, and payload FEC experiments separate. Next validate the cooperative link on two physical devices and estimate received SNR. Preserve the static PWA and downloadable recordings.
 
+The workbench is divided into Send Single, Receive, Simulation, and Test Suite tabs. Each mode has a direct, mobile-friendly view while sharing the selected modem configuration in memory.
+
 ## Foundation
 
 - [x] Create the static Svelte/TypeScript PWA and GitHub Pages deployment.
@@ -20,6 +22,7 @@ Cooperative acoustic FSK experiments replace the shared-schedule runner. Use a s
 - [x] Replace the line spectrum with a scrolling power waterfall.
 - [x] Keep waterfall time and axis labels outside the signal plots for legibility.
 - [x] Scroll spectrum and FSK symbol waterfalls right-to-left and show live sync/text acquisition.
+- [x] Split Send Single, Receive, Simulation, and Test Suite into accessible responsive tabs.
 - [ ] Add comparable benchmark results through the experimental mode below. *(Saved user configurations are complete.)*
 
 ## Experimental mode and FSK optimization

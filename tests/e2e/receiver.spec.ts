@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('receiver waterfalls expose one shared captured-audio time scale', async ({ page }) => {
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   const spectrum = page.getByTestId('spectrum-waterfall');
   const symbols = page.getByTestId('symbol-waterfall');
   await expect(spectrum).toBeVisible();
@@ -15,26 +15,30 @@ test('receiver waterfalls expose one shared captured-audio time scale', async ({
 });
 
 test('updates the symbol waterfall axis when tone settings change', async ({ page }) => {
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   const labels = page.getByTestId('symbol-waterfall').locator('.labels span');
   await expect(labels).toHaveCount(4);
   await expect(labels.first()).toHaveText('S3 · 800Hz');
   await expect(labels.last()).toHaveText('S0 · 500Hz');
+  await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Tones').selectOption('8');
   await page.locator('.composer').getByLabel('Lowest frequency').fill('1000');
   await page.locator('.composer').getByLabel('Lowest frequency').press('Tab');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   await expect(labels).toHaveCount(8);
   await expect(labels.first()).toHaveText('S7 · 1700Hz');
   await expect(labels.last()).toHaveText('S0 · 1000Hz');
 });
 
 test('zooms the spectrogram to the tone band plus a 10% margin per side', async ({ page }) => {
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#receive');
   const axis = page.getByTestId('spectrum-waterfall').locator('.axis span');
   // Default 500-800 Hz band with 30 Hz margins: 830 Hz top, 470 Hz bottom.
   await expect(axis.first()).toHaveText('0.8 kHz');
   await expect(axis.last()).toHaveText('0.5 kHz');
+  await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Tones').selectOption('16');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   // 500-2,000 Hz band with 150 Hz margins: 2,150 Hz top, 350 Hz bottom.
   await expect(axis.first()).toHaveText('2.2 kHz');
   await expect(axis.last()).toHaveText('0.4 kHz');
@@ -72,7 +76,9 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('100');
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('4');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('25');
+  await page.getByRole('tab', { name: /Receive/ }).click();
   const slowScale = Number(await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel'));
+  await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Lowest frequency').fill('4100');
   await page.locator('.composer').getByLabel('Tone spacing').fill('900');
   await page.locator('.composer').getByLabel('Tones').selectOption('8');
@@ -86,6 +92,7 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('8');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
   // The 5x symbol rate scrolls 5x faster (fewer samples per pixel), same on both lanes.
+  await page.getByRole('tab', { name: /Receive/ }).click();
   const fastScale = Number(await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel'));
   expect(fastScale).toBeLessThan(slowScale);
   await expect(page.getByTestId('spectrum-waterfall')).toHaveAttribute('data-samples-per-css-pixel', String(fastScale));

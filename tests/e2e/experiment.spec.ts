@@ -12,7 +12,7 @@ const samples=new Float32Array(a.length+b.length);samples.set(a);samples.set(b,a
 const wav=encodeRecording({samples,metadata:{format:'sonic-recording',version:1,appVersion:manifest.version,createdAt:'2026-09-14',sampleRate,fsk:CONTROL_FSK,inputSettings:{},userAgent:'fixture',notes:'',cooperative:{version:1,config}}});
 test('replays cooperative audio without microphone access and recomputes raw and acquisition results',async({page})=>{
   await page.addInitScript(()=>{navigator.mediaDevices.getUserMedia=async()=>{throw Error('Replay must not request a microphone');};});
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#tests');
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   await page.getByLabel('Load experiment WAV').setInputFiles({name:'cooperative.wav',mimeType:'audio/wav',buffer:Buffer.from(wav)});
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
@@ -28,7 +28,7 @@ test('replays cooperative audio without microphone access and recomputes raw and
   expect((await pending).suggestedFilename()).toBe('sonic-cooperative.wav');
 });
 test('validates test power before requesting a microphone',async({page})=>{
-  await page.goto('/sonic-messaging/');
+  await page.goto('/sonic-messaging/#tests');
   await page.getByLabel('Test amplitude').fill('0.9');
   await page.getByRole('button',{name:'Run one trial',exact:true}).click();
   await expect(page.locator('.experiment [role=alert]')).toContainText('Invalid trial settings');
@@ -44,7 +44,7 @@ const dir=join(tmpdir(),'sonic-cooperative-tests');mkdirSync(dir,{recursive:true
 test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path}`]}});
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
-    test.setTimeout(45000);await page.goto('/sonic-messaging/');
+    test.setTimeout(45000);await page.goto('/sonic-messaging/#tests');
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished.',{timeout:25000});
     await expect(page.getByTestId('experiment-results')).toContainText('0/128');
