@@ -2,6 +2,8 @@ import type {
   AudioEngineState, CaptureWorkletMessage, DspWorkerRequest, DspWorkerResponse,
   PlaybackWorkletMessage, SpectrumOptions
 } from './contracts';
+import type { FskDetectorOptions } from './contracts';
+import { validateMetadata, type Recording } from './recording';
 
 export interface AudioEngineOptions {
   constraints?: MediaTrackConstraints;
@@ -62,6 +64,9 @@ export class AudioEngine {
   private audioRequests = new Map<string, (data: { samples: Float32Array; sampleRate: number }) => void>();
   private lastAnalysisAt?: number;
   private options: AudioEngineOptions;
+  private captureListeners = new Set<(event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void>();
+  private replayGeneration = 0;
+  private replayAck?: { sequence: number; resolve: () => void; reject: (error: Error) => void };
   private stateValue: AudioEngineState = {
     supported: AudioEngine.isSupported(), running: false, listening: false, transmitting: false
   };
@@ -74,6 +79,11 @@ export class AudioEngine {
   }
 
   get state(): Readonly<AudioEngineState> { return this.stateValue; }
+
+  /** Synchronous observers must copy samples before ownership transfers to DSP. */
+  onCapture(listener: (event: Extract<CaptureWorkletMessage, { type: 'samples' }>) => void): () => void {
+    this.captureListeners.add(listener); return () => this.captureListeners.delete(listener);
+  }
 
   onSpectrum(listener: SpectrumListener): () => void {
     this.spectrumListeners.add(listener); return () => this.spectrumListeners.delete(listener);
@@ -150,11 +160,18 @@ export class AudioEngine {
   }
 
   private spawnWorker(): void {
+    this.worker?.terminate();
+    this.audioRequests.forEach(resolve => resolve({ samples: new Float32Array(0), sampleRate: this.state.sampleRate ?? 48000 }));
+    this.audioRequests.clear();
+    this.lastAnalysisAt = undefined;
+    this.postedSamples = 0; this.processedSamples = 0; this.droppedSamples = 0;
+    this.setWorkerHealth(true);
     this.worker = new Worker(new URL('../../workers/dsp.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }: MessageEvent<DspWorkerResponse>) => this.handleWorker(data);
     this.worker.onerror = (event) => {
       console.error('DSP worker error:', event.message, `(${event.filename}:${event.lineno})`);
       this.setWorkerHealth(false, `worker error: ${event.message || 'unknown'}`);
+      this.replayAck?.reject(new Error(event.message || 'Replay worker failed'));
     };
     this.worker.postMessage({ type: 'configure-spectrum', options: {
       fftSize: 2048, minDecibels: -110, maxDecibels: 0, ...this.options.spectrum
@@ -194,6 +211,7 @@ export class AudioEngine {
   }
 
   async startListening(deviceId?: string): Promise<void> {
+    this.stopReplay();
     await this.start();
     if (this.stream) return;
     // Each listen is a fresh session: replace a worker left over from a prior
@@ -220,6 +238,7 @@ export class AudioEngine {
       this.capture = new AudioWorkletNode(this.context!, 'sonic-capture', { numberOfOutputs: 0 });
       this.capture.port.onmessage = ({ data }: MessageEvent<CaptureWorkletMessage>) => {
         if (data.type === 'samples' && this.worker) {
+          this.captureListeners.forEach(listener => listener(data));
           // Backpressure: a worker running behind real time queues sample
           // messages without bound, and every control message applies only
           // after that backlog drains. Once the worker lags by more than the
@@ -246,6 +265,7 @@ export class AudioEngine {
       };
       this.source.connect(this.capture);
       this.update({ listening: true, inputSettings: this.stream.getAudioTracks()[0]?.getSettings() });
+      this.update({ sampleRate: this.context!.sampleRate });
       this.lastWorkerMessageAt = performance.now();
       this.healthTimer = setInterval(() => {
         const elapsed = performance.now() - (this.lastWorkerMessageAt ?? 0);
@@ -282,6 +302,7 @@ export class AudioEngine {
 
   /** Queue mono PCM. The input is copied, so callers retain ownership. */
   async transmit(samples: Float32Array, gain = 1): Promise<void> {
+    this.stopReplay();
     await this.start();
     if (!samples.length) return;
     const copy = samples.slice();
@@ -301,7 +322,60 @@ export class AudioEngine {
     this.drainWaiters.splice(0).forEach((resolve) => resolve());
   }
 
+  /** Decode original samples without audio hardware or resampling; ack bounds the queue. */
+  async replayRecording(recording: Recording, fsk: FskDetectorOptions,
+    progress: (seconds: number) => void): Promise<void> {
+    validateMetadata({ ...recording.metadata, fsk });
+    this.stopReplay(); this.stopListening(); this.stopTransmission();
+    const generation = this.replayGeneration;
+    this.spawnWorker(); this.staleWorker = true;
+    this.configureFskDetector(fsk.frequencies, fsk.symbolRate);
+    this.update({ replaying: true, sampleRate: recording.metadata.sampleRate });
+    const started = performance.now();
+    try {
+      for (let offset = 0, sequence = 0; offset < recording.samples.length; offset += 4096, sequence++) {
+        if (generation !== this.replayGeneration) return;
+        const samples = recording.samples.slice(offset, offset + 4096);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('Replay decoder timed out')), 10000);
+          this.replayAck = { sequence,
+            resolve: () => { clearTimeout(timer); resolve(); },
+            reject: error => { clearTimeout(timer); reject(error); } };
+          this.worker!.postMessage({ type: 'replay-samples', samples,
+            sampleRate: recording.metadata.sampleRate, sequence } satisfies DspWorkerRequest, [samples.buffer]);
+        });
+        if (generation !== this.replayGeneration) return;
+        this.replayAck = undefined;
+        const seconds = Math.min(offset + 4096, recording.samples.length) / recording.metadata.sampleRate;
+        progress(seconds);
+        const delay = seconds * 1000 - (performance.now() - started);
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      if (generation === this.replayGeneration) { this.worker?.terminate(); this.worker = undefined; }
+      throw error;
+    } finally {
+      if (generation === this.replayGeneration) {
+        this.replayAck = undefined;
+        this.update({ replaying: false });
+      }
+    }
+  }
+
+  stopReplay(): void {
+    this.replayGeneration++;
+    this.replayAck?.resolve(); this.replayAck = undefined;
+    if (this.state.replaying) {
+      this.worker?.terminate(); this.worker = undefined;
+      this.update({ replaying: false });
+    }
+  }
+
   private handleWorker(message: DspWorkerResponse): void {
+    if (message.type === 'replay-ack') {
+      if (this.replayAck?.sequence === message.sequence) this.replayAck.resolve();
+      return;
+    }
     this.lastWorkerMessageAt = performance.now();
     this.setWorkerHealth(true);
     // Both position-bearing streams count cumulative processed capture samples
@@ -329,10 +403,12 @@ export class AudioEngine {
     else if (message.type === 'worker-error') {
       console.error('DSP worker:', message.message);
       this.setWorkerHealth(false, message.message);
+      this.replayAck?.reject(new Error(message.message));
     }
   }
 
   async dispose(): Promise<void> {
+    this.stopReplay();
     // Drop the worker first so stopListening does not respawn one just to kill it.
     this.worker?.terminate(); this.worker = undefined;
     this.stopListening(); this.stopTransmission();

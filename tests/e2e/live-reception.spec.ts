@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { encodeFsk } from '../../src/lib/dsp/fsk';
+import { decodeRecording } from '../../src/lib/audio/recording';
 
 const SAMPLE_RATE = 48_000;
 const PAYLOAD = 'HI!';
@@ -125,4 +126,30 @@ test('sweeps a playback cursor across the waterfalls while replaying visible aud
     if (Number.isFinite(first)) {
       await expect.poll(leftAt, { timeout: 5_000 }).toBeGreaterThan(first);
     }
+});
+
+
+test('saves real capture-path samples and re-decodes the downloaded recording', async ({ page }) => {
+  await page.goto('/sonic-messaging/');
+  await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
+  await page.getByLabel('Symbol rate').press('Tab');
+  await page.getByLabel('Recording notes').fill('Two-device fixture capture');
+  await page.getByRole('button', { name: '● Record microphone', exact: true }).click();
+  await expect(page.getByTestId('recording-status')).toContainText('Recording microphone audio');
+  await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 20000 });
+  await page.getByRole('button', { name: '■ Stop recording', exact: true }).click();
+  await page.getByRole('button', { name: 'Stop listening' }).click();
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save recording WAV' }).click();
+  const download = await pending, path = await download.path();
+  if (!path) throw new Error('Recording download missing');
+  const bytes = readFileSync(path);
+  const recording = decodeRecording(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  expect(recording.metadata.notes).toBe('Two-device fixture capture');
+  expect(recording.metadata.fsk.symbolRate).toBe(CONFIG.symbolRate);
+  expect(recording.samples.some(sample => Math.abs(sample) > 0.01)).toBe(true);
+  await page.getByLabel('Load recording WAV').setInputFiles(path);
+  await page.getByRole('button', { name: '▶ Decode recording', exact: true }).click();
+  await expect(page.getByTestId('recording-status')).toHaveText('Replay complete.');
+  await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`);
 });

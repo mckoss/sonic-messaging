@@ -26,17 +26,19 @@ Build experimental mode before further FSK tuning: first capture and replay real
 
 ### 1. Capture and replay real-device audio
 
-- [ ] Record lossless microphone PCM from the receiving device, including quiet intervals, failed transmissions, and sample positions. *(Current)*
-- [ ] Save/import a recording with sample rate, actual capture settings, app version, modem configuration, and device/browser, distance, orientation, speaker-volume, and background-noise notes. Request unprocessed capture where supported and record the settings actually applied.
-- [ ] Replay captured samples directly through the same Worker-based receiver path used by live audio, with repeatable reset and timing behavior; do not replay through a speaker and recapture the room.
-- [ ] Support real-time replay with waterfalls and decoded text, plus faster batch decoding for receiver comparisons.
-- [ ] Establish a small set of recorded fixtures with expected packets and known failures; verify repeatable decoding and comparable results across live capture and replay.
+- [x] Record lossless microphone PCM from the receiving device, including quiet intervals, failed transmissions, and sample positions. *(Two-minute limit; retained before live DSP backpressure.)*
+- [x] Save/import a recording with sample rate, actual capture settings, app version, modem configuration, and device/browser, distance, orientation, speaker-volume, and background-noise notes. Request unprocessed capture where supported and record the settings actually applied.
+- [x] Replay captured samples directly through the same Worker-based receiver path used by live audio, with repeatable reset and timing behavior; do not replay through a speaker and recapture the room.
+- [x] Support paced replay with waterfalls, decoded text, CRC outcome counts, current FSK controls, and restoration of recorded settings.
+- [ ] Add faster batch decoding and exported receiver-comparison results.
+- [x] Verify lossless sample preservation, repeated noisy-waveform decoding, original sample-rate replay, cancellation/restart, and browser capture → download → import → decode on desktop/mobile layouts. *(Browser capture tests use a supplied audio fixture.)*
+- [ ] Collect physical two-device recordings with expected packets and known failures for the field regression dataset.
 
 Recordings preserve the acoustic conditions of a particular transmission. They allow comparison of decoder settings and implementations against identical input; a different transmitted modulation, encoding, or waveform requires a new capture. Keep original recordings unchanged and associate each replay result with its recording, decoder version, and settings.
 
 ### 2. Automate controlled two-device experiments
 
-- [ ] Define a shared, versioned experiment file with known payloads, random seed, trial identifiers, modem/encoding settings, transmit amplitudes, repetitions, and quiet intervals.
+- [ ] Define a shared, versioned experiment file with known payloads, random seed, trial identifiers, modem/encoding settings, transmit amplitudes, repetitions, and quiet intervals. *(Current: next implementation milestone.)*
 - [ ] Add transmitter and receiver roles on distinct devices at a fixed distance. Load the same experiment definition on both, start capture first, and establish the trial schedule with synchronization markers and clock-drift handling.
 - [ ] Maintain a complete trial ledger independent of successful packet decoding, including missed transmissions and uncertain schedule alignment. Save transmitter execution results so interrupted runs do not count unsent trials as reception failures.
 - [ ] Run an initial FSK transmit-amplitude sweep automatically, retaining the full received recording and trial metadata for replay.

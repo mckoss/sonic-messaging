@@ -28,6 +28,7 @@ export interface FskDetectorOptions {
 }
 
 export type DspWorkerRequest =
+  | { type: 'replay-samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
   | { type: 'configure-spectrum'; options: SpectrumOptions }
   | { type: 'configure-detector'; mode: 'off' | 'FSK'; fsk?: FskDetectorOptions }
   | { type: 'samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
@@ -36,6 +37,7 @@ export type DspWorkerRequest =
   | { type: 'reset' };
 
 export type DspWorkerResponse =
+  | { type: 'replay-ack'; sequence: number }
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number; samplePosition: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number; samplePosition: number }
   | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; confidence: number }
@@ -60,6 +62,7 @@ export interface AudioEngineState {
   running: boolean;
   listening: boolean;
   transmitting: boolean;
+  replaying?: boolean;
   sampleRate?: number;
   inputSettings?: MediaTrackSettings;
 }

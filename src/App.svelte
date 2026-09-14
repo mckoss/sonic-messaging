@@ -10,6 +10,24 @@
   import { waterfallSamplesPerCssPixel } from './lib/audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
   import { get } from 'svelte/store';
+  import { RecordingCapture, encodeRecording, decodeRecording, MAX_RECORDING_BYTES, MAX_RECORDING_SECONDS,
+    type Recording } from './lib/audio/recording';
+
+  let captureSession: RecordingCapture | undefined;
+  let recording: Recording | undefined;
+  let recordingSeconds = 0;
+  let recordingNotes = '';
+  let recordingStatus = '';
+  let recordingError = '';
+  let replaying = false;
+  let replayStopRequested = false;
+  let replaySeconds = 0;
+  let replayPackets = 0;
+  let replayCrcErrors = 0;
+  let receiverSession = 0;
+  let receiverSampleRate = 48000;
+  $: receiving = listening || replaying;
+
 
   let spectrum: Float32Array = new Float32Array(1024).fill(-110);
   let spectrumSequence = -1;
@@ -62,7 +80,7 @@
   $: waterfallWidth = Math.max(280, Math.round((receiverWidth - 110) / 50) * 50);
   // Scroll speed follows the symbol rate: 64 symbols span one view width.
   $: samplesPerCssPixel = waterfallSamplesPerCssPixel(
-    audio?.state.sampleRate ?? 48_000, Number(settings.FSK.symbolRate), waterfallWidth);
+    receiverSampleRate, Number(settings.FSK.symbolRate), waterfallWidth);
   let inputDeviceId = 'default';
   let inputDevices: Array<{ deviceId: string; label: string }> = [];
   let packets = [
@@ -85,6 +103,7 @@
   async function onListenToggle(next: boolean) {
     try {
       if (next) {
+        resetReceiverDisplay();
         try { await audio.startListening(inputDeviceId); }
         catch (error) {
           if (inputDeviceId === 'default') throw error;
@@ -92,6 +111,7 @@
           inputDeviceId = 'default'; persistPreferences(); await audio.startListening();
         }
       } else {
+        finishRecording();
         audio.stopListening(); audio.disableDetector();
         // Abandon any packet mid-read in the display; the worker itself is
         // kept for history replay and replaced on the next start.
@@ -122,6 +142,85 @@
       logs = [`Simulation error · ${error instanceof Error ? error.message : String(error)}`, ...logs].slice(0, 10);
     } finally { busy = false; }
   }
+
+  function fskSettings() {
+    const s = settings.FSK;
+    return { frequencies: fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
+      symbolRate: Number(s.symbolRate) };
+  }
+  function resetReceiverDisplay() {
+    receiverSession++;
+    spectrum = new Float32Array(1024).fill(-110); spectrumSequence = -1; spectrumSamplePosition = -1;
+    symbolScores = new Float32Array(Number(settings.FSK.tones)); symbolSequence = -1; symbolSamplePosition = -1;
+    rawSymbol = -1; symbolConfidence = 0; symbolPower = -120;
+    receivedMessages = []; receivingMessage = ''; receivedMarkers = []; symbolBackfill = [];
+    receptionDecoder = new TextDecoder(); workerError = '';
+    packets = [{ time: '—', mode: 'Waiting', payload: 'No packets decoded yet', quality: '—' }];
+    waterfallScrubSamples.set(0); waterfallView.set({ position: -1, viewSamples: 0 });
+    replayPlaybackPosition.set(-1);
+  }
+  async function startRecording() {
+    recordingError = ''; recordingStatus = ''; busy = true;
+    if (!listening) await onListenToggle(true);
+    if (!listening) { recordingError = 'Microphone unavailable; see receiver log.'; busy = false; return; }
+    try {
+      captureSession = new RecordingCapture({ format: 'sonic-recording', version: 1,
+        createdAt: new Date().toISOString(), appVersion: __APP_VERSION__, sampleRate: receiverSampleRate,
+        fsk: fskSettings(), inputSettings: { ...micSettings }, userAgent: navigator.userAgent, notes: recordingNotes });
+      recording = undefined; recordingSeconds = 0; replaySeconds = 0;
+      recordingStatus = 'Recording microphone audio…';
+    } catch (error) { recordingError = String(error); }
+    finally { busy = false; }
+  }
+  function finishRecording() {
+    if (!captureSession) return;
+    recording = captureSession.finish(); captureSession = undefined;
+    recordingStatus = recording.samples.length ? 'Recording ready to save or decode.' : 'No audio captured.';
+  }
+  function saveRecording() {
+    if (!recording) return;
+    try {
+      const url = URL.createObjectURL(new Blob([encodeRecording(recording)], { type: 'audio/wav' }));
+      const link = document.createElement('a'); link.href = url;
+      link.download = `sonic-recording-${recording.metadata.createdAt.replace(/[^0-9TZ]/g, '-')}.wav`;
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { recordingError = String(error); }
+  }
+  async function loadRecording(event: Event) {
+    const input = event.currentTarget as HTMLInputElement, file = input.files?.[0];
+    if (!file) return;
+    recordingError = ''; busy = true;
+    try {
+      if (file.size > MAX_RECORDING_BYTES) throw new Error('Recording file exceeds the 100 MB import limit');
+      const loaded = decodeRecording(await file.arrayBuffer());
+      if (listening) await onListenToggle(false);
+      replaySeconds = 0;
+      recording = loaded; recordingSeconds = loaded.samples.length / loaded.metadata.sampleRate;
+      recordingNotes = loaded.metadata.notes;
+      applyRecordedSettings();
+      recordingStatus = 'Recording loaded; saved FSK settings restored.';
+    } catch (error) { recordingError = error instanceof Error ? error.message : String(error); }
+    finally { input.value = ''; busy = false; }
+  }
+  function applyRecordedSettings() {
+    if (!recording) return;
+    const fsk = recording.metadata.fsk;
+    mode = 'FSK'; settings = { ...settings, FSK: { lowestFrequency: fsk.frequencies[0],
+      toneSpacing: fsk.frequencies[1] - fsk.frequencies[0], tones: fsk.frequencies.length, symbolRate: fsk.symbolRate } };
+  }
+  async function decodeSavedRecording() {
+    if (!recording) return;
+    if (listening) await onListenToggle(false);
+    recordingError = ''; replaySeconds = 0; replayPackets = 0; replayCrcErrors = 0;
+    resetReceiverDisplay(); replayStopRequested = false; replaying = true;
+    recordingStatus = 'Decoding recording…';
+    try {
+      await audio.replayRecording(recording, fskSettings(), seconds => replaySeconds = seconds);
+      recordingStatus = replayStopRequested ? 'Replay stopped.' : 'Replay complete.';
+    } catch (error) { recordingError = error instanceof Error ? error.message : String(error); }
+    finally { replaying = false; receiverState = 'idle'; }
+  }
+  function stopRecordedReplay() { replayStopRequested = true; audio.stopReplay(); }
 
   function transmit() { void onTransmit({ mode, payload, settings: { ...settings[mode] } }); }
   // Zoom the spectrogram to the band in use plus a 10% margin on each side.
@@ -226,6 +325,16 @@
     preferencesReady = true;
     audio = new AudioEngine(); lab = new ModemLabWorker();
     void refreshInputDevices(false);
+    const offState = audio.onState(state => { receiverSampleRate = state.sampleRate ?? 48000; });
+    const offCapture = audio.onCapture(event => {
+      if (!captureSession) return;
+      try {
+        const full = captureSession.append(event.samples, event.sampleRate, event.sequence);
+        // Render only tenths of a second, not every audio quantum.
+        recordingSeconds = Math.floor(captureSession.seconds * 10) / 10;
+        if (full) { finishRecording(); recordingStatus = 'Two-minute limit reached; recording ready to save.'; }
+      } catch (error) { finishRecording(); recordingError = String(error); }
+    });
     const offHealth = audio.onWorkerHealth(event => {
       workerError = event.healthy ? '' : event.reason ?? 'DSP worker unresponsive';
     });
@@ -238,7 +347,8 @@
     const offPackets = audio.onPackets(event => {
       // The worker survives a stop for history replay; anything its queued
       // backlog still decodes afterward must not reach the display.
-      if (!listening) return;
+      if (!listening && !replaying) return;
+      if (replaying) replayPackets++;
       const decoded = new TextDecoder('utf-8', { fatal: true });
       try {
         const text = decoded.decode(event.payload);
@@ -249,7 +359,7 @@
       }
     });
     const offReception = audio.onReception(event => {
-      if (!listening) return;
+      if (!listening && !replaying) return;
       const bitsPerSymbol = Math.log2(Number(settings.FSK.tones));
       const addMarker = (label: string, byteCount: number) => {
         receivedMarkers = [...receivedMarkers, {
@@ -266,6 +376,7 @@
         receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
         addMarker('✓', 2);
       } else if (event.token === 'crc-error') {
+        if (replaying) replayCrcErrors++;
         receivedMessages = [...receivedMessages, `${receivingMessage} ✕`].slice(-24); receivingMessage = '';
         addMarker('✕', 2);
       } else if (event.byte !== undefined) {
@@ -297,7 +408,7 @@
     const installHandler = (event: Event) => { event.preventDefault(); installPrompt = event as Event & { prompt: () => Promise<void> }; installAvailable = true; };
     window.addEventListener('beforeinstallprompt', installHandler);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { offlineReady = true; });
-    return () => { offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); offBackfill(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
+    return () => { offState(); offCapture(); offHealth(); offSpectrum(); offSymbols(); offPackets(); offReception(); offCaptureGaps(); offBackfill(); void audio.dispose(); lab.dispose(); window.removeEventListener('beforeinstallprompt', installHandler); };
   });
 </script>
 
@@ -312,32 +423,34 @@
 </header>
 
 <main>
-  <section class="intro"><div><p class="eyebrow">ACOUSTIC MODEM WORKBENCH</p><h1>Shape signals. Test channels.<br /><em>Hear what survives.</em></h1><p>Explore modulation, coding, and multi-user rejection across real and simulated acoustic channels.</p></div><div class="status-pill"><span class:live={listening || receiverState !== 'idle'}></span>{listening ? 'Microphone live' : 'Audio idle'}</div></section>
+  <section class="intro"><div><p class="eyebrow">ACOUSTIC MODEM WORKBENCH</p><h1>Shape signals. Test channels.<br /><em>Hear what survives.</em></h1><p>Explore modulation, coding, and multi-user rejection across real and simulated acoustic channels.</p></div><div class="status-pill"><span class:live={listening || receiverState !== 'idle'}></span>{replaying ? 'Recording replay' : listening ? 'Microphone live' : 'Audio idle'}</div></section>
 
   <div class="layout">
     <section class="card composer">
       <div class="section-head"><div><span class="step">01</span><h2>Signal composer</h2></div><span class="hint">48 kHz pipeline</span></div>
-      <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
-      <div on:change={onSettingsChange}><ModeControls {mode} settings={settings[mode]} /></div>
+      <div class="tabs" role="tablist" aria-label="Modulation mode">{#each ['FSK','CSS','DSSS'] as item}<button role="tab" disabled={!!captureSession || replaying} aria-selected={mode === item} class:active={mode === item} on:click={() => selectMode(item as Mode)}>{item}<small>{item === 'FSK' ? 'Multi-tone' : item === 'CSS' ? 'Chirp spread' : 'Code spread'}</small></button>{/each}</div>
+      <fieldset disabled={!!captureSession || replaying} on:change={onSettingsChange}><ModeControls {mode} settings={settings[mode]} /></fieldset>
       <label class="payload"><span>Test payload <small>{new TextEncoder().encode(payload).length} bytes</small></span><textarea bind:value={payload} maxlength="256" rows="3" on:input={persistPreferences}></textarea></label>
-      <button class="primary" disabled={!payload || busy} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
+      <button class="primary" disabled={!payload || busy || replaying} on:click={transmit}><span>▶</span> {busy ? 'Processing…' : 'Transmit test packet'}</button>
     </section>
 
     <section class="card receiver" bind:clientWidth={receiverWidth}>
-      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
+      <div class="section-head"><div><span class="step">02</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select disabled={!!captureSession || replaying} bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       {#if workerError}<div class="worker-error" role="alert" data-testid="worker-error">⚠ Receiver stalled · {workerError}</div>{/if}
-      <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={listening}
-        {samplesPerCssPixel} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
+      {#key receiverSession}
+      <SpectrumDisplay {spectrum} sequence={spectrumSequence} samplePosition={spectrumSamplePosition} live={receiving}
+        {samplesPerCssPixel} sampleRate={receiverSampleRate} minFrequency={spectrumMin} maxFrequency={spectrumMax} />
       {#if mode === 'FSK'}
         <div class="detector-head"><span>FSK symbol likelihood</span><small>Sync acquisition + CRC packet decoding</small></div>
-        <SymbolWaterfall scores={symbolScores} sequence={symbolSequence} live={listening}
+        <SymbolWaterfall scores={symbolScores} sequence={symbolSequence} live={receiving}
           messages={receivedMessages} currentMessage={receivingMessage} markers={receivedMarkers} backfill={symbolBackfill} confidence={symbolConfidence}
           samplePosition={symbolSamplePosition} {samplesPerCssPixel}
-          sampleRate={audio?.state.sampleRate ?? 48_000}
+          sampleRate={receiverSampleRate}
           symbolRate={Number(settings.FSK.symbolRate)}
           labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
-      <div class="readouts"><div><span>{mode === 'FSK' && listening ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && listening ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && listening ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && listening ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{listening ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · noise' : mode : 'Standby'}</strong></div></div>
+      {/key}
+      <div class="readouts"><div><span>{mode === 'FSK' && receiving ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && receiving ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && receiving ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && receiving ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{receiving ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · noise' : mode : 'Standby'}</strong></div></div>
       {#if listening && micSettings}
         <div class="mic-settings" data-testid="mic-settings">
           <span>Mic{micSettings.sampleRate ? ` · ${(micSettings.sampleRate / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : ''}</span>
@@ -346,8 +459,32 @@
           {/each}
         </div>
       {/if}
-      <button class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
-      <div class="replay-row"><button class="replay" disabled={busy} on:click={() => void replayVisible('raw')}>▶ Replay visible audio</button><button class="replay" disabled={busy} on:click={() => void replayVisible('fft')}>▶ Replay FFT view</button></div>
+      <button disabled={replaying} class:stop={listening} class="listen" on:click={toggleListen}>{listening ? '■ Stop listening' : '◉ Start listening'}</button>
+      <div class="replay-row"><button class="replay" disabled={busy || replaying || !!captureSession} on:click={() => void replayVisible('raw')}>▶ Replay visible audio</button><button class="replay" disabled={busy || replaying || !!captureSession} on:click={() => void replayVisible('fft')}>▶ Replay FFT view</button></div>
+      <div class="recording-panel">
+        <h3>Record &amp; decode</h3>
+        <p>Save up to {MAX_RECORDING_SECONDS / 60} minutes of microphone audio. Replay into the receiver without using the speaker.</p>
+        <label>Recording notes <textarea bind:value={recordingNotes} on:input={() => { if (recording) recording = { ...recording, metadata: { ...recording.metadata, notes: recordingNotes } }; }} disabled={!!captureSession || replaying} maxlength="4000" rows="2" placeholder="Devices, distance, orientation, volume, background noise"></textarea></label>
+        <div class="replay-row">
+          {#if captureSession}<button class="replay" on:click={finishRecording}>■ Stop recording</button>
+          {:else}<button class="replay" disabled={mode !== 'FSK' || busy || replaying} on:click={startRecording}>● Record microphone</button>{/if}
+          <button class="replay" disabled={!recording?.samples.length || replaying} on:click={saveRecording}>Save recording WAV</button>
+        </div>
+        <label class="recording-file">Load recording WAV <input type="file" accept=".wav,audio/wav" disabled={!!captureSession || replaying || busy} on:change={loadRecording} /></label>
+        {#if mode !== 'FSK'}<p>Select FSK to record and decode.</p>{/if}
+        {#if recording}
+          <p>{recording.samples.length / recording.metadata.sampleRate < 1 ? '<1' : (recording.samples.length / recording.metadata.sampleRate).toFixed(1)} s · {recording.metadata.sampleRate.toLocaleString()} Hz · recorded with v{recording.metadata.appVersion}</p>
+          <div class="replay-row">
+            {#if replaying}<button class="replay" on:click={stopRecordedReplay}>■ Stop decoding</button>
+            {:else}<button class="replay" disabled={!recording.samples.length || busy || mode !== 'FSK'} on:click={decodeSavedRecording}>▶ Decode recording</button>{/if}
+            <button class="replay" disabled={replaying} on:click={applyRecordedSettings}>Restore recorded FSK settings</button>
+          </div>
+          <p>Decoding uses the current FSK controls. Loading restores the recorded settings.</p>
+        {/if}
+        <p role="status" data-testid="recording-status">{recordingStatus}{captureSession ? ` ${recordingSeconds.toFixed(1)} s` : ''}</p>
+        {#if replaySeconds > 0}<p data-testid="recording-results">{replaySeconds.toFixed(1)} s decoded · {replayPackets} CRC-valid packets · {replayCrcErrors} CRC failures</p>{/if}
+        {#if recordingError}<p role="alert">{recordingError}</p>{/if}
+      </div>
     </section>
 
     <section class="card simulation" on:change={persistPreferences}>
@@ -355,7 +492,7 @@
       <div class="sim-grid"><label><span>SNR <output>{snr} dB</output></span><input type="range" min="-30" max="40" bind:value={snr} /></label><label><span>Noise model</span><select bind:value={noiseType}><option>White noise</option><option>Pink noise</option><option>Impulse noise</option><option>Room response</option></select></label></div>
       <label class="switch-row"><input type="checkbox" bind:checked={interferer} /><span><b>Competing transmitter</b><small>Add an overlapping user with a different code or packet.</small></span></label>
       {#if interferer}<label class="interference"><span>Interferer relative power <output>{interfererPower} dB</output></span><input type="range" min="-30" max="20" bind:value={interfererPower} /></label>{/if}
-      <button class="secondary" disabled={busy} on:click={simulate}>{busy ? 'Running…' : 'Run encode → channel → decode'}</button>
+      <button class="secondary" disabled={busy || replaying || !!captureSession} on:click={simulate}>{busy ? 'Running…' : 'Run encode → channel → decode'}</button>
     </section>
 
     <section class="card results">
@@ -385,6 +522,8 @@
   .payload{display:grid;gap:8px;margin-top:22px}.payload>span,.sim-grid label>span,.interference>span{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;font-weight:650}.payload textarea{resize:vertical;color:var(--text);background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px}.payload small{color:var(--dim)}
   .primary,.secondary,.listen{width:100%;border-radius:10px;border:0;padding:12px;margin-top:16px;font-weight:750;cursor:pointer}
   .worker-error{margin:0 0 8px;padding:8px 12px;border:1px solid #a63a54;border-radius:8px;background:#38141f;color:#ff8da8;font:600 12px ui-monospace,monospace}
+  fieldset{border:0;padding:0;margin:0;min-width:0}
+  .recording-panel{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}.recording-panel h3{font-size:14px;margin:0 0 8px}.recording-panel p{font-size:12px;color:var(--muted);line-height:1.5}.recording-panel label{display:grid;gap:6px;font-size:12px;color:var(--muted);margin-top:10px}.recording-panel textarea{width:100%;resize:vertical;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}.recording-file input{max-width:100%;font-size:12px}.recording-panel [role=alert]{color:#ff8da8}button:disabled{opacity:.45;cursor:default}
   .replay-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
   .replay{border-radius:9px;border:1px solid #2a4a70;background:#122440;color:#cfe3ff;padding:9px;font-size:12px;font-weight:650;cursor:pointer}
   .replay:disabled{opacity:.4;cursor:default}.primary{background:var(--accent);color:#061610}.primary:disabled{opacity:.45}.secondary{background:#1c3656;color:#cfe4ff;border:1px solid #30537b}.listen{background:#172945;color:#cfe3ff;border:1px solid #29476d}.listen.stop{background:#39202a;color:#ffceda;border-color:#713247}

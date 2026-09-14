@@ -44,4 +44,16 @@ Every push or merge to `main` must increase the semantic version in `package.jso
 - `src/lib/audio`: browser audio lifecycle and typed worker/worklet contracts
 - `src/lib/components`: responsive Svelte controls and spectrum visualization
 
-The current receiver provides live spectrum analysis. Real-time packet acquisition and decoding from an unaligned microphone stream is the next protocol-layer milestone; simulation already exercises full encode/channel/decode round trips.
+The receiver acquires and decodes live FSK packets from an unaligned microphone stream, validates CRC, and displays decoded text. CSS and DSSS currently support simulation; live acquisition and phase handling remain planned.
+
+## Record and replay FSK experiments
+
+1. Select FSK and configure the receiver for the other device's transmitted signal.
+2. Under **Record & decode**, enter device, distance, orientation, volume, and noise notes, then select **Record microphone**. Capture includes quiet intervals and failed packets and stops automatically after two minutes. **Stop recording** finishes the recording while listening continues; **Stop listening** also finishes recording.
+3. **Save recording WAV** downloads mono 32-bit float audio with embedded FSK settings, original sample rate, actual microphone settings, capture timestamp, app version, browser information, and notes. Save before starting another recording or leaving the page; recordings are held in memory.
+4. **Load recording WAV** accepts files saved by this app and restores their FSK settings. **Decode recording** stops live listening and feeds the original samples directly into a fresh DSP receiver without opening a microphone, playing through speakers, or resampling. It shows waterfalls, decoded text, CRC-valid packet counts, and CRC failure events. Replay targets the original pace and may run slower if decoding is expensive.
+5. Change FSK controls between replays to compare receiver settings, or choose **Restore recorded FSK settings**. The recorded samples stay unchanged. Editing notes updates the metadata in the next download.
+
+A recording compares receivers against one captured waveform; testing a different transmitted modulation or encoding requires another capture. CRC counts alone are not packet delivery rates because this first milestone does not yet track attempted transmissions. Automated two-device schedules, SNR measurements, batch comparisons, and physical-device regression datasets are next in `PLAN.md`.
+
+The older **Replay visible audio** and **Replay FFT view** controls play sound through the speaker; **Decode recording** is the repeatable receiver experiment.

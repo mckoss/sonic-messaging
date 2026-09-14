@@ -348,6 +348,13 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'configure-spectrum': configure(data.options); break;
       case 'configure-detector': configureDetector(data.mode, data.fsk); break;
       case 'samples': acceptSamples(data.samples, data.sampleRate, data.sequence); break;
+      case 'replay-samples':
+        // Match live AudioWorklet render quanta, including acquisition lookahead.
+        for (let offset = 0; offset < data.samples.length; offset += 128) {
+          acceptSamples(data.samples.subarray(offset, offset + 128), data.sampleRate, data.sequence);
+        }
+        send({ type: 'replay-ack', sequence: data.sequence });
+        break;
       case 'audio-request': {
         const samples = extractCapturedAudio(data.from, data.to, data.mode);
         send({ type: 'audio-data', requestId: data.requestId, samples, sampleRate: audioRingRate },
