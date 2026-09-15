@@ -80,13 +80,15 @@ export class CooperativeAnalyzer {
   private starts=new Map<string,{position:number;rate:number}>();
   private measured=new Set<string>();
   constructor(readonly sampleRate:number,private control:(m:ControlMessage)=>void,
-    private measurement:(m:TrialMeasurement)=>void,private problem:(message:string)=>void,private analyze=true){
+    private measurement:(m:TrialMeasurement)=>void,private problem:(message:string)=>void,private analyze=true,
+    private controlError:(message:string)=>void=()=>{}){
     this.buffer=new Float32Array(sampleRate*120);this.decoder=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
   }
   push(chunk:Float32Array){
     if(this.length+chunk.length>this.buffer.length)return;
     this.buffer.set(chunk,this.length);this.length+=chunk.length;
     for(const packet of this.decoder.push(chunk)){
+      // A valid frame that isn't control is usually test data sent on the control tones.
       const m=decodeControl(packet.payload);if(!m)continue;
       const key=`${m.session}:${m.trial}`;
       if(this.analyze){
@@ -94,7 +96,10 @@ export class CooperativeAnalyzer {
         if(m.kind==='start'&&this.proposals.has(key)&&!this.starts.has(key))this.starts.set(key,{position:packet.startPosition,rate:m.sampleRate});
         if(m.kind==='end'&&!this.measured.has(key)){
           const p=this.proposals.get(key),start=this.starts.get(key);
-          if(p&&start){
+          if(!p||!start){
+            this.measured.add(key);
+            this.problem(`Trial ${m.trial+1}: end marker heard but the ${p?'start marker':'proposal'} was missed; not scored.`);
+          }else{
             this.measured.add(key);
             try{this.measurement(measureTrial(this.buffer.subarray(0,this.length),this.sampleRate,p,start.position,packet.startPosition,start.rate));}
             catch(e){this.problem(e instanceof Error?e.message:String(e));}
@@ -103,6 +108,7 @@ export class CooperativeAnalyzer {
       }
       this.control(m);
     }
-    this.decoder.drainProgress();
+    // The control payload has CRC but no FEC, so any symbol error discards the whole message.
+    for(const p of this.decoder.drainProgress())if(p.type==='crc-error')this.controlError('Control message heard but corrupted (CRC failed); waiting for a retry.');
   }
 }

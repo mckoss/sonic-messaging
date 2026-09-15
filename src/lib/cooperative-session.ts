@@ -1,4 +1,4 @@
-import { MAX_SESSION_SECONDS, ParameterSearch, type ControlMessage, type CooperativeEvent, type Proposal,
+import { MAX_RETRIES, MAX_SESSION_SECONDS, REPLY_TIMEOUT_MS, ParameterSearch, type ControlMessage, type CooperativeEvent, type Proposal,
   type SearchSettings, type TrialMeasurement } from './experiment';
 export type Outgoing = { kind:'control'; message:ControlMessage } | { kind:'trial'; proposal:Proposal };
 /** Stop-and-wait coordination. Retries resend coordination/results, never the measured waveform.
@@ -34,7 +34,7 @@ export class CooperativeSession {
     if(this.finished)return;
     if(this.phase==='acknowledging'){this.next();return;}
     if(this.phase==='finishing'){this.status('complete','Search complete; best means best measured within this budget.',true);return;}
-    this.deadline=now+(this.role==='partner'?12000:20000);
+    this.deadline=now+REPLY_TIMEOUT_MS;
   }
   receive(m:ControlMessage){
     if(this.finished)return;
@@ -58,9 +58,18 @@ export class CooperativeSession {
       if(m.trial!==this.proposal?.trial)return;
       if(m.kind==='start') {this.deadline=Infinity;this.status('measuring',`Capturing trial ${m.trial+1}.`);return;}
       if(m.kind==='query'&&this.result){this.send({kind:'control',message:this.result});return;}
+      if(m.kind==='query'){
+        // Without both timing markers there is nothing to report; say so instead of leaving the controller querying.
+        this.retry=undefined;this.deadline=Infinity;
+        this.status('listening',`Missed trial ${m.trial+1} (timing markers not heard); told the controller.`,false,true);
+        this.send({kind:'control',message:{kind:'lost',session:m.session,trial:m.trial}},false);return;
+      }
       if(m.kind==='ack'&&this.result){this.retry=undefined;this.deadline=Infinity;this.status('listening','Result acknowledged; waiting for the next candidate.');return;}
     }else{
-      if(m.session!==this.session||m.trial!==this.proposal?.trial)return;
+      if(m.session!==this.session)return;
+      // The partner is still repeating an earlier result, so our ack was lost; repeat it once.
+      if(m.kind==='result'&&this.proposal&&m.trial<this.proposal.trial){this.output({kind:'control',message:{kind:'ack',session:m.session,trial:m.trial}});return;}
+      if(m.trial!==this.proposal?.trial)return;
       if(m.kind==='ready'&&this.phase==='waiting-ready'){
         this.status('waiting-result',`Transmitting trial ${m.trial+1}; then waiting for receiver error counts.`);
         this.retry={kind:'control',message:{kind:'query',session:m.session,trial:m.trial}};this.attempts=0;
@@ -75,6 +84,11 @@ export class CooperativeSession {
         this.status('acknowledging',`Received trial ${m.trial+1}: ${m.raw.symbolErrors}/${m.raw.symbols} symbol errors.`);
         this.send({kind:'control',message:{kind:'ack',session:m.session,trial:m.trial}},false);
       }
+      if(m.kind==='lost'&&this.phase==='waiting-result'){
+        // Not lost feedback: the partner never measured it, so propose the same point again as a new trial.
+        this.status('waiting-ready',`Partner missed trial ${m.trial+1}; proposing it again.`,false,true);
+        this.next();
+      }
     }
   }
   measured(m:TrialMeasurement){
@@ -86,11 +100,11 @@ export class CooperativeSession {
     if(this.finished)return;
     if(this.started!==undefined&&now-this.started>MAX_SESSION_SECONDS*1000){this.stop('Session time limit reached; completed measurements are retained.');return;}
     if(now<this.deadline||!this.retry)return;
-    if(++this.attempts>3){
+    if(++this.attempts>MAX_RETRIES){
       if(this.role==='partner'){this.retry=undefined;this.deadline=Infinity;this.status('listening','No response from controller; still listening.',false,true);return;}
       this.stop('Control link timed out. The test waveform was not automatically repeated.');return;
     }
-    this.deadline=Infinity;this.output(this.retry);this.event({kind:'status',phase:this.phase,detail:`Retrying control exchange (${this.attempts}/3).`,log:true});
+    this.deadline=Infinity;this.output(this.retry);this.event({kind:'status',phase:this.phase,detail:`No reply; retrying control exchange (${this.attempts}/${MAX_RETRIES}).`,log:true});
   }
   stop(detail='Stopped; partial recordings and completed measurements are retained.'){
     this.retry=undefined;this.deadline=Infinity;this.status('stopped',detail,true);

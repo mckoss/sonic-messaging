@@ -111,17 +111,55 @@ describe('control protocol and search',()=>{
     p.receive({kind:'done',session:1,trial:1});p.receive({kind:'done',session:2,trial:1});
     // Unanswered readiness gives up on the trial but never ends the session.
     p.receive({kind:'propose',session:3,trial:0,settings:config.trial});expect(ready(3)).toBe(true);p.sent(2000);
-    for(let i=0;i<5;i++){p.tick(2000+(i+1)*13000);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*13000));}
+    for(let i=0;i<7;i++){p.tick(2000+(i+1)*5000);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*5000));}
     p.receive({kind:'propose',session:4,trial:0,settings:config.trial});expect(ready(4)).toBe(true);
     expect(received).toEqual([1,2,3,4]);expect(finished).toEqual([]);
+  });
+  it('re-proposes a trial the partner never measured instead of querying until timeout',()=>{
+    const cq:Outgoing[]=[],pq:Outgoing[]=[],logged:string[]=[],partnerLogged:string[]=[];
+    const c=new CooperativeSession('controller',{...config,budget:2},719,a=>cq.push(a),e=>{if(e.kind==='status'&&e.log)logged.push(e.detail);});
+    const p=new CooperativeSession('partner',undefined,0,a=>pq.push(a),e=>{if(e.kind==='status'&&e.log)partnerLogged.push(e.detail);});
+    const control=(q:Outgoing[])=>{const a=q.shift()!;if(a.kind!=='control')throw Error(a.kind);return a.message;};
+    c.start(0);p.start(0);
+    p.receive(control(cq));c.sent(0);c.receive(control(pq));p.sent(1000);
+    expect(cq.shift()?.kind).toBe('trial');c.sent(2000); // the partner never hears the markers
+    c.tick(2000+4600);const query=control(cq);expect(query.kind).toBe('query');
+    p.receive(query);const lost=control(pq);expect(lost.kind).toBe('lost');c.receive(lost);
+    const again=control(cq);expect(again.kind).toBe('propose');
+    if(again.kind!=='propose')throw Error();expect(again.trial).toBe(1);expect(again.settings).toEqual(validateTrial(config.trial));
+    expect(logged).toEqual(['No reply; retrying control exchange (1/5).','Partner missed trial 1; proposing it again.']);
+    expect(partnerLogged[0]).toContain('Missed trial 1');
+  });
+  it('repeats the ack when the partner is still resending an earlier result',()=>{
+    const cq:Outgoing[]=[];
+    const c=new CooperativeSession('controller',{...config,budget:3},719,a=>cq.push(a),()=>{});
+    c.start(0);cq.shift();c.sent(0);
+    c.receive({kind:'ready',session:719,trial:0});cq.shift();c.sent(1000);
+    const bps=Math.log2(config.trial.tones),symbols=Math.floor((56+config.trial.payloadBytes*8)/bps)-Math.ceil(56/bps);
+    const result:ControlMessage={kind:'result',session:719,trial:0,raw:{symbolErrors:0,symbols,bitErrors:0,bits:config.trial.payloadBytes*8,confidence:1}};
+    c.receive(result);cq.shift();c.sent(2000);expect(cq.shift()).toMatchObject({kind:'control',message:{kind:'propose',trial:1}});
+    c.receive(result);expect(cq).toEqual([{kind:'control',message:{kind:'ack',session:719,trial:0}}]);
+  });
+  it('reports corrupted control messages and trials whose start marker was missed',()=>{
+    const errors:string[]=[],problems:string[]=[];
+    const analyzer=new CooperativeAnalyzer(rate,()=>{},()=>{},e=>problems.push(e),true,e=>errors.push(e));
+    const corrupt=guardedWave(controlWave({kind:'ready',session:719,trial:0},rate),rate);
+    const bad=corrupt.slice();const tail=Math.round(bad.length*0.55);for(let i=tail;i<tail+Math.round(rate*0.08);i++)bad[i]=0;
+    const propose=guardedWave(controlWave({kind:'propose',...proposal},rate),rate);
+    const trial=guardedWave(trialWave(proposal,rate),rate);
+    const startLength=controlWave({kind:'start',session:proposal.session,trial:proposal.trial,sampleRate:rate},rate).length;
+    trial.fill(0,Math.round(rate*0.5),Math.round(rate*0.5)+startLength); // start marker lost
+    for(const wave of [bad,propose,trial])for(let o=0;o<wave.length;o+=128)analyzer.push(wave.subarray(o,o+128));
+    expect(errors).toContain('Control message heard but corrupted (CRC failed); waiting for a retry.');
+    expect(problems).toEqual(['Trial 1: end marker heard but the start marker was missed; not scored.']);
   });
   it('bounds silence retries and rejects stale feedback',()=>{
     const queue:Outgoing[]=[],finished:string[]=[];
     const session=new CooperativeSession('controller',config,719,a=>queue.push(a),e=>{if(e.kind==='status'&&e.finished)finished.push(e.detail);});
     session.start(0);
     session.receive({kind:'ready',session:718,trial:0});expect(queue).toHaveLength(1);
-    for(let i=0;i<4;i++){session.sent(i*21000);session.tick((i+1)*21000);}
-    expect(queue).toHaveLength(4);expect(finished[0]).toContain('timed out');
+    for(let i=0;i<6;i++){session.sent(i*5000);session.tick((i+1)*5000);}
+    expect(queue).toHaveLength(6);expect(finished[0]).toContain('timed out');
   });
   it('searches using measured symbol error rates and obeys its budget',()=>{
     const s=new ParameterSearch({...config,budget:8});

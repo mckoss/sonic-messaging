@@ -374,7 +374,8 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         configureDetector('off');
         cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, receiveControl, measurement => {
           cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement);
-        }, detail => cooperativeEvent({ kind: 'status', phase: 'unscored', detail }), data.role !== 'controller');
+        }, detail => cooperativeEvent({ kind: 'status', phase: 'unscored', detail, log: true }), data.role !== 'controller',
+        detail => cooperativeEvent({ kind: 'status', phase: 'control-error', detail, log: true }));
         if (data.role !== 'replay') {
           cooperativeSession = new CooperativeSession(data.role, data.config, data.session,
             action => { outgoing.push(action); drainOutgoing(); }, cooperativeEvent);

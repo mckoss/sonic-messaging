@@ -9,6 +9,9 @@ export interface SearchSettings {
 }
 export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.9 };
 export const MAX_SESSION_SECONDS = 110;
+/** Longest reply (~1.2 s result plus 1 s of quiet guards) and decode/audio latency fit well inside this. */
+export const REPLY_TIMEOUT_MS = 4500;
+export const MAX_RETRIES = 5;
 export const trialFsk = (t: TrialSettings) => ({ frequencies: Array.from({ length: t.tones }, (_, i) => t.lowestFrequency + i * t.spacing), symbolRate: t.symbolRate, amplitude: t.amplitude });
 export function validateTrial(value: unknown): TrialSettings {
   const t = value as TrialSettings;
@@ -48,11 +51,11 @@ export interface TrialMeasurement extends Proposal {
 }
 export type ControlMessage =
   | ({ kind: 'propose' } & Proposal)
-  | { kind: 'ready' | 'query' | 'ack' | 'done'; session: number; trial: number }
+  | { kind: 'ready' | 'query' | 'ack' | 'done' | 'lost'; session: number; trial: number }
   | { kind: 'start'; session: number; trial: number; sampleRate: number }
   | { kind: 'end'; session: number; trial: number }
   | { kind: 'result'; session: number; trial: number; raw: RawResult };
-const kinds = ['propose','ready','start','end','result','query','ack','done'] as const;
+const kinds = ['propose','ready','start','end','result','query','ack','done','lost'] as const;
 /** Compact CRC-framed control payload; never transports acoustic samples or unknown timing. */
 export function encodeControl(m: ControlMessage): Uint8Array {
   const extra = m.kind === 'propose' ? 17 : m.kind === 'start' ? 4 : m.kind === 'result' ? 10 : 0;
