@@ -37,21 +37,21 @@ let cooperativeTimer: ReturnType<typeof setInterval> | undefined;
 let packetManager: PacketManager | undefined;
 /** Frames heard while this device is transmitting are handled once its playback ends (half duplex). */
 type HeardFrame = { kind: 'control'; message: ControlMessage; seq: number; ackRequested: boolean } | { kind: 'ack'; from: number; sender: number; seq: number };
-let outgoing: OutgoingPacket[] = [], deferred: HeardFrame[] = [], playing: OutgoingPacket | undefined;
+let outgoing: OutgoingPacket[] = [], deferred: HeardFrame[] = [], playing: { packet: OutgoingPacket; line: string } | undefined;
 let activeToken = 0, nextToken = 0, cooperativeRate = 48000, cooperativeSender = 0;
 function cooperativeEvent(event: CooperativeEvent) { send({ type: 'cooperative-event', event }); }
 function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
   const packet = outgoing.shift()!, { body, seq } = packet;
   const retry = packet.attempt ? ` (retry ${packet.attempt}/${packetManager?.retries ?? 0})` : '';
-  const line = body.kind === 'control' ? describeWire(body.message, seq) : body.kind === 'trial' ? describeTestSent(body.proposal, seq)
+  const described = body.kind === 'control' ? describeWire(body.message, seq) : body.kind === 'trial' ? describeTestSent(body.proposal, seq)
     : `${frameId(cooperativeSender, seq)} ACK ${frameId(body.sender, body.seq)}`;
-  cooperativeEvent({ kind: 'wire', line: `-> ${line}${retry}` });
   const wave = body.kind === 'control' ? controlWave(body.message, cooperativeRate, seq, packet.ackRequested)
     : body.kind === 'trial' ? trialWave(body.proposal, cooperativeRate, seq)
     : ackWave(cooperativeSender, seq, body.sender, body.seq, cooperativeRate);
   const samples = guardedWave(wave, cooperativeRate);
-  activeToken = ++nextToken; playing = packet;
+  // Logged when playback ends, so a sent line appears as the air goes quiet, like a received line.
+  activeToken = ++nextToken; playing = { packet, line: `-> ${described}${retry}` };
   send({ type: 'cooperative-audio', token: activeToken, samples, sampleRate: cooperativeRate }, [samples.buffer]);
 }
 function handleHeard(frame: HeardFrame) {
@@ -414,9 +414,10 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         if (data.token !== activeToken) break;
         activeToken = 0;
         if (playing) {
-          const now = performance.now();
-          if (playing.ackRequested) packetManager?.sent(playing.seq, now);
-          if (playing.body.kind === 'trial') cooperativeSession?.trialSent(now);
+          const { packet, line } = playing, now = performance.now();
+          cooperativeEvent({ kind: 'wire', line });
+          if (packet.ackRequested) packetManager?.sent(packet.seq, now);
+          if (packet.body.kind === 'trial') cooperativeSession?.trialSent(now);
           playing = undefined;
         }
         while (!activeToken && deferred.length) handleHeard(deferred.shift()!);
