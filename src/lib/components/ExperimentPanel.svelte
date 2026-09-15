@@ -91,6 +91,7 @@
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
       <label>Quiet guard (seconds) <input type="number" min="0.25" max="1.5" step="0.25" bind:value={config.trial.guardSeconds} /></label>
     </div>
+    <div class="actions"><button on:click={()=>start('controller',true)}>Run one trial</button></div>
     <div class="controls">
       <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option></select></label>
       {#if config.parameter !== 'tones'}
@@ -101,7 +102,7 @@
       <label>Trial budget <input type="number" min="1" max="16" bind:value={config.budget} /></label>
     </div>
     <label>Experiment notes <textarea rows="2" maxlength="4000" bind:value={notes} placeholder="Devices, distance, orientation, volume, background noise"></textarea></label>
-    <div class="actions"><button on:click={()=>start('partner')}>Listen as partner</button><button on:click={()=>start('controller',true)}>Run one trial</button><button on:click={()=>start('controller')}>Optimize</button><label>Load experiment WAV <input type="file" accept=".wav" on:change={load} /></label></div>
+    <div class="actions"><button on:click={()=>start('partner')}>Listen as partner</button><button on:click={()=>start('controller')}>Optimize</button><label>Load experiment WAV <input type="file" accept=".wav" on:change={load} /></label></div>
   </fieldset>
   {#if active}<button on:click={stop}>Stop experiment</button>{/if}
   <p role="status" data-testid="experiment-status">{status} {active?`${seconds.toFixed(1)} s`:''}</p>
