@@ -90,6 +90,12 @@ export class CooperativeAnalyzer {
   private buffer:Float32Array;
   private length=0;
   private origin=0;
+  private isPendingTestPacket(sender:number,payload:Uint8Array){
+    return [...this.starts.keys()].some(key=>{
+      const p=this.proposals.get(key),expected=p&&p.sender===sender?trialPayload(p.settings):undefined;
+      return !!expected&&expected.length===payload.length&&expected.every((b,i)=>b===payload[i]);
+    });
+  }
   /** Scores each started trial once its whole test packet is in the window. */
   private measureReady(){
     const end=this.origin+this.length;
@@ -127,11 +133,12 @@ export class CooperativeAnalyzer {
     }
     this.buffer.set(chunk.subarray(Math.max(0,chunk.length-this.buffer.length)),this.length);this.length+=Math.min(chunk.length,this.buffer.length);
     for(const packet of this.decoder.push(chunk)){
-      // Everything decoded is logged. This device's own transmissions, heard back by its microphone, are shown
-      // and then dropped before the session or scoring sees them. The frame type routes everything else.
+      // This device's own transmissions, heard back by its microphone, are dropped unlogged.
+      if(packet.sender===this.self)continue;
       const raw=packet.frameType===FRAME_TYPE.control?String.fromCharCode(...packet.payload)
         :`${FRAME_TYPE_NAMES[packet.frameType]??`type ${packet.frameType}`} ${hexBytes(packet.payload)}`;
-      if(packet.sender===this.self){this.wire(`-> From:Self ${raw} (ignored)`);continue;}
+      // A test packet on the control tones and baud also decodes here; its scored line reports it once instead.
+      if(packet.frameType===FRAME_TYPE.test&&this.isPendingTestPacket(packet.sender,packet.payload))continue;
       const m=packet.frameType===FRAME_TYPE.control?decodeControl(packet.payload,packet.sender):undefined;
       if(!m){
         this.wire(`-> ${senderHex(packet.sender)} ${packet.frameType===FRAME_TYPE.control?`"${raw}" · unparseable control message`:raw}`);

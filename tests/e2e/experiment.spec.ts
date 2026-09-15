@@ -59,7 +59,7 @@ test.describe('live partner',()=>{
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
     const log=page.getByTestId('experiment-log');
-    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000)',
+    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000) · start marker',
       testLine,' result(1, 0, 64, 0, 128,','· trial 1: 64/64 symbols received, median S/N','-> 02CF done(1) · run finished after 1 trials'])await expect(log).toContainText(line);
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();

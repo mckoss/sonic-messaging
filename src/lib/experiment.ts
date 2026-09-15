@@ -191,7 +191,7 @@ export function describeControl(m: ControlMessage): string {
   switch (m.kind) {
     case 'test_suite': return `${trial} settings: ${describeSettings(m.settings)}`;
     case 'ready': return `partner ready for ${trial}`;
-    case 'test': return `${trial} test packet follows (sender at ${m.sampleRate} Hz)`;
+    case 'test': return `start marker: ${trial} test packet follows (timed at the sender's ${m.sampleRate} Hz)`;
     case 'result': return `${trial}: ${symbolsReceived(m.raw)}, median S/N ${m.raw.snrMedianDb.toFixed(1)} dB`;
     case 'query': return `asking for ${trial} result`;
     case 'ack': return `${trial} result received`;

@@ -195,23 +195,17 @@ describe('control protocol and search',()=>{
     const push=(a:CooperativeAnalyzer)=>{for(let i=0;i<samples.length;i+=128)a.push(samples.subarray(i,i+128));};
     push(new CooperativeAnalyzer(rate,()=>{},()=>{},e=>{throw Error(e);},true,l=>lines.push(l)));
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
-    expect(lines.slice(0,3)).toEqual([
+    expect(lines.slice(0,2)).toEqual([
       '-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) · trial 1 settings: Base=1000, Delta=200, Tones=4, Baud=100, Bytes=16, Seed=719, Guard=0.5',
-      `-> 02CF test(1, ${rate}) · trial 1 test packet follows (sender at ${rate} Hz)`,
-      `-> 02CF test packet ${payload}`
+      `-> 02CF test(1, ${rate}) · start marker: trial 1 test packet follows (timed at the sender's ${rate} Hz)`
     ]);
-    expect(lines[3]).toMatch(new RegExp(`^-> 02CF test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d$`));
-    expect(lines.slice(4)).toEqual(['-> 02CF done(1) · run finished after 1 trials']);
-    // The controller hears its own transmissions: each is logged as From:Self and dropped before the session sees it.
+    // This default test uses the control tones and baud, so the control decoder also hears the packet; it is logged once, scored.
+    expect(lines[2]).toMatch(new RegExp(`^-> 02CF test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d$`));
+    expect(lines.slice(3)).toEqual(['-> 02CF done(1) · run finished after 1 trials']);
+    // The controller hears its own transmissions: dropped unlogged, before the session sees them.
     const heard:ControlMessage[]=[];
     push(new CooperativeAnalyzer(rate,m=>heard.push(m),()=>{},()=>{},false,l=>controller.push(l),719));
-    expect(controller).toEqual([
-      '-> From:Self test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) (ignored)',
-      `-> From:Self test(1, ${rate}) (ignored)`,
-      `-> From:Self test packet ${payload} (ignored)`,
-      '-> From:Self done(1) (ignored)'
-    ]);
-    expect(heard).toEqual([]);
+    expect(controller).toEqual([]);expect(heard).toEqual([]);
     expect(describeControl({kind:'result',sender:1,trial:2,raw:{symbolErrors:3,symbols:64,bitErrors:4,bits:128,confidence:1,snrMedianDb:18.26}})).toBe('trial 3: 61/64 symbols received, median S/N 18.3 dB');
     expect(hexBytes([0x1a,0xef,5])).toBe('[1A EF 05]');
   });
