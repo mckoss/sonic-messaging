@@ -101,7 +101,7 @@
         writer=created;currentId=created.id;void refreshLibrary();
       } catch(e){append(`Recording unavailable (${e instanceof Error?e.message:String(e)}); measurements continue without a saved recording.`);}
       if(cancelled)return;
-      engine.configureCooperative(selected,run,crypto.getRandomValues(new Uint32Array(1))[0]);
+      engine.configureCooperative(selected,run,crypto.getRandomValues(new Uint16Array(1))[0]);
     } catch(e){error=String(e);stop();}
   }
   async function load(event:Event) {
@@ -200,7 +200,7 @@
       </tbody></table></div>
     {:else}<p>No saved recordings.</p>{/if}
   </section>
-  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.8, CRC (no FEC) with acknowledgement and retries after 4.5 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. Both timing markers must be received to score a trial. Error counts are measured; calibrated acoustic S/N is not yet available.</p>
+  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.8; plain-text messages such as <code>test_suite(1A2B, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)</code> in a CRC frame (no FEC), with acknowledgement and retries after 6 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. Both timing markers must be received to score a trial. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
 </section>
 <style>
 .experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}

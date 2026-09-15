@@ -10,7 +10,7 @@ import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/m
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
 import { CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
 import { CooperativeSession, type Outgoing } from '../lib/cooperative-session';
-import { describeControlBytes, describeTestSent, type ControlMessage, type CooperativeEvent } from '../lib/experiment';
+import { describeWire, describeTestSent, type ControlMessage, type CooperativeEvent } from '../lib/experiment';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 let options: SpectrumOptions = { fftSize: 2048, minDecibels: -110, maxDecibels: 0 };
@@ -39,12 +39,12 @@ function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
   const action = outgoing.shift()!;
   const wire = (text: string) => cooperativeEvent({ kind: 'wire', line: `<- ${text}` });
-  if (action.kind === 'control') wire(describeControlBytes(action.message));
+  if (action.kind === 'control') wire(describeWire(action.message));
   else {
     const { session, trial } = action.proposal;
-    wire(describeControlBytes({ kind: 'start', session, trial, sampleRate: cooperativeRate }));
+    wire(describeWire({ kind: 'test', session, trial, sampleRate: cooperativeRate }));
     wire(describeTestSent(action.proposal));
-    wire(describeControlBytes({ kind: 'end', session, trial }));
+    wire(describeWire({ kind: 'end', session, trial }));
   }
   const samples = guardedWave(action.kind === 'control' ? controlWave(action.message, cooperativeRate)
     : trialWave(action.proposal, cooperativeRate), cooperativeRate);

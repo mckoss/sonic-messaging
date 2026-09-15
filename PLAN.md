@@ -48,6 +48,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Record the real conversation, embed versioned configuration and measurements in WAV, and recompute from unchanged samples.
 - [x] Evaluate unknown timing internally on the receiver using fresh decoder offsets; report acquisition/CRC/exact recovery independently. Payload FEC remains none.
 - [x] Make the partner a settings-free passive listener that follows restarted controller runs and keeps listening until stopped; log each trial sent and the symbols received.
+- [x] Make control messages human-readable method calls (`test_suite`, `ready`, `test`, `end`, `result`, `query`, `ack`, `done`, `lost`) and report per-symbol in-window S/N with its median.
 - [x] Log every message over the air on both devices (`<-` sent, `->` received, `X` garbled), unfiltered, with decoded meaning plus raw bytes as hex.
 - [x] Allow 10-minute sessions: stream experiment recordings to IndexedDB in chunks, score from a rolling 60-second window, and list, replay, save, delete or clear saved recordings.
 - [x] Retire shared-plan imports and transmitter logs; preserve historical WAV audio import in the general recording panel.

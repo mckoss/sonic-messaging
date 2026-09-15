@@ -10,8 +10,8 @@ export interface SearchSettings {
 export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.8 };
 // 0.8 leaves headroom so output resampling and device processing don't clip the control tones.
 export const MAX_SESSION_SECONDS = 600;
-/** Longest reply (~1.2 s result plus 1 s of quiet guards) and decode/audio latency fit well inside this. */
-export const REPLY_TIMEOUT_MS = 4500;
+/** Text replies are longer: a result is ~2 s of air plus a 0.5 s quiet lead, then decode and audio latency. */
+export const REPLY_TIMEOUT_MS = 6000;
 export const MAX_RETRIES = 5;
 export const trialFsk = (t: TrialSettings) => ({ frequencies: Array.from({ length: t.tones }, (_, i) => t.lowestFrequency + i * t.spacing), symbolRate: t.symbolRate, amplitude: t.amplitude });
 export function validateTrial(value: unknown): TrialSettings {
@@ -44,51 +44,97 @@ export function trialPayload(t: TrialSettings): Uint8Array {
   return Uint8Array.from({ length: t.payloadBytes }, () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state & 255; });
 }
 export interface Proposal { session: number; trial: number; settings: TrialSettings }
-export interface RawResult { symbolErrors: number; symbols: number; bitErrors: number; bits: number; confidence: number }
+export interface RawResult {
+  symbolErrors: number; symbols: number; bitErrors: number; bits: number; confidence: number;
+  /** Median over payload symbols of the in-window S/N: winning tone energy vs. the rest of the window, in dB. */
+  snrMedianDb: number;
+}
 export interface AcquisitionResult { offsetSamples: number; acquired: boolean; crcOk: boolean; exact: boolean }
 export interface TrialMeasurement extends Proposal {
   /** Payload bytes as hard-decided from the received symbols, errors included. */
   received: number[];
+  /** In-window S/N per payload symbol, in dB. */
+  snrDb: number[];
   raw: RawResult; sampleRate: number; testStart: number; testEnd: number; samplesPerSymbol: number;
   startMarker: number; endMarker: number; confusion: number[][]; acquisition: AcquisitionResult[];
 }
 export type ControlMessage =
-  | ({ kind: 'propose' } & Proposal)
+  | ({ kind: 'test_suite' } & Proposal)
   | { kind: 'ready' | 'query' | 'ack' | 'done' | 'lost'; session: number; trial: number }
-  | { kind: 'start'; session: number; trial: number; sampleRate: number }
+  | { kind: 'test'; session: number; trial: number; sampleRate: number }
   | { kind: 'end'; session: number; trial: number }
   | { kind: 'result'; session: number; trial: number; raw: RawResult };
-const kinds = ['propose','ready','start','end','result','query','ack','done','lost'] as const;
-/** Compact CRC-framed control payload; never transports acoustic samples or unknown timing. */
-export function encodeControl(m: ControlMessage): Uint8Array {
-  const extra = m.kind === 'propose' ? 17 : m.kind === 'start' ? 4 : m.kind === 'result' ? 10 : 0;
-  const out = new Uint8Array(10 + extra), v = new DataView(out.buffer);
-  out.set([0x43,0x58,2,kinds.indexOf(m.kind)]); v.setUint32(4, m.session); v.setUint16(8, m.trial);
-  if (m.kind === 'propose') {
-    const t = validateTrial(m.settings);
-    v.setUint16(10,t.lowestFrequency); v.setUint16(12,t.spacing); out[14]=t.tones; v.setUint16(15,t.symbolRate);
-    v.setUint16(17,Math.round(t.amplitude*65535)); out[19]=t.payloadBytes; v.setUint32(20,t.seed); v.setUint16(24,Math.round(t.guardSeconds*1000)); out[26]=0;
-  } else if (m.kind === 'start') v.setUint32(10,m.sampleRate);
-  else if (m.kind === 'result') {
-    v.setUint16(10,m.raw.symbolErrors); v.setUint16(12,m.raw.symbols); v.setUint16(14,m.raw.bitErrors); v.setUint16(16,m.raw.bits); v.setUint16(18,Math.round(m.raw.confidence*65535));
-  }
-  return out;
+export type ControlKind = ControlMessage['kind'];
+
+/** In-window S/N from a detector score (the winning tone's share of window energy), clamped to a displayable range. */
+export function snrDbFromScore(score: number): number {
+  const s = Math.min(Math.max(score, 1e-4), 1 - 1e-4);
+  return Math.max(-40, Math.min(40, 10 * Math.log10(s / (1 - s))));
 }
-export function decodeControl(bytes: Uint8Array): ControlMessage | undefined {
-  if (bytes.length < 10 || bytes[0]!==0x43 || bytes[1]!==0x58 || bytes[2]!==2 || bytes[3]>=kinds.length) return;
-  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length), kind=kinds[bytes[3]];
-  const common={session:v.getUint32(4),trial:v.getUint16(8)};
-  const expected=kind==='propose'?27:kind==='start'?14:kind==='result'?20:10;
-  if (bytes.length!==expected) return;
-  try {
-    if(kind==='propose') return {kind,...common,settings:validateTrial({lowestFrequency:v.getUint16(10),spacing:v.getUint16(12),tones:bytes[14],symbolRate:v.getUint16(15),amplitude:v.getUint16(17)/65535,payloadBytes:bytes[19],seed:v.getUint32(20),guardSeconds:v.getUint16(24)/1000})};
-    if(kind==='start') { const sampleRate=v.getUint32(10); if(sampleRate<8000||sampleRate>192000)return; return {kind,...common,sampleRate}; }
-    if(kind==='result') {
-      const raw={symbolErrors:v.getUint16(10),symbols:v.getUint16(12),bitErrors:v.getUint16(14),bits:v.getUint16(16),confidence:v.getUint16(18)/65535};
-      if(!raw.symbols||!raw.bits||raw.symbolErrors>raw.symbols||raw.bitErrors>raw.bits)return;
-      return {kind,...common,raw};
+export function median(values: readonly number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b), mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/*
+ * Control messages are plain ASCII method calls inside the usual CRC frame, e.g.
+ *   test_suite(1A2B, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)
+ * Session is 4 hex digits; trial numbers on the wire are 1-based. Each method is parsed on its own, so one
+ * can change without versioning the rest. Test packets stay binary.
+ */
+const MAX_CONTROL_BYTES = 120;
+const session = (v: number) => v.toString(16).toUpperCase().padStart(4, '0');
+const decimal = (v: number, digits: number) => String(Number(v.toFixed(digits)));
+const INT = /^\d+$/, SIGNED = /^-?\d+(\.\d+)?$/, HEX4 = /^[0-9A-F]{4}$/;
+function args(m: ControlMessage): (string | number)[] {
+  const head = [session(m.session), m.trial + 1];
+  switch (m.kind) {
+    case 'test_suite': {
+      const t = validateTrial(m.settings);
+      return [...head, t.lowestFrequency, t.spacing, t.tones, t.symbolRate, t.payloadBytes, decimal(t.amplitude, 5), t.seed, decimal(t.guardSeconds, 3)];
     }
-    return {kind,...common};
+    case 'test': return [...head, m.sampleRate];
+    case 'result': return [...head, m.raw.symbolErrors, m.raw.symbols, m.raw.bitErrors, m.raw.bits, decimal(m.raw.confidence, 2), decimal(m.raw.snrMedianDb, 1)];
+    case 'done': return [session(m.session), m.trial];
+    default: return head;
+  }
+}
+export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', ')})`;
+export function encodeControl(m: ControlMessage): Uint8Array {
+  if (m.session < 0 || m.session > 0xffff) throw new RangeError('Session must fit in 4 hex digits');
+  return new TextEncoder().encode(controlText(m));
+}
+const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 10, ready: 2, test: 3, end: 2, result: 8, query: 2, ack: 2, done: 2, lost: 2 };
+export function decodeControl(bytes: Uint8Array): ControlMessage | undefined {
+  if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
+  const match = /^([a-z_]+)\(([^()]*)\)$/.exec(String.fromCharCode(...bytes));
+  if (!match || !(match[1] in ARG_COUNTS)) return;
+  const kind = match[1] as ControlKind, fields = match[2].split(',').map(f => f.trim());
+  if (fields.length !== ARG_COUNTS[kind] || !HEX4.test(fields[0]) || !INT.test(fields[1])) return;
+  const numbers = fields.slice(2).map(Number);
+  if (fields.slice(2).some(f => !SIGNED.test(f))) return;
+  const common = { session: parseInt(fields[0], 16), trial: Number(fields[1]) - 1 };
+  try {
+    switch (kind) {
+      case 'test_suite': {
+        if (common.trial < 0) return;
+        const [lowestFrequency, spacing, tones, symbolRate, payloadBytes, amplitude, seed, guardSeconds] = numbers;
+        return { kind, ...common, settings: validateTrial({ lowestFrequency, spacing, tones, symbolRate, amplitude, payloadBytes, seed, guardSeconds }) };
+      }
+      case 'test': {
+        const sampleRate = numbers[0];
+        if (common.trial < 0 || !Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) return;
+        return { kind, ...common, sampleRate };
+      }
+      case 'result': {
+        const [symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb] = numbers;
+        if (common.trial < 0 || !symbols || !bits || symbolErrors > symbols || bitErrors > bits || confidence > 1) return;
+        return { kind, ...common, raw: { symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb } };
+      }
+      case 'done': return { kind, session: common.session, trial: common.trial + 1 };
+      default: return common.trial < 0 ? undefined : { kind, ...common };
+    }
   } catch { return; }
 }
 export interface SearchObservation extends Proposal { raw: RawResult }
@@ -132,24 +178,27 @@ export type CooperativeEvent =
 
 /** Binary data is shown as bracketed hex, e.g. [1A EF]. */
 export const hexBytes = (bytes: ArrayLike<number>) => `[${Array.from(bytes, b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}]`;
-const symbolsReceived = (raw: { symbols: number; symbolErrors: number }) => `Symbols received ${raw.symbols - raw.symbolErrors}/${raw.symbols}`;
+const symbolsReceived = (raw: { symbols: number; symbolErrors: number }) => `${raw.symbols - raw.symbolErrors}/${raw.symbols} symbols received`;
 export const describeSettings = (t: TrialSettings) =>
-  `Tones=${t.tones}, Base=${t.lowestFrequency}, Delta=${t.spacing}, Baud=${t.symbolRate}, Amp=${Number(t.amplitude.toFixed(3))}, Bytes=${t.payloadBytes}, Seed=${t.seed}, Guard=${t.guardSeconds}`;
-/** A control message decoded, followed by its raw bytes. */
-export const describeControlBytes = (m: ControlMessage, bytes: ArrayLike<number> = encodeControl(m)) => `${describeControl(m)} ${hexBytes(bytes)}`;
+  `Base=${t.lowestFrequency}, Delta=${t.spacing}, Tones=${t.tones}, Baud=${t.symbolRate}, Bytes=${t.payloadBytes}, Amp=${Number(t.amplitude.toFixed(3))}, Seed=${t.seed}, Guard=${t.guardSeconds}`;
+/** What a control message means, for the log. */
 export function describeControl(m: ControlMessage): string {
   const trial = `trial ${m.trial + 1}`;
   switch (m.kind) {
-    case 'propose': return `Propose ${trial}: ${describeSettings(m.settings)}`;
-    case 'ready': return `Ready for ${trial}`;
-    case 'start': return `Start marker ${trial} (${m.sampleRate} Hz)`;
-    case 'end': return `End marker ${trial}`;
-    case 'result': return `Result ${trial}: ${symbolsReceived(m.raw)}`;
-    case 'query': return `Query result of ${trial}`;
-    case 'ack': return `Ack ${trial}`;
-    case 'done': return `Done after ${m.trial} trials`;
-    case 'lost': return `Lost ${trial} (timing markers not heard)`;
+    case 'test_suite': return `${trial} settings: ${describeSettings(m.settings)}`;
+    case 'ready': return `partner ready for ${trial}`;
+    case 'test': return `${trial} test packet follows (sender at ${m.sampleRate} Hz)`;
+    case 'end': return `${trial} test packet ended`;
+    case 'result': return `${trial}: ${symbolsReceived(m.raw)}, median S/N ${m.raw.snrMedianDb.toFixed(1)} dB`;
+    case 'query': return `asking for ${trial} result`;
+    case 'ack': return `${trial} result received`;
+    case 'done': return `run finished after ${m.trial} trials`;
+    case 'lost': return `partner missed ${trial} (timing markers not heard)`;
   }
 }
-export const describeTestSent = (p: Proposal) => `Test ${`trial ${p.trial + 1}`}: ${hexBytes(trialPayload(p.settings))}`;
-export const describeTestReceived = (m: TrialMeasurement) => `Test trial ${m.trial + 1}: ${hexBytes(m.received)} ${symbolsReceived(m.raw)}`;
+/** Raw wire text, then its meaning; for text payloads the raw data is already readable. */
+export const describeWire = (m: ControlMessage, bytes?: Uint8Array) =>
+  `${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
+export const describeTestSent = (p: Proposal) => `${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1} test packet`;
+export const describeTestReceived = (m: TrialMeasurement) =>
+  `${hexBytes(m.received)} · trial ${m.trial + 1} test packet: ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)}`;

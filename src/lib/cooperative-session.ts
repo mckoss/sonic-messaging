@@ -27,7 +27,7 @@ export class CooperativeSession {
     if(!settings){this.status('finishing','Finishing the cooperative session.');this.send({kind:'control',message:{kind:'done',session:this.session!,trial:this.nextId}},false);return;}
     this.proposal={session:this.session!,trial:this.nextId++,settings};
     this.status('waiting-ready',`Negotiating trial ${this.proposal.trial+1}.`);
-    this.send({kind:'control',message:{kind:'propose',...this.proposal}});
+    this.send({kind:'control',message:{kind:'test_suite',...this.proposal}});
   }
   /** Called only after speaker playback drains. */
   sent(now:number){
@@ -39,7 +39,7 @@ export class CooperativeSession {
   receive(m:ControlMessage){
     if(this.finished)return;
     if(this.role==='partner'){
-      if(m.kind==='propose'){
+      if(m.kind==='test_suite'){
         if(this.proposal&&m.session===this.session&&m.trial<this.proposal.trial)return;
         if(this.proposal&&m.session===this.session&&m.trial===this.proposal.trial){
           if(JSON.stringify(m.settings)!==JSON.stringify(this.proposal.settings))return;
@@ -55,7 +55,7 @@ export class CooperativeSession {
       if(m.session!==this.session)return;
       if(m.kind==='done'){this.retry=undefined;this.deadline=Infinity;this.status('listening','Controller finished; still listening for the next run.',false,true);return;}
       if(m.trial!==this.proposal?.trial)return;
-      if(m.kind==='start') {this.deadline=Infinity;this.status('measuring',`Capturing trial ${m.trial+1}.`);return;}
+      if(m.kind==='test') {this.deadline=Infinity;this.status('measuring',`Capturing trial ${m.trial+1}.`);return;}
       if(m.kind==='query'&&this.result){this.send({kind:'control',message:this.result});return;}
       if(m.kind==='query'){
         // Without both timing markers there is nothing to report; say so instead of leaving the controller querying.

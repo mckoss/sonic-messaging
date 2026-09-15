@@ -1,11 +1,11 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialLayout, trialWave } from './experiment';
-import { defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
+import { controlText, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
 import { CooperativeSession, type Outgoing } from '../cooperative-session';
 const rate=8000,config=validateSearch(defaultSearch()),proposal={session:719,trial:0,settings:config.trial};
 export function fixture(sampleRate=rate) {
-  const a=guardedWave(controlWave({kind:'propose',...proposal},sampleRate),sampleRate), b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
+  const a=guardedWave(controlWave({kind:'test_suite',...proposal},sampleRate),sampleRate), b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
   const out=new Float32Array(a.length+b.length);out.set(a);out.set(b,a.length);return out;
 }
 function analyze(samples:Float32Array) {
@@ -41,6 +41,12 @@ describe('cooperative acoustic measurement',()=>{
     expect(result.results[0].raw.bitErrors).toBe(0);
     expect(result.results[0].samplesPerSymbol).toBeGreaterThan(80);
   });
+  it('reports in-window S/N per symbol that falls with channel noise',()=>{
+    const clean=analyze(fixture()).results[0],noisy=analyze(simulateChannel(fixture(),{snrDb:3,seed:44})).results[0];
+    expect(clean.snrDb).toHaveLength(clean.raw.symbols);expect(noisy.snrDb).toHaveLength(noisy.raw.symbols);
+    expect(clean.raw.snrMedianDb).toBeGreaterThan(20);
+    expect(noisy.raw.snrMedianDb).toBeLessThan(clean.raw.snrMedianDb-10);
+  });
   it('scores trials after more than a minute of audio with absolute positions',()=>{
     const quiet=new Float32Array(rate*75),samples=new Float32Array(quiet.length+fixture().length);samples.set(fixture(),quiet.length);
     const late=analyze(samples),early=analyze(fixture());
@@ -61,12 +67,20 @@ describe('cooperative acoustic measurement',()=>{
 });
 describe('control protocol and search',()=>{
   it.each([0.01,0.15,0.5])('round trips power boundary %s',amplitude=>{
-    const m:ControlMessage={kind:'propose',...proposal,settings:validateTrial({...proposal.settings,amplitude})};
+    const m:ControlMessage={kind:'test_suite',...proposal,settings:validateTrial({...proposal.settings,amplitude})};
     expect(decodeControl(encodeControl(m))).toEqual(m);
   });
-  it('rejects malformed and impossible feedback',()=>{
+  it('sends human-readable method calls and rejects malformed text',()=>{
+    const text=(s:string)=>new TextEncoder().encode(s);
+    expect(controlText({kind:'test_suite',session:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1A2B, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)');
+    expect(controlText({kind:'test',session:0x1a2b,trial:2,sampleRate:48000})).toBe('test(1A2B, 3, 48000)');
+    expect(controlText({kind:'result',session:0x1a2b,trial:0,raw:{symbolErrors:2,symbols:64,bitErrors:3,bits:128,confidence:0.8234,snrMedianDb:-3.26}})).toBe('result(1A2B, 1, 2, 64, 3, 128, 0.82, -3.3)');
+    expect(controlText({kind:'done',session:0x1a2b,trial:8})).toBe('done(1A2B, 8)');
+    expect(decodeControl(text('ready(1A2B, 4)'))).toEqual({kind:'ready',session:0x1a2b,trial:3});
+    expect(decodeControl(text('done(1A2B, 8)'))).toEqual({kind:'done',session:0x1a2b,trial:8});
+    for(const bad of ['ready(1A2B)','ready(1a2b, 1)','ready(1A2B, 0)','hello(1A2B, 1)','ready(1A2B, 1','test(1A2B, 1, 4000)','ready(1A2B, x)'])expect(decodeControl(text(bad))).toBeUndefined();
     expect(decodeControl(new Uint8Array(10))).toBeUndefined();
-    expect(decodeControl(encodeControl({kind:'result',session:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1}}))).toBeUndefined();
+    expect(decodeControl(encodeControl({kind:'result',session:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1,snrMedianDb:20}}))).toBeUndefined();
   });
   it('retries lost results without retransmitting measured data, and deduplicates feedback',()=>{
     const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[];
@@ -112,14 +126,14 @@ describe('control protocol and search',()=>{
     });
     const ready=(session:number)=>{const a=queue.shift();return a?.kind==='control'&&a.message.kind==='ready'&&a.message.session===session;};
     p.start(0);
-    p.receive({kind:'propose',session:1,trial:0,settings:config.trial});expect(ready(1)).toBe(true);p.sent(0);
+    p.receive({kind:'test_suite',session:1,trial:0,settings:config.trial});expect(ready(1)).toBe(true);p.sent(0);
     // Controller stopped mid-run and restarted with different settings; no done was heard.
-    p.receive({kind:'propose',session:2,trial:0,settings:{...config.trial,spacing:300}});expect(ready(2)).toBe(true);p.sent(1000);
+    p.receive({kind:'test_suite',session:2,trial:0,settings:{...config.trial,spacing:300}});expect(ready(2)).toBe(true);p.sent(1000);
     p.receive({kind:'done',session:1,trial:1});p.receive({kind:'done',session:2,trial:1});
     // Unanswered readiness gives up on the trial but never ends the session.
-    p.receive({kind:'propose',session:3,trial:0,settings:config.trial});expect(ready(3)).toBe(true);p.sent(2000);
-    for(let i=0;i<7;i++){p.tick(2000+(i+1)*5000);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*5000));}
-    p.receive({kind:'propose',session:4,trial:0,settings:config.trial});expect(ready(4)).toBe(true);
+    p.receive({kind:'test_suite',session:3,trial:0,settings:config.trial});expect(ready(3)).toBe(true);p.sent(2000);
+    for(let i=0;i<7;i++){p.tick(2000+(i+1)*6500);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*6500));}
+    p.receive({kind:'test_suite',session:4,trial:0,settings:config.trial});expect(ready(4)).toBe(true);
     expect(accepted).toBe(4);expect(finished).toEqual([]);
   });
   it('re-proposes a trial the partner never measured instead of querying until timeout',()=>{
@@ -130,10 +144,10 @@ describe('control protocol and search',()=>{
     c.start(0);p.start(0);
     p.receive(control(cq));c.sent(0);c.receive(control(pq));p.sent(1000);
     expect(cq.shift()?.kind).toBe('trial');c.sent(2000); // the partner never hears the markers
-    c.tick(2000+4600);const query=control(cq);expect(query.kind).toBe('query');
+    c.tick(2000+6100);const query=control(cq);expect(query.kind).toBe('query');
     p.receive(query);const lost=control(pq);expect(lost.kind).toBe('lost');c.receive(lost);
-    const again=control(cq);expect(again.kind).toBe('propose');
-    if(again.kind!=='propose')throw Error();expect(again.trial).toBe(1);expect(again.settings).toEqual(validateTrial(config.trial));
+    const again=control(cq);expect(again.kind).toBe('test_suite');
+    if(again.kind!=='test_suite')throw Error();expect(again.trial).toBe(1);expect(again.settings).toEqual(validateTrial(config.trial));
     expect(logged).toEqual(['No reply; retrying control exchange (1/5).','Partner missed trial 1; proposing it again.']);
     expect(partnerLogged[0]).toContain('Missed trial 1');
   });
@@ -143,8 +157,8 @@ describe('control protocol and search',()=>{
     c.start(0);cq.shift();c.sent(0);
     c.receive({kind:'ready',session:719,trial:0});cq.shift();c.sent(1000);
     const bps=Math.log2(config.trial.tones),symbols=Math.floor((56+config.trial.payloadBytes*8)/bps)-Math.ceil(56/bps);
-    const result:ControlMessage={kind:'result',session:719,trial:0,raw:{symbolErrors:0,symbols,bitErrors:0,bits:config.trial.payloadBytes*8,confidence:1}};
-    c.receive(result);cq.shift();c.sent(2000);expect(cq.shift()).toMatchObject({kind:'control',message:{kind:'propose',trial:1}});
+    const result:ControlMessage={kind:'result',session:719,trial:0,raw:{symbolErrors:0,symbols,bitErrors:0,bits:config.trial.payloadBytes*8,confidence:1,snrMedianDb:20}};
+    c.receive(result);cq.shift();c.sent(2000);expect(cq.shift()).toMatchObject({kind:'control',message:{kind:'test_suite',trial:1}});
     c.receive(result);expect(cq).toEqual([{kind:'control',message:{kind:'ack',session:719,trial:0}}]);
   });
   it('reports corrupted control messages and trials whose start marker was missed',()=>{
@@ -152,34 +166,32 @@ describe('control protocol and search',()=>{
     const analyzer=new CooperativeAnalyzer(rate,()=>{},()=>{},e=>problems.push(e),true,l=>{if(l.startsWith('X'))errors.push(l);});
     const corrupt=guardedWave(controlWave({kind:'ready',session:719,trial:0},rate),rate);
     const bad=corrupt.slice();const tail=Math.round(bad.length*0.55);for(let i=tail;i<tail+Math.round(rate*0.08);i++)bad[i]=0;
-    const propose=guardedWave(controlWave({kind:'propose',...proposal},rate),rate);
+    const propose=guardedWave(controlWave({kind:'test_suite',...proposal},rate),rate);
     const trial=guardedWave(trialWave(proposal,rate),rate);
-    const startLength=controlWave({kind:'start',session:proposal.session,trial:proposal.trial,sampleRate:rate},rate).length;
+    const startLength=controlWave({kind:'test',session:proposal.session,trial:proposal.trial,sampleRate:rate},rate).length;
     trial.fill(0,Math.round(rate*0.5),Math.round(rate*0.5)+startLength); // start marker lost
     for(const wave of [bad,propose,trial])for(let o=0;o<wave.length;o+=128)analyzer.push(wave.subarray(o,o+128));
-    expect(errors).toHaveLength(1);expect(errors[0]).toMatch(/^X Garbled message: \[[0-9A-F ]+\] \((CRC failed|signal lost after \d+ of \d+ bytes)\)$/);
+    expect(errors).toHaveLength(1);expect(errors[0]).toMatch(/^X Garbled message "[^"]*" \[[0-9A-F ]+\] \((CRC failed|signal lost after \d+ of \d+ bytes)\)$/);
     expect(problems).toEqual(['Trial 1: end marker heard but the start marker was missed; not scored.']);
   });
-  it('logs every received frame unfiltered with raw bytes, including test data decoded on the control profile',()=>{
+  it('logs every received frame unfiltered, raw then decoded, with per-symbol S/N for the test packet',()=>{
     const lines:string[]=[],controller:string[]=[];
     const done=guardedWave(controlWave({kind:'done',session:719,trial:1},rate),rate),samples=new Float32Array(fixture().length+done.length);
     samples.set(fixture());samples.set(done,fixture().length);
     const push=(a:CooperativeAnalyzer)=>{for(let i=0;i<samples.length;i+=128)a.push(samples.subarray(i,i+128));};
     push(new CooperativeAnalyzer(rate,()=>{},()=>{},e=>{throw Error(e);},true,l=>lines.push(l)));
-    const settings=validateTrial(config.trial),payload=hexBytes(trialPayload(settings)),raw=(m:ControlMessage)=>hexBytes(encodeControl(m));
-    const expected=[
-      `-> Propose trial 1: Tones=4, Base=1000, Delta=200, Baud=100, Amp=0.15, Bytes=16, Seed=719, Guard=0.5 ${raw({kind:'propose',...proposal,settings})}`,
-      `-> Start marker trial 1 (${rate} Hz) ${raw({kind:'start',session:719,trial:0,sampleRate:rate})}`,
-      `-> Frame ${payload} (not a control message)`,
-      `-> Test trial 1: ${payload} Symbols received 64/64`,
-      `-> End marker trial 1 ${raw({kind:'end',session:719,trial:0})}`,
-      `-> Done after 1 trials ${raw({kind:'done',session:719,trial:1})}`
-    ];
-    expect(lines).toEqual(expected);
-    // A controller hearing its own transmissions logs them too, without the partner-side Test scoring line.
+    const payload=hexBytes(trialPayload(validateTrial(config.trial)));
+    expect(lines.slice(0,3)).toEqual([
+      '-> test_suite(02CF, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) · trial 1 settings: Base=1000, Delta=200, Tones=4, Baud=100, Bytes=16, Amp=0.15, Seed=719, Guard=0.5',
+      `-> test(02CF, 1, ${rate}) · trial 1 test packet follows (sender at ${rate} Hz)`,
+      `-> ${payload} · not a control message`
+    ]);
+    expect(lines[3]).toMatch(new RegExp(`^-> ${payload.replace(/[[\]]/g,'\\$&')} · trial 1 test packet: 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d$`));
+    expect(lines.slice(4)).toEqual(['-> end(02CF, 1) · trial 1 test packet ended','-> done(02CF, 1) · run finished after 1 trials']);
+    // A controller hearing its own transmissions logs them too, without the partner-side test packet scoring line.
     push(new CooperativeAnalyzer(rate,()=>{},()=>{},()=>{},false,l=>controller.push(l)));
-    expect(controller).toEqual(expected.filter(l=>!l.startsWith('-> Test')));
-    expect(describeControl({kind:'result',session:1,trial:2,raw:{symbolErrors:3,symbols:64,bitErrors:4,bits:128,confidence:1}})).toBe('Result trial 3: Symbols received 61/64');
+    expect(controller).toEqual(lines.filter((_,i)=>i!==3));
+    expect(describeControl({kind:'result',session:1,trial:2,raw:{symbolErrors:3,symbols:64,bitErrors:4,bits:128,confidence:1,snrMedianDb:18.26}})).toBe('trial 3: 61/64 symbols received, median S/N 18.3 dB');
     expect(hexBytes([0x1a,0xef,5])).toBe('[1A EF 05]');
   });
   it('bounds silence retries and rejects stale feedback',()=>{
@@ -187,12 +199,12 @@ describe('control protocol and search',()=>{
     const session=new CooperativeSession('controller',config,719,a=>queue.push(a),e=>{if(e.kind==='status'&&e.finished)finished.push(e.detail);});
     session.start(0);
     session.receive({kind:'ready',session:718,trial:0});expect(queue).toHaveLength(1);
-    for(let i=0;i<6;i++){session.sent(i*5000);session.tick((i+1)*5000);}
+    for(let i=0;i<6;i++){session.sent(i*6500);session.tick((i+1)*6500);}
     expect(queue).toHaveLength(6);expect(finished[0]).toContain('timed out');
   });
   it('searches using measured symbol error rates and obeys its budget',()=>{
     const s=new ParameterSearch({...config,budget:8});
-    for(let i=0;i<8;i++){const settings=s.next()!;expect(settings).toBeDefined();s.add({session:1,trial:i,settings,raw:{symbolErrors:settings.lowestFrequency===600?0:10,symbols:64,bits:128,bitErrors:10,confidence:.8}});}
+    for(let i=0;i<8;i++){const settings=s.next()!;expect(settings).toBeDefined();s.add({session:1,trial:i,settings,raw:{symbolErrors:settings.lowestFrequency===600?0:10,symbols:64,bits:128,bitErrors:10,confidence:.8,snrMedianDb:20}});}
     expect(s.next()).toBeUndefined();expect(s.best()?.value).toBe(600);
     expect(s.add(s.observations[0])).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { CONTROL_FSK, decodeControl, describeControlBytes, describeTestReceived, encodeControl, hexBytes, trialFsk, trialPayload, validateTrial,
+import { CONTROL_FSK, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore, trialFsk, trialPayload, validateTrial,
   type Proposal, type ControlMessage, type TrialMeasurement, type AcquisitionResult } from '../experiment';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
@@ -12,7 +12,7 @@ export function controlWave(message:ControlMessage,sampleRate:number):Float32Arr
 export function trialLayout(proposal:Proposal,sampleRate:number){
   const t=validateTrial(proposal.settings);
   if(trialFsk(t).frequencies.slice(-1)[0]>=sampleRate/2)throw new Error('Test tones exceed the audio sample rate');
-  const startMarker=controlWave({kind:'start',session:proposal.session,trial:proposal.trial,sampleRate},sampleRate).length;
+  const startMarker=controlWave({kind:'test',session:proposal.session,trial:proposal.trial,sampleRate},sampleRate).length;
   const guard=Math.round(t.guardSeconds*sampleRate),perSymbol=Math.round(sampleRate/t.symbolRate);
   const testSymbols=Math.ceil((t.payloadBytes+9)*8/Math.log2(t.tones));
   const testStart=startMarker+guard,testEnd=testStart+testSymbols*perSymbol,endMarker=testEnd+guard;
@@ -21,7 +21,7 @@ export function trialLayout(proposal:Proposal,sampleRate:number){
 export function trialWave(proposal:Proposal,sampleRate:number):Float32Array {
   const layout=trialLayout(proposal,sampleRate),end=controlWave({kind:'end',session:proposal.session,trial:proposal.trial},sampleRate);
   const out=new Float32Array(layout.endMarker+end.length);
-  out.set(controlWave({kind:'start',session:proposal.session,trial:proposal.trial,sampleRate},sampleRate));
+  out.set(controlWave({kind:'test',session:proposal.session,trial:proposal.trial,sampleRate},sampleRate));
   out.set(encodeFsk(trialPayload(proposal.settings),{...trialFsk(proposal.settings),sampleRate}).samples,layout.testStart);
   out.set(end,layout.endMarker);return out;
 }
@@ -38,7 +38,7 @@ export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Pro
   if(start<0||end>samples.length)throw new Error('Incomplete trial capture');
   const expected=bytesToBits(frame(trialPayload(t))),bps=Math.log2(t.tones),symbolCount=Math.ceil(expected.length/bps);
   const confusion=Array.from({length:t.tones},()=>Array(t.tones).fill(0) as number[]);
-  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0},bits:number[]=[];
+  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0,snrMedianDb:0},bits:number[]=[],snrDb:number[]=[];
   for(let s=0;s<symbolCount;s++){
     const from=Math.round(start+s*perSymbol),to=Math.round(start+(s+1)*perSymbol);
     const decision=detectFskSymbol(samples.subarray(from,to),sampleRate,trialFsk(t).frequencies);
@@ -48,11 +48,11 @@ export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Pro
       const bit=s*bps+b;target=(target<<1)|(expected[bit]??0);
       if(bit>=56&&bit<56+t.payloadBytes*8){const heard=(winner>>>(bps-b-1))&1;bits.push(heard);raw.bits++;if(heard!==expected[bit])raw.bitErrors++;}
     }
-    if(s*bps>=56&&(s+1)*bps<=56+t.payloadBytes*8){raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;raw.confidence+=decision.confidence;}
+    if(s*bps>=56&&(s+1)*bps<=56+t.payloadBytes*8){raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;raw.confidence+=decision.confidence;snrDb.push(snrDbFromScore(decision.scores[winner]));}
   }
-  raw.confidence/=Math.max(1,raw.symbols);
+  raw.confidence/=Math.max(1,raw.symbols);raw.snrMedianDb=median(snrDb);
   const received=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
-  const measurement:TrialMeasurement={...proposal,received,raw,sampleRate,testStart:start,testEnd:end,samplesPerSymbol:perSymbol,startMarker,endMarker,confusion,acquisition:[]};
+  const measurement:TrialMeasurement={...proposal,received,snrDb,raw,sampleRate,testStart:start,testEnd:end,samplesPerSymbol:perSymbol,startMarker,endMarker,confusion,acquisition:[]};
   measurement.acquisition=replayAcquisition(samples,measurement);
   return measurement;
 }
@@ -106,12 +106,12 @@ export class CooperativeAnalyzer {
       // A valid frame that isn't control is usually test data sent on the control tones.
       // Everything decoded is logged, including this device's own transmissions heard back by its microphone
       // and test data sent on the control tones and baud.
-      if(!m){this.wire(`-> Frame ${hexBytes(packet.payload)} (not a control message)`);continue;}
-      const key=`${m.session}:${m.trial}`,line=`-> ${describeControlBytes(m,packet.payload)}`;
+      if(!m){this.wire(`-> ${hexBytes(packet.payload)} · not a control message`);continue;}
+      const key=`${m.session}:${m.trial}`,line=`-> ${describeWire(m,packet.payload)}`;
       if(m.kind!=='end')this.wire(line);
       if(this.analyze){
-        if(m.kind==='propose'&&!this.proposals.has(key))remember(this.proposals,key,{session:m.session,trial:m.trial,settings:m.settings});
-        if(m.kind==='start'&&this.proposals.has(key)&&!this.starts.has(key))remember(this.starts,key,{position:packet.startPosition,rate:m.sampleRate});
+        if(m.kind==='test_suite'&&!this.proposals.has(key))remember(this.proposals,key,{session:m.session,trial:m.trial,settings:m.settings});
+        if(m.kind==='test'&&this.proposals.has(key)&&!this.starts.has(key))remember(this.starts,key,{position:packet.startPosition,rate:m.sampleRate});
         if(m.kind==='end'&&!this.measured.has(key)){
           const p=this.proposals.get(key),start=this.starts.get(key);
           remember(this.measured,key,true);
@@ -138,7 +138,8 @@ export class CooperativeAnalyzer {
       else if(p.type==='byte')this.heard.push(p.byte);
       else if(p.type==='crc-confirm'){this.heard=[];this.heardLength=undefined;}
       else if(p.type==='crc-error'){
-        const bytes=this.heard.length?`: ${hexBytes(this.heard)}`:'';
+        const text=String.fromCharCode(...this.heard.map(b=>b>=0x20&&b<=0x7e?b:0xb7));
+        const bytes=this.heard.length?` "${text}" ${hexBytes(this.heard)}`:'';
         const why=this.heardLength===undefined?'header unreadable':this.heard.length<this.heardLength?`signal lost after ${this.heard.length} of ${this.heardLength} bytes`:'CRC failed';
         this.wire(`X Garbled message${bytes} (${why})`);
         this.heard=[];this.heardLength=undefined;
