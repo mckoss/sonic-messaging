@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialWave } from './experiment';
-import { controlText, testSymbolCount, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
+import { MAX_TESTS, controlText, estimateTestSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
 import { CooperativeSession, type Outgoing } from '../cooperative-session';
 const rate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 export function fixture(sampleRate=rate) {
@@ -74,14 +74,14 @@ describe('cooperative acoustic measurement',()=>{
   });
 });
 describe('control protocol and search',()=>{
-  it.each([0.01,0.15,0.5])('round trips power boundary %s',amplitude=>{
-    const m:ControlMessage={kind:'test_suite',...proposal,settings:validateTrial({...proposal.settings,amplitude})};
+  it.each([2,4,8,16])('round trips test_suite settings with %i tones',tones=>{
+    const m:ControlMessage={kind:'test_suite',...proposal,settings:validateTrial({...proposal.settings,tones,lowestFrequency:500,guardSeconds:0.75})};
     expect(decodeControl(encodeControl(m),m.sender)).toEqual(m);
   });
   it('sends human-readable method calls and rejects malformed text',()=>{
     const text=(s:string)=>new TextEncoder().encode(s);
     // The sender travels in the frame, never in the message text.
-    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)');
+    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)');
     expect(controlText({kind:'test',sender:0x1a2b,trial:2,sampleRate:48000})).toBe('test(3, 48000)');
     expect(controlText({kind:'result',sender:0x1a2b,trial:0,raw:{symbolErrors:2,symbols:64,bitErrors:3,bits:128,confidence:0.8234,snrMedianDb:-3.26}})).toBe('result(1, 2, 64, 3, 128, 0.82, -3.3)');
     expect(controlText({kind:'done',sender:0x1a2b,trial:8})).toBe('done(8)');
@@ -196,7 +196,7 @@ describe('control protocol and search',()=>{
     push(new CooperativeAnalyzer(rate,()=>{},()=>{},e=>{throw Error(e);},true,l=>lines.push(l)));
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
     expect(lines.slice(0,3)).toEqual([
-      '-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) · trial 1 settings: Base=1000, Delta=200, Tones=4, Baud=100, Bytes=16, Amp=0.15, Seed=719, Guard=0.5',
+      '-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) · trial 1 settings: Base=1000, Delta=200, Tones=4, Baud=100, Bytes=16, Seed=719, Guard=0.5',
       `-> 02CF test(1, ${rate}) · trial 1 test packet follows (sender at ${rate} Hz)`,
       `-> 02CF test packet ${payload}`
     ]);
@@ -206,7 +206,7 @@ describe('control protocol and search',()=>{
     const heard:ControlMessage[]=[];
     push(new CooperativeAnalyzer(rate,m=>heard.push(m),()=>{},()=>{},false,l=>controller.push(l),719));
     expect(controller).toEqual([
-      '-> From:Self test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) (ignored)',
+      '-> From:Self test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) (ignored)',
       `-> From:Self test(1, ${rate}) (ignored)`,
       `-> From:Self test packet ${payload} (ignored)`,
       '-> From:Self done(1) (ignored)'
@@ -222,6 +222,13 @@ describe('control protocol and search',()=>{
     session.receive({kind:'ready',sender:42,trial:5});session.receive({kind:'ready',sender:719,trial:0});expect(queue).toHaveLength(1); // wrong trial; own echo
     for(let i=0;i<6;i++){session.sent(i*6500);session.tick((i+1)*6500);}
     expect(queue).toHaveLength(6);expect(finished[0]).toContain('timed out');
+  });
+  it('estimates test duration so long runs can warn before hitting the session limit',()=>{
+    const seconds=estimateTestSeconds(validateTrial(config.trial));
+    expect(seconds).toBeGreaterThan(10);expect(seconds).toBeLessThan(25);
+    expect(estimateTestSeconds(validateTrial({...config.trial,payloadBytes:64,symbolRate:25}))).toBeGreaterThan(seconds+10);
+    expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(0.8);
+    expect(()=>validateSearch({...config,budget:MAX_TESTS+1})).toThrow('number of tests');
   });
   it('searches using measured symbol error rates and obeys its budget',()=>{
     const s=new ParameterSearch({...config,budget:8});

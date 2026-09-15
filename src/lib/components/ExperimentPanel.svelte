@@ -5,7 +5,7 @@
   import { senderHex } from '../dsp/frame';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation } from '../experiment';
+  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -23,6 +23,7 @@
   let log: string[] = [], logBox: HTMLOListElement;
   function append(entry:string){log=[...log,entry].slice(-2000);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
   const megabytes=(bytes:number)=>`${(bytes/1048576).toFixed(1)} MB`;
+  $: estimatedSeconds=(()=>{try{return estimateTestSeconds(validateTrial(config.trial))*Math.max(0,config.budget);}catch{return undefined;}})();
   const duration=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
   async function refreshLibrary() {
     try {
@@ -87,10 +88,10 @@
     }
     active=false;role='idle';finalizing=false;status='Stopped; partial recordings and completed measurements are retained.';
   }
-  async function start(selected:'controller'|'partner',single=false) {
+  async function start(selected:'controller'|'partner') {
     error='';
     try {
-      const run=selected==='controller'?validateSearch({...config,budget:single?1:config.budget}):undefined;
+      const run=selected==='controller'?validateSearch(config):undefined;
       active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;currentId=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
@@ -159,12 +160,10 @@
       <label>Base frequency <input type="number" bind:value={config.trial.lowestFrequency} /></label>
       <label>Tone spacing <input type="number" bind:value={config.trial.spacing} /></label>
       <label>Test baud <input type="number" bind:value={config.trial.symbolRate} /></label>
-      <label>Test amplitude <input type="number" min="0.01" max="0.5" step="0.01" bind:value={config.trial.amplitude} /></label>
       <label>Payload bytes <input type="number" min="4" max="64" bind:value={config.trial.payloadBytes} /></label>
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
       <label>Quiet guard (seconds) <input type="number" min="0.25" max="1.5" step="0.25" bind:value={config.trial.guardSeconds} /></label>
     </div>
-    <div class="actions"><button on:click={()=>start('controller',true)}>Run one trial</button></div>
     <div class="controls">
       <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option></select></label>
       {#if config.parameter !== 'tones'}
@@ -172,10 +171,11 @@
         <label>Maximum <input type="number" bind:value={config.maximum} /></label>
         <label>Minimum step <input type="number" bind:value={config.step} /></label>
       {/if}
-      <label>Trial budget <input type="number" min="1" max="16" bind:value={config.budget} /></label>
+      <label>Number of tests <input type="number" min="1" max={MAX_TESTS} bind:value={config.budget} /></label>
+      {#if estimatedSeconds !== undefined}<p class="estimate" data-testid="test-estimate" class:over={estimatedSeconds > MAX_SESSION_SECONDS}>≈ {duration(estimatedSeconds)} without retries{#if estimatedSeconds > MAX_SESSION_SECONDS} · over the 10-minute session limit; later tests won't run{/if}</p>{/if}
     </div>
     <label>Experiment notes <textarea rows="2" maxlength="4000" bind:value={notes} placeholder="Devices, distance, orientation, volume, background noise"></textarea></label>
-    <div class="actions"><button on:click={()=>start('partner')}>Listen as partner</button><button on:click={()=>start('controller')}>Optimize</button><label>Load experiment WAV <input type="file" accept=".wav" on:change={load} /></label></div>
+    <div class="actions"><button on:click={()=>start('partner')}>Listen as partner</button><button on:click={()=>start('controller')}>Start Test</button><label>Load experiment WAV <input type="file" accept=".wav" on:change={load} /></label></div>
   </fieldset>
   {#if active}<button on:click={stop}>Stop experiment</button>{/if}
   <p role="status" data-testid="experiment-status">{status} {active?`${seconds.toFixed(1)} s`:''}</p>
@@ -202,8 +202,8 @@
       </tbody></table></div>
     {:else}<p>No saved recordings.</p>{/if}
   </section>
-  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> and a CRC (no FEC), with acknowledgement and retries after 6 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The start marker must be heard to score a trial. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
+  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> and a CRC (no FEC), with acknowledgement and retries after 6 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The start marker must be heard to score a trial. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
 </section>
 <style>
-.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
+.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.estimate{margin:0;align-self:center}.estimate.over{color:#ffcf6e}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
 </style>

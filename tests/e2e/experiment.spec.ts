@@ -21,7 +21,7 @@ test('replays cooperative audio without microphone access and recomputes raw and
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
   await expect(page.getByTestId('experiment-results')).not.toContainText('0/128');
   await expect(page.getByTestId('experiment-results')).toContainText('4/4 exact');
-  await expect(page.getByTestId('experiment-log')).toContainText('-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) · trial 1 settings');
+  await expect(page.getByTestId('experiment-log')).toContainText('-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) · trial 1 settings');
   await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await page.getByTestId('experiment-results').innerText();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
@@ -31,10 +31,14 @@ test('replays cooperative audio without microphone access and recomputes raw and
   await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();
   expect((await pending).suggestedFilename()).toBe('sonic-cooperative.wav');
 });
-test('validates test power before requesting a microphone',async({page})=>{
+test('validates settings before requesting a microphone and estimates run length',async({page})=>{
   await page.goto('/sonic-messaging/#tests');
-  await page.getByLabel('Test amplitude').fill('0.9');
-  await page.getByRole('button',{name:'Run one trial',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Run one trial'})).toHaveCount(0);
+  await expect(page.getByTestId('test-estimate')).not.toContainText('over the 10-minute');
+  await page.getByLabel('Number of tests').fill('60');
+  await expect(page.getByTestId('test-estimate')).toContainText('over the 10-minute session limit');
+  await page.getByLabel('Payload bytes').fill('200');
+  await page.getByRole('button',{name:'Start Test',exact:true}).click();
   await expect(page.locator('.experiment [role=alert]')).toContainText('Invalid trial settings');
 });
 
@@ -49,13 +53,13 @@ test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-devi
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
     test.setTimeout(120000);await page.goto('/sonic-messaging/#tests');
-    await page.getByLabel('Test amplitude').fill('0.9'); // Partner settings are ignored, even when invalid.
+    await page.getByLabel('Payload bytes').fill('200'); // Partner settings are ignored, even when invalid.
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
     const log=page.getByTestId('experiment-log');
-    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000)',
+    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000)',
       testLine,' result(1, 0, 64, 0, 128,','· trial 1: 64/64 symbols received, median S/N','-> 02CF done(1) · run finished after 1 trials'])await expect(log).toContainText(line);
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();

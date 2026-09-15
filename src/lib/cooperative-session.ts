@@ -36,7 +36,7 @@ export class CooperativeSession {
   sent(now:number){
     if(this.finished)return;
     if(this.phase==='acknowledging'){this.next();return;}
-    if(this.phase==='finishing'){this.status('complete','Search complete; best means best measured within this budget.',true);return;}
+    if(this.phase==='finishing'){this.status('complete','Search complete; best means best measured across these tests.',true);return;}
     this.deadline=now+REPLY_TIMEOUT_MS;
   }
   receive(m:ControlMessage){
