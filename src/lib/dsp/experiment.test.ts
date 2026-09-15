@@ -1,6 +1,6 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
-import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialWave } from './experiment';
+import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialLayout, trialWave } from './experiment';
 import { MAX_TESTS, controlText, estimateTestSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
 import { CooperativeSession, type Outgoing } from '../cooperative-session';
 const rate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
@@ -21,10 +21,27 @@ describe('cooperative acoustic measurement',()=>{
     expect(first.results[0].acquisition.every(a=>a.exact&&a.acquired)).toBe(true);
     expect(analyze(fixture())).toEqual(first);
   });
+  it('takes timing from the test packet sync when the band is delayed relative to the start marker',()=>{
+    // Speaker/microphone delay differs between control and test bands; model the packet arriving 12 samples (0.15 symbol) late.
+    const wave=trialWave(proposal,rate),start=trialLayout(proposal,rate).testStart,delayed=wave.slice();
+    delayed.fill(0,start,start+12);delayed.set(wave.subarray(start,wave.length-12),start+12);
+    const padded=new Float32Array(delayed.length+rate);padded.set(delayed);
+    const m=measureTrial(padded,rate,proposal,0,rate);
+    expect(m.timingSource).toBe('sync');expect(Math.abs(m.timingOffsetMs-1.5)).toBeLessThanOrEqual(0.125); // within one sample
+    expect(m.raw.symbolErrors).toBe(0);expect(m.raw.snrMedianDb).toBeGreaterThan(30);
+    expect(Math.min(...m.snrDb)).toBeGreaterThan(20);
+    // With the sync destroyed, the marker alone starts 12 samples early; transition tracking pulls the windows into line
+    // during the length and address symbols, before the scored payload.
+    const noSync=padded.slice();noSync.fill(0,start+12,start+12+16*80);
+    const tracked=measureTrial(noSync,rate,proposal,0,rate);
+    expect(tracked.timingSource).toBe('marker');expect(tracked.timingDriftMs).toBeGreaterThan(1);
+    expect(tracked.raw.symbolErrors).toBe(0);expect(tracked.raw.snrMedianDb).toBeGreaterThan(30);
+  });
   it('scores raw data despite destroyed test sync',()=>{
     const samples=fixture(),m=analyze(samples).results[0];
     samples.fill(0,Math.round(m.testStart),Math.round(m.testStart+16*m.samplesPerSymbol));
     const result=analyze(samples).results[0];expect(result.raw.bitErrors).toBe(0);
+    expect(result.timingSource).toBe('marker');
     expect(result.acquisition.every(a=>!a.acquired&&!a.exact)).toBe(true);
   });
   it('counts payload corruption without relying on successful CRC',()=>{
@@ -39,8 +56,9 @@ describe('cooperative acoustic measurement',()=>{
     const result=analyze(simulateChannel(stretched,{snrDb:20,seed:918}));
     expect(result.problems).toEqual([]);expect(result.results).toHaveLength(1);
     expect(result.results[0].raw.bitErrors).toBe(0);
-    // Timing now comes from the start marker and nominal rate alone; drift far beyond real clocks still scores cleanly.
-    expect(result.results[0].samplesPerSymbol).toBe(80);
+    // Sync sets the start; symbol tracking follows the stretch through the frame.
+    expect(result.results[0].timingSource).toBe('sync');
+    expect(result.results[0].timingDriftMs).toBeGreaterThan(0.2);expect(result.results[0].timingDriftMs).toBeLessThan(1.2);
   });
   it('reports in-window S/N per symbol that falls with channel noise',()=>{
     const clean=analyze(fixture()).results[0],noisy=analyze(simulateChannel(fixture(),{snrDb:3,seed:44})).results[0];
@@ -200,7 +218,7 @@ describe('control protocol and search',()=>{
       `-> 02CF test(1, ${rate}) · start marker: trial 1 test packet follows (timed at the sender's ${rate} Hz)`
     ]);
     // This default test uses the control tones and baud, so the control decoder also hears the packet; it is logged once, scored.
-    expect(lines[2]).toMatch(new RegExp(`^-> 02CF test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d$`));
+    expect(lines[2]).toMatch(new RegExp(`^-> 02CF test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · timing [+−]\\d+\\.\\d ms \\(sync\\), drift [+−]\\d+\\.\\d ms$`));
     expect(lines.slice(3)).toEqual(['-> 02CF done(1) · run finished after 1 trials']);
     // The controller hears its own transmissions: dropped unlogged, before the session sees them.
     const heard:ControlMessage[]=[];

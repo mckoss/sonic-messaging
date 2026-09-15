@@ -60,6 +60,11 @@ export interface TrialMeasurement extends Proposal {
   /** In-window S/N per payload symbol, in dB. */
   snrDb: number[];
   raw: RawResult; sampleRate: number; testStart: number; testEnd: number; samplesPerSymbol: number;
+  /** Timing came from the packet's own sync header, or only from the start marker when no sync was heard. */
+  timingSource: 'sync' | 'marker';
+  /** Where the frame started relative to the start marker's prediction (positive = later), and how far symbol
+   * tracking moved the sampling windows by the end of the frame. */
+  timingOffsetMs: number; timingDriftMs: number;
   startMarker: number; confusion: number[][]; acquisition: AcquisitionResult[];
 }
 export type ControlMessage =
@@ -204,7 +209,8 @@ export const describeWire = (m: ControlMessage, bytes?: Uint8Array) =>
   `${senderHex(m.sender)} ${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
 export const describeTestSent = (p: Proposal) => `${senderHex(p.sender)} test packet ${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1}`;
 export const describeTestReceived = (m: TrialMeasurement) =>
-  `${senderHex(m.sender)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)}`;
+  `${senderHex(m.sender)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · timing ${signedMs(m.timingOffsetMs)} (${m.timingSource}), drift ${signedMs(m.timingDriftMs)}`;
+const signedMs = (ms: number) => `${ms >= 0 ? '+' : '−'}${Math.abs(ms).toFixed(1)} ms`;
 
 /** Air time of one guarded FSK frame carrying `payloadBytes`, in seconds. */
 function frameSeconds(payloadBytes: number, tones: number, symbolRate: number, guardSeconds = 1): number {

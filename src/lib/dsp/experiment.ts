@@ -1,10 +1,11 @@
 import { CONTROL_FSK, controlAddress, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore, trialFsk, trialPayload, validateTrial,
-  type Proposal, type ControlMessage, type TrialMeasurement, type AcquisitionResult } from '../experiment';
+  type Proposal, type TrialSettings, type ControlMessage, type TrialMeasurement, type AcquisitionResult } from '../experiment';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { detectFskSymbol } from './fsk-detector';
+import { SymbolTimingLoop } from './symbol-timing';
 import { bytesToBits } from './bits';
-import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, FRAME_TYPE_NAMES, frame, PAYLOAD_OFFSET, senderHex } from './frame';
+import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, FRAME_TYPE_NAMES, frame, PAYLOAD_OFFSET, senderHex, SYNC_BYTES } from './frame';
 
 export function controlWave(message:ControlMessage,sampleRate:number):Float32Array {
   return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,address:controlAddress(message)}).samples;
@@ -32,25 +33,48 @@ export function guardedWave(samples:Float32Array,sampleRate:number):Float32Array
   const guard=Math.round(sampleRate*0.5),out=new Float32Array(samples.length+guard*2);out.set(samples,guard);return out;
 }
 
-/** Known alignment comes solely from the control markers, never the test packet's sync. */
 /** Where a trial's test packet ends in receiver samples, given where its start marker began. */
 export function testEndPosition(proposal:Proposal,startMarker:number,sampleRate:number,transmitterRate:number):number {
   return startMarker+trialLayout(proposal,transmitterRate).testEnd*sampleRate/transmitterRate;
 }
-/** Alignment comes from the start marker and the sender's nominal sample rate, never the test packet's sync. */
+/**
+ * Finds the test packet's own sync word near where the start marker predicts it, using the live receiver's
+ * acquisition. Returns the frame start in `samples`, or undefined when no sync is heard within a symbol of the
+ * prediction (the trial is then still scored from the marker alone).
+ */
+function acquireSync(samples:Float32Array,sampleRate:number,t:TrialSettings,nominal:number,perSymbol:number):number|undefined{
+  const bps=Math.log2(t.tones),syncSymbols=Math.ceil(SYNC_BYTES.length*8/bps);
+  const from=Math.max(0,Math.floor(nominal-1.5*perSymbol)),to=Math.min(samples.length,Math.ceil(nominal+(syncSymbols+3)*perSymbol));
+  const decoder=new FskStreamDecoder({...trialFsk(t),sampleRate});
+  decoder.push(samples.subarray(from,to));
+  const sync=decoder.drainProgress().find(p=>p.type==='sync');
+  if(!sync)return;
+  const decoderPerSymbol=Math.round(sampleRate/t.symbolRate);
+  const anchor=from+sync.position-Math.round(SYNC_BYTES.length*8*decoderPerSymbol/bps);
+  return Math.abs(anchor-nominal)<=perSymbol?anchor:undefined;
+}
+/**
+ * Coarse placement comes from the start marker and the sender's nominal sample rate. Like any received frame, timing
+ * is then taken from the packet's sync header and tracked through the frame without knowledge of the data; the known
+ * payload is used only to count errors.
+ */
 export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Proposal,startMarker:number,transmitterRate:number):TrialMeasurement {
   const t=proposal.settings,layout=trialLayout(proposal,transmitterRate),scale=sampleRate/transmitterRate;
-  const start=startMarker+layout.testStart*scale,end=startMarker+layout.testEnd*scale,perSymbol=layout.perSymbol*scale;
-  if(start<0||end>samples.length)throw new Error('Incomplete trial capture');
-  // Only payload symbols are scored, so the sender in the expected frame's (unscored) address doesn't matter.
+  const nominal=startMarker+layout.testStart*scale,perSymbol=layout.perSymbol*scale;
+  if(nominal<0||startMarker+layout.testEnd*scale>samples.length)throw new Error('Incomplete trial capture');
+  const synced=acquireSync(samples,sampleRate,t,nominal,perSymbol),start=synced??nominal;
+  // Only payload symbols are scored, but the whole frame (sync, length, address, CRC) is known and helps alignment.
   const expected=bytesToBits(frame(trialPayload(t),{sender:proposal.sender,type:FRAME_TYPE.test})),bps=Math.log2(t.tones),symbolCount=Math.ceil(expected.length/bps);
+  const frequencies=trialFsk(t).frequencies;
+  const timing=new SymbolTimingLoop(perSymbol,sampleRate,frequencies);
   const header=PAYLOAD_OFFSET*8;
   const confusion=Array.from({length:t.tones},()=>Array(t.tones).fill(0) as number[]);
   const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0,snrMedianDb:0},bits:number[]=[],snrDb:number[]=[];
   for(let s=0;s<symbolCount;s++){
-    const from=Math.round(start+s*perSymbol),to=Math.round(start+(s+1)*perSymbol);
-    const decision=detectFskSymbol(samples.subarray(from,to),sampleRate,trialFsk(t).frequencies);
+    const at=timing.at(s),from=Math.max(0,Math.round(start+at)),to=Math.min(samples.length,Math.round(start+at+perSymbol));
+    const decision=detectFskSymbol(samples.subarray(from,to),sampleRate,frequencies);
     let winner=0;for(let i=1;i<t.tones;i++)if(decision.scores[i]>decision.scores[winner])winner=i;
+    timing.observe(samples,start,winner,at);
     let target=0;
     for(let b=0;b<bps;b++){
       const bit=s*bps+b;target=(target<<1)|(expected[bit]??0);
@@ -60,7 +84,9 @@ export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Pro
   }
   raw.confidence/=Math.max(1,raw.symbols);raw.snrMedianDb=median(snrDb);
   const received=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
-  const measurement:TrialMeasurement={...proposal,received,snrDb,raw,sampleRate,testStart:start,testEnd:end,samplesPerSymbol:perSymbol,startMarker,confusion,acquisition:[]};
+  const timingOffsetMs=(start-nominal)/sampleRate*1000,timingDriftMs=timing.offset/sampleRate*1000;
+  const measurement:TrialMeasurement={...proposal,received,snrDb,raw,sampleRate,testStart:start,testEnd:start+symbolCount*perSymbol+timing.offset,
+    samplesPerSymbol:perSymbol,timingSource:synced===undefined?'marker':'sync',timingOffsetMs,timingDriftMs,startMarker,confusion,acquisition:[]};
   measurement.acquisition=replayAcquisition(samples,measurement);
   return measurement;
 }

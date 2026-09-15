@@ -63,7 +63,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 
 - [ ] Capture baseline FSK datasets across tone counts, tone spacing, frequency bands, symbol rates, payload lengths, and received SNR; compare reliability and useful throughput with bandwidth and airtime visible.
 - [ ] Replay fixed recordings to evaluate acquisition and decoder changes, prioritizing observed failures and preserving regression cases.
-- [ ] Estimate frequency offset and track sample-clock/symbol-timing drift, then validate improvements on the recorded baseline and fresh two-device runs.
+- [ ] Estimate frequency offset and track sample-clock/symbol-timing drift, then validate improvements on the recorded baseline and fresh two-device runs. *(Symbol timing: sync-header acquisition plus decision-directed transition tracking is implemented for live reception and trial scoring; frequency offset remains.)*
 - [ ] Add and compare payload error correction and interleaving against the uncoded baseline using new captures of each encoding.
 - [ ] Select and document FSK profiles from measured reliability/throughput tradeoffs, then extend experiments to live CSS and DSSS once phase handling and acquisition are implemented.
 

@@ -58,6 +58,19 @@ describe('continuous FSK receiver', () => {
     expect(receiver.drainProgress().find(p => p.type === 'address')).toMatchObject({ sender: 0x9f04, frameType: FRAME_TYPE.control });
   });
 
+  it.each([0.997, 1.003])('tracks symbol timing through a long frame with clock rate %s', factor => {
+    // 60 bytes = 288 symbols; 0.3% clock error slides a fixed grid ~0.9 symbol by the end, which fails without tracking.
+    const payload = Uint8Array.from({ length: 60 }, (_, i) => (i * 73 + 11) & 255);
+    const clean = encodeFsk(payload, config).samples;
+    const stretched = new Float32Array(Math.ceil(clean.length * factor) + 400);
+    for (let i = 0; i < stretched.length - 400; i++) {
+      const x = i / factor, lo = Math.floor(x), f = x - lo;
+      stretched[i + 200] = (clean[lo] ?? 0) * (1 - f) + (clean[lo + 1] ?? 0) * f;
+    }
+    const packets = new FskStreamDecoder(config).push(simulateChannel(stretched, { snrDb: 20, seed: 5 }));
+    expect(packets.map(p => [...p.payload])).toEqual([[...payload]]);
+  });
+
   it('decodes consecutive packets and ignores leading noise', () => {
     const first = encodeFsk(new TextEncoder().encode('one'), config).samples;
     const second = encodeFsk(new TextEncoder().encode('two'), config).samples;

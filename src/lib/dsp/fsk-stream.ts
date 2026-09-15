@@ -2,6 +2,7 @@ import { bitsToBytes } from './bits';
 import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
 import { golayRadiusForBitsPerSymbol } from './golay';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
+import { SymbolTimingLoop } from './symbol-timing';
 import type { FskConfig } from './types';
 
 const SYNC = SYNC_BYTES;
@@ -94,6 +95,8 @@ export class FskStreamDecoder {
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
+  /** Tracks symbol timing through the current candidate after sync acquisition. */
+  private timing!: SymbolTimingLoop;
   /** Carrier-loss scan state for the current candidate. */
   private candidateScannedSymbols = 0;
   private candidateSilentRun = 0;
@@ -116,6 +119,11 @@ export class FskStreamDecoder {
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
     this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
     this.lengthRadius = golayRadiusForBitsPerSymbol(this.bitsPerSymbol);
+    this.resetTiming();
+  }
+
+  private resetTiming(): void {
+    this.timing = new SymbolTimingLoop(this.samplesPerSymbol, this.config.sampleRate, this.config.frequencies);
   }
 
   push(input: Float32Array): FskStreamPacket[] {
@@ -143,7 +151,7 @@ export class FskStreamDecoder {
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.streamPosition = 0;
-    this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     this.syncScanCache.clear();
   }
@@ -258,7 +266,7 @@ export class FskStreamDecoder {
         this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false; this.reportedAddress = false;
-        this.candidateSymbols = []; this.candidateConfidences = [];
+        this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
         this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         // Reference power for carrier-loss detection: what this frame's sync measured.
         let syncPower = 0;
@@ -408,7 +416,7 @@ export class FskStreamDecoder {
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     return { payload: parsed.payload, sender: parsed.sender!, frameType: parsed.type!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
   }
@@ -418,7 +426,7 @@ export class FskStreamDecoder {
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = [];
+    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
   }
 
@@ -426,8 +434,10 @@ export class FskStreamDecoder {
   private decodeCandidateBytes(count: number): { bytes: Uint8Array; confidence: number } {
     const start = this.candidateOffset!;
     const symbolCount = Math.ceil((count * 8) / this.bitsPerSymbol);
+    const buffered = this.samples.subarray(0, this.sampleCount);
     while (this.candidateSymbols.length < symbolCount) {
-      const offset = start + this.candidateSymbols.length * this.samplesPerSymbol;
+      const at = this.timing.at(this.candidateSymbols.length);
+      const offset = Math.max(0, Math.round(start + at));
       const decision = detectFskSymbol(
         // The final window may fall short of the buffer by the tail slack.
         this.samples.subarray(offset, Math.min(offset + this.samplesPerSymbol, this.sampleCount)),
@@ -440,6 +450,7 @@ export class FskStreamDecoder {
       }
       this.candidateSymbols.push(symbol);
       this.candidateConfidences.push(decision.confidence);
+      this.timing.observe(buffered, start, symbol, at);
     }
     const bits: number[] = [];
     let confidence = 0;
