@@ -85,7 +85,9 @@
     { id: 'tests', label: 'Test Suite', detail: 'Two-device trials' }
   ];
   let appView: AppView = 'send';
-  let receiverWidth = 900;
+  let receiverWidth = 900, receiverClientWidth = 0;
+  // A hidden tab measures 0 px; keep the last real width so switching tabs doesn't rescale and clear the waterfalls.
+  $: if (receiverClientWidth > 0) receiverWidth = receiverClientWidth;
   // Quantize so window-resize jitter doesn't reset the waterfall rings each pixel.
   $: waterfallWidth = Math.max(280, Math.round((receiverWidth - 110) / 50) * 50);
   // Scroll speed follows the symbol rate: 64 symbols span one view width.
@@ -477,7 +479,7 @@
   </div>
 
   <div id="app-panel-receive" class="app-panel" role="tabpanel" aria-labelledby="app-tab-receive" hidden={appView !== 'receive'}>
-    <section class="card receiver" bind:clientWidth={receiverWidth}>
+    <section class="card receiver" bind:clientWidth={receiverClientWidth}>
       <div class="section-head"><div><span class="step">RX</span><h2>Receiver</h2></div><div class="receiver-actions"><label>Mic <select disabled={!!captureSession || replaying} bind:value={inputDeviceId} on:change={onInputDeviceChange} aria-label="Microphone"><option value="default">System default</option>{#each inputDevices as device}<option value={device.deviceId}>{device.label}</option>{/each}</select></label><span class="badge {receiverState}">{receiverState}</span></div></div>
       {#if workerError}<div class="worker-error" role="alert" data-testid="worker-error">⚠ Receiver stalled · {workerError}</div>{/if}
       {#key receiverSession}

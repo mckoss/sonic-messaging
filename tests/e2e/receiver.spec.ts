@@ -1,4 +1,17 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+/** The scale follows the receiver's measured width, which settles a frame or more after the tab is shown. */
+async function settledWaterfallScale(page: Page): Promise<number> {
+  let previous: string | null = null;
+  await expect.poll(async () => {
+    const symbols = await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel');
+    const spectrum = await page.getByTestId('spectrum-waterfall').getAttribute('data-samples-per-css-pixel');
+    const settled = symbols !== null && symbols === spectrum && symbols === previous;
+    previous = symbols;
+    return settled;
+  }, { intervals: [100] }).toBe(true);
+  return Number(previous);
+}
 
 test('receiver waterfalls expose one shared captured-audio time scale', async ({ page }) => {
   await page.goto('/sonic-messaging/#receive');
@@ -77,7 +90,7 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('4');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('25');
   await page.getByRole('tab', { name: /Receive/ }).click();
-  const slowScale = Number(await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel'));
+  const slowScale = await settledWaterfallScale(page);
   await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Lowest frequency').fill('4100');
   await page.locator('.composer').getByLabel('Tone spacing').fill('900');
@@ -93,7 +106,10 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
   // The 5x symbol rate scrolls 5x faster (fewer samples per pixel), same on both lanes.
   await page.getByRole('tab', { name: /Receive/ }).click();
-  const fastScale = Number(await page.getByTestId('symbol-waterfall').getAttribute('data-samples-per-css-pixel'));
+  const fastScale = await settledWaterfallScale(page);
   expect(fastScale).toBeLessThan(slowScale);
-  await expect(page.getByTestId('spectrum-waterfall')).toHaveAttribute('data-samples-per-css-pixel', String(fastScale));
+  // A hidden Receive tab measures 0 px wide; that must not rescale (and clear) the waterfalls.
+  await page.getByRole('tab', { name: /Send Single/ }).click();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('symbol-waterfall')).toHaveAttribute('data-samples-per-css-pixel', String(fastScale), { timeout: 0 });
 });
