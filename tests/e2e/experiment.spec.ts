@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { controlWave, guardedWave, trialWave } from '../../src/lib/dsp/experiment';
 import { encodeRecording } from '../../src/lib/audio/recording';
-import { CONTROL_FSK, defaultSearch, validateSearch } from '../../src/lib/experiment';
+import { CONTROL_FSK, defaultSearch, hexBytes, trialPayload, validateSearch } from '../../src/lib/experiment';
 import manifest from '../../package.json' with { type: 'json' };
 const sampleRate=8000,config=validateSearch(defaultSearch()),proposal={session:719,trial:0,settings:config.trial};
+const testLine=`-> Test trial 1: ${hexBytes(trialPayload(config.trial))} Symbols received 64/64`;
 const a=guardedWave(controlWave({kind:'propose',...proposal},sampleRate),sampleRate),b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
 const samples=new Float32Array(a.length+b.length);samples.set(a);samples.set(b,a.length);
 const wav=encodeRecording({samples,metadata:{format:'sonic-recording',version:1,appVersion:manifest.version,createdAt:'2026-09-14',sampleRate,fsk:CONTROL_FSK,inputSettings:{},userAgent:'fixture',notes:'',cooperative:{version:1,config}}});
@@ -20,7 +21,8 @@ test('replays cooperative audio without microphone access and recomputes raw and
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
   await expect(page.getByTestId('experiment-results')).not.toContainText('0/128');
   await expect(page.getByTestId('experiment-results')).toContainText('4/4 exact');
-  await expect(page.getByTestId('experiment-log')).toContainText('Trial 1, Tones=4, Base=1000, Delta=200, Baud=100: Symbols received 64/64');
+  await expect(page.getByTestId('experiment-log')).toContainText('-> Propose trial 1: Tones=4, Base=1000, Delta=200, Baud=100');
+  await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await page.getByTestId('experiment-results').innerText();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
   await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
@@ -52,8 +54,9 @@ test.describe('live partner',()=>{
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
-    await expect(page.getByTestId('experiment-log')).toContainText('-> Trial 1, Tones=4, Base=1000, Delta=200, Baud=100');
-    await expect(page.getByTestId('experiment-log')).toContainText('<- Symbols received 64/64');
+    const log=page.getByTestId('experiment-log');
+    for(const line of ['-> Propose trial 1: Tones=4, Base=1000, Delta=200, Baud=100','<- Ready for trial 1','-> Start marker trial 1 (48000 Hz)',
+      testLine,'-> End marker trial 1','<- Result trial 1: Symbols received 64/64','-> Done after 1 trials'])await expect(log).toContainText(line);
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();

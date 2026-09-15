@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { CooperativeAnalyzer, controlWave, guardedWave, measureTrial, trialLayout, trialWave } from './experiment';
-import { defaultSearch, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
+import { defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type TrialMeasurement, type ControlMessage } from '../experiment';
 import { CooperativeSession, type Outgoing } from '../cooperative-session';
 const rate=8000,config=validateSearch(defaultSearch()),proposal={session:719,trial:0,settings:config.trial};
 export function fixture(sampleRate=rate) {
@@ -69,9 +69,9 @@ describe('control protocol and search',()=>{
     expect(decodeControl(encodeControl({kind:'result',session:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1}}))).toBeUndefined();
   });
   it('retries lost results without retransmitting measured data, and deduplicates feedback',()=>{
-    const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[],partnerEvents:string[]=[];
-    const c=new CooperativeSession('controller',{...config,budget:1},719,a=>cq.push(a),e=>events.push(e.kind==='trial'?`trial-${e.direction}`:e.kind));
-    const p=new CooperativeSession('partner',config,0,a=>pq.push(a),e=>partnerEvents.push(e.kind==='trial'?`trial-${e.direction}`:e.kind));
+    const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[];
+    const c=new CooperativeSession('controller',{...config,budget:1},719,a=>cq.push(a),e=>events.push(e.kind));
+    const p=new CooperativeSession('partner',config,0,a=>pq.push(a),()=>{});
     c.start(0);p.start(0);
     const propose=cq.shift()!;if(propose.kind!=='control')throw Error();c.sent(0);p.receive(propose.message);
     const ready=pq.shift()!;if(ready.kind!=='control')throw Error();p.sent(0);c.receive(ready.message);
@@ -81,7 +81,6 @@ describe('control protocol and search',()=>{
     if(query.kind!=='control')throw Error();expect(query.message.kind).toBe('query');p.receive(query.message);
     const result=pq.shift()!;if(result.kind!=='control')throw Error();c.receive(result.message);c.receive(result.message);
     expect(events.filter(e=>e==='feedback')).toHaveLength(1);expect(cq).toHaveLength(1);
-    expect(events.filter(e=>e==='trial-sent')).toHaveLength(1);expect(partnerEvents.filter(e=>e==='trial-received')).toHaveLength(1);
     c.sent(23000);expect(cq[cq.length-1]?.kind).toBe('control');
   });
   it('runs two cooperative devices through actual acoustic control decoding',()=>{
@@ -106,10 +105,10 @@ describe('control protocol and search',()=>{
     expect(observations).toEqual([0,0]);expect(bursts).toBe(2);expect(queue).toHaveLength(0);
   });
   it('keeps a settings-free partner listening across restarted controller runs',()=>{
-    const queue:Outgoing[]=[],finished:string[]=[],received:number[]=[];
+    const queue:Outgoing[]=[],finished:string[]=[];let accepted=0;
     const p=new CooperativeSession('partner',undefined,0,a=>queue.push(a),e=>{
       if(e.kind==='status'&&e.finished)finished.push(e.detail);
-      if(e.kind==='trial')received.push(e.proposal.session);
+      if(e.kind==='status'&&e.detail.startsWith('Ready for trial'))accepted++;
     });
     const ready=(session:number)=>{const a=queue.shift();return a?.kind==='control'&&a.message.kind==='ready'&&a.message.session===session;};
     p.start(0);
@@ -121,7 +120,7 @@ describe('control protocol and search',()=>{
     p.receive({kind:'propose',session:3,trial:0,settings:config.trial});expect(ready(3)).toBe(true);p.sent(2000);
     for(let i=0;i<7;i++){p.tick(2000+(i+1)*5000);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*5000));}
     p.receive({kind:'propose',session:4,trial:0,settings:config.trial});expect(ready(4)).toBe(true);
-    expect(received).toEqual([1,2,3,4]);expect(finished).toEqual([]);
+    expect(accepted).toBe(4);expect(finished).toEqual([]);
   });
   it('re-proposes a trial the partner never measured instead of querying until timeout',()=>{
     const cq:Outgoing[]=[],pq:Outgoing[]=[],logged:string[]=[],partnerLogged:string[]=[];
@@ -150,7 +149,7 @@ describe('control protocol and search',()=>{
   });
   it('reports corrupted control messages and trials whose start marker was missed',()=>{
     const errors:string[]=[],problems:string[]=[];
-    const analyzer=new CooperativeAnalyzer(rate,()=>{},()=>{},e=>problems.push(e),true,e=>errors.push(e));
+    const analyzer=new CooperativeAnalyzer(rate,()=>{},()=>{},e=>problems.push(e),true,l=>{if(l.startsWith('X'))errors.push(l);});
     const corrupt=guardedWave(controlWave({kind:'ready',session:719,trial:0},rate),rate);
     const bad=corrupt.slice();const tail=Math.round(bad.length*0.55);for(let i=tail;i<tail+Math.round(rate*0.08);i++)bad[i]=0;
     const propose=guardedWave(controlWave({kind:'propose',...proposal},rate),rate);
@@ -158,8 +157,30 @@ describe('control protocol and search',()=>{
     const startLength=controlWave({kind:'start',session:proposal.session,trial:proposal.trial,sampleRate:rate},rate).length;
     trial.fill(0,Math.round(rate*0.5),Math.round(rate*0.5)+startLength); // start marker lost
     for(const wave of [bad,propose,trial])for(let o=0;o<wave.length;o+=128)analyzer.push(wave.subarray(o,o+128));
-    expect(errors).toContain('Control message heard but corrupted (CRC failed); waiting for a retry.');
+    expect(errors).toHaveLength(1);expect(errors[0]).toMatch(/^X Garbled message: \[[0-9A-F ]+\] \((CRC failed|signal lost after \d+ of \d+ bytes)\)$/);
     expect(problems).toEqual(['Trial 1: end marker heard but the start marker was missed; not scored.']);
+  });
+  it('logs every received frame unfiltered with raw bytes, including test data decoded on the control profile',()=>{
+    const lines:string[]=[],controller:string[]=[];
+    const done=guardedWave(controlWave({kind:'done',session:719,trial:1},rate),rate),samples=new Float32Array(fixture().length+done.length);
+    samples.set(fixture());samples.set(done,fixture().length);
+    const push=(a:CooperativeAnalyzer)=>{for(let i=0;i<samples.length;i+=128)a.push(samples.subarray(i,i+128));};
+    push(new CooperativeAnalyzer(rate,()=>{},()=>{},e=>{throw Error(e);},true,l=>lines.push(l)));
+    const settings=validateTrial(config.trial),payload=hexBytes(trialPayload(settings)),raw=(m:ControlMessage)=>hexBytes(encodeControl(m));
+    const expected=[
+      `-> Propose trial 1: Tones=4, Base=1000, Delta=200, Baud=100, Amp=0.15, Bytes=16, Seed=719, Guard=0.5 ${raw({kind:'propose',...proposal,settings})}`,
+      `-> Start marker trial 1 (${rate} Hz) ${raw({kind:'start',session:719,trial:0,sampleRate:rate})}`,
+      `-> Frame ${payload} (not a control message)`,
+      `-> Test trial 1: ${payload} Symbols received 64/64`,
+      `-> End marker trial 1 ${raw({kind:'end',session:719,trial:0})}`,
+      `-> Done after 1 trials ${raw({kind:'done',session:719,trial:1})}`
+    ];
+    expect(lines).toEqual(expected);
+    // A controller hearing its own transmissions logs them too, without the partner-side Test scoring line.
+    push(new CooperativeAnalyzer(rate,()=>{},()=>{},()=>{},false,l=>controller.push(l)));
+    expect(controller).toEqual(expected.filter(l=>!l.startsWith('-> Test')));
+    expect(describeControl({kind:'result',session:1,trial:2,raw:{symbolErrors:3,symbols:64,bitErrors:4,bits:128,confidence:1}})).toBe('Result trial 3: Symbols received 61/64');
+    expect(hexBytes([0x1a,0xef,5])).toBe('[1A EF 05]');
   });
   it('bounds silence retries and rejects stale feedback',()=>{
     const queue:Outgoing[]=[],finished:string[]=[];

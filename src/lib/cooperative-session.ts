@@ -49,7 +49,6 @@ export class CooperativeSession {
         }
         // A different session means the controller restarted; abandon the old run rather than ignore the new one.
         this.session=m.session;this.proposal={session:m.session,trial:m.trial,settings:m.settings};this.result=undefined;
-        this.event({kind:'trial',direction:'received',proposal:this.proposal});
         this.status('waiting-test',`Ready for trial ${m.trial+1}; timing will come from control markers.`);
         this.send({kind:'control',message:{kind:'ready',session:m.session,trial:m.trial}});return;
       }
@@ -73,7 +72,6 @@ export class CooperativeSession {
       if(m.kind==='ready'&&this.phase==='waiting-ready'){
         this.status('waiting-result',`Transmitting trial ${m.trial+1}; then waiting for receiver error counts.`);
         this.retry={kind:'control',message:{kind:'query',session:m.session,trial:m.trial}};this.attempts=0;
-        this.event({kind:'trial',direction:'sent',proposal:this.proposal!});
         this.send({kind:'trial',proposal:this.proposal!},false);return;
       }
       if(m.kind==='result'&&this.phase==='waiting-result'){

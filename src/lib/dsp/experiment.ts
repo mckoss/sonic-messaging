@@ -1,4 +1,4 @@
-import { CONTROL_FSK, decodeControl, encodeControl, trialFsk, trialPayload, validateTrial,
+import { CONTROL_FSK, decodeControl, describeControlBytes, describeTestReceived, encodeControl, hexBytes, trialFsk, trialPayload, validateTrial,
   type Proposal, type ControlMessage, type TrialMeasurement, type AcquisitionResult } from '../experiment';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
@@ -38,7 +38,7 @@ export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Pro
   if(start<0||end>samples.length)throw new Error('Incomplete trial capture');
   const expected=bytesToBits(frame(trialPayload(t))),bps=Math.log2(t.tones),symbolCount=Math.ceil(expected.length/bps);
   const confusion=Array.from({length:t.tones},()=>Array(t.tones).fill(0) as number[]);
-  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0};
+  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0},bits:number[]=[];
   for(let s=0;s<symbolCount;s++){
     const from=Math.round(start+s*perSymbol),to=Math.round(start+(s+1)*perSymbol);
     const decision=detectFskSymbol(samples.subarray(from,to),sampleRate,trialFsk(t).frequencies);
@@ -46,12 +46,13 @@ export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Pro
     let target=0;
     for(let b=0;b<bps;b++){
       const bit=s*bps+b;target=(target<<1)|(expected[bit]??0);
-      if(bit>=56&&bit<56+t.payloadBytes*8){raw.bits++;if(((winner>>>(bps-b-1))&1)!==expected[bit])raw.bitErrors++;}
+      if(bit>=56&&bit<56+t.payloadBytes*8){const heard=(winner>>>(bps-b-1))&1;bits.push(heard);raw.bits++;if(heard!==expected[bit])raw.bitErrors++;}
     }
     if(s*bps>=56&&(s+1)*bps<=56+t.payloadBytes*8){raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;raw.confidence+=decision.confidence;}
   }
   raw.confidence/=Math.max(1,raw.symbols);
-  const measurement:TrialMeasurement={...proposal,raw,sampleRate,testStart:start,testEnd:end,samplesPerSymbol:perSymbol,startMarker,endMarker,confusion,acquisition:[]};
+  const received=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
+  const measurement:TrialMeasurement={...proposal,received,raw,sampleRate,testStart:start,testEnd:end,samplesPerSymbol:perSymbol,startMarker,endMarker,confusion,acquisition:[]};
   measurement.acquisition=replayAcquisition(samples,measurement);
   return measurement;
 }
@@ -81,13 +82,15 @@ export class CooperativeAnalyzer {
   private buffer:Float32Array;
   private length=0;
   private origin=0;
+  private heard:number[]=[];
+  private heardLength?:number;
   private decoder:FskStreamDecoder;
   private proposals=new Map<string,Proposal>();
   private starts=new Map<string,{position:number;rate:number}>();
   private measured=new Map<string,true>();
   constructor(readonly sampleRate:number,private control:(m:ControlMessage)=>void,
     private measurement:(m:TrialMeasurement)=>void,private problem:(message:string)=>void,private analyze=true,
-    private controlError:(message:string)=>void=()=>{}){
+    private wire:(line:string)=>void=()=>{}){
     this.buffer=new Float32Array(sampleRate*ANALYSIS_WINDOW_SECONDS);this.decoder=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
   }
   push(chunk:Float32Array){
@@ -99,9 +102,13 @@ export class CooperativeAnalyzer {
     }
     this.buffer.set(chunk.subarray(Math.max(0,chunk.length-this.buffer.length)),this.length);this.length+=Math.min(chunk.length,this.buffer.length);
     for(const packet of this.decoder.push(chunk)){
+      const m=decodeControl(packet.payload);
       // A valid frame that isn't control is usually test data sent on the control tones.
-      const m=decodeControl(packet.payload);if(!m)continue;
-      const key=`${m.session}:${m.trial}`;
+      // Everything decoded is logged, including this device's own transmissions heard back by its microphone
+      // and test data sent on the control tones and baud.
+      if(!m){this.wire(`-> Frame ${hexBytes(packet.payload)} (not a control message)`);continue;}
+      const key=`${m.session}:${m.trial}`,line=`-> ${describeControlBytes(m,packet.payload)}`;
+      if(m.kind!=='end')this.wire(line);
       if(this.analyze){
         if(m.kind==='propose'&&!this.proposals.has(key))remember(this.proposals,key,{session:m.session,trial:m.trial,settings:m.settings});
         if(m.kind==='start'&&this.proposals.has(key)&&!this.starts.has(key))remember(this.starts,key,{position:packet.startPosition,rate:m.sampleRate});
@@ -113,6 +120,7 @@ export class CooperativeAnalyzer {
           }else{
             try{
               const o=this.origin,r=measureTrial(this.buffer.subarray(0,this.length),this.sampleRate,p,start.position-o,packet.startPosition-o,start.rate);
+              this.wire(`-> ${describeTestReceived(r)}`);
               this.measurement({...r,testStart:r.testStart+o,testEnd:r.testEnd+o,startMarker:r.startMarker+o,endMarker:r.endMarker+o,
                 acquisition:r.acquisition.map(a=>({...a,offsetSamples:a.offsetSamples+o}))});
             }
@@ -120,9 +128,21 @@ export class CooperativeAnalyzer {
           }
         }
       }
+      if(m.kind==='end')this.wire(line); // after the test data it brackets
       this.control(m);
     }
     // The control payload has CRC but no FEC, so any symbol error discards the whole message.
-    for(const p of this.decoder.drainProgress())if(p.type==='crc-error')this.controlError('Control message heard but corrupted (CRC failed); waiting for a retry.');
+    for(const p of this.decoder.drainProgress()){
+      if(p.type==='sync'){this.heard=[];this.heardLength=undefined;}
+      else if(p.type==='length')this.heardLength=p.length;
+      else if(p.type==='byte')this.heard.push(p.byte);
+      else if(p.type==='crc-confirm'){this.heard=[];this.heardLength=undefined;}
+      else if(p.type==='crc-error'){
+        const bytes=this.heard.length?`: ${hexBytes(this.heard)}`:'';
+        const why=this.heardLength===undefined?'header unreadable':this.heard.length<this.heardLength?`signal lost after ${this.heard.length} of ${this.heardLength} bytes`:'CRC failed';
+        this.wire(`X Garbled message${bytes} (${why})`);
+        this.heard=[];this.heardLength=undefined;
+      }
+    }
   }
 }

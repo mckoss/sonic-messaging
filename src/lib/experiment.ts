@@ -47,6 +47,8 @@ export interface Proposal { session: number; trial: number; settings: TrialSetti
 export interface RawResult { symbolErrors: number; symbols: number; bitErrors: number; bits: number; confidence: number }
 export interface AcquisitionResult { offsetSamples: number; acquired: boolean; crcOk: boolean; exact: boolean }
 export interface TrialMeasurement extends Proposal {
+  /** Payload bytes as hard-decided from the received symbols, errors included. */
+  received: number[];
   raw: RawResult; sampleRate: number; testStart: number; testEnd: number; samplesPerSymbol: number;
   startMarker: number; endMarker: number; confusion: number[][]; acquisition: AcquisitionResult[];
 }
@@ -123,6 +125,31 @@ export class ParameterSearch {
 }
 export type CooperativeEvent =
   | { kind:'status'; phase:string; detail:string; finished?:boolean; log?:boolean }
-  | { kind:'trial'; direction:'sent'|'received'; proposal:Proposal }
+  /** One line of what went over the air: `<-` sent, `->` received, `X` heard but garbled. */
+  | { kind:'wire'; line:string }
   | { kind:'measurement'; measurement:TrialMeasurement }
   | { kind:'feedback'; observation:SearchObservation; best?:{value:number;errors:number;symbols:number} };
+
+/** Binary data is shown as bracketed hex, e.g. [1A EF]. */
+export const hexBytes = (bytes: ArrayLike<number>) => `[${Array.from(bytes, b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}]`;
+const symbolsReceived = (raw: { symbols: number; symbolErrors: number }) => `Symbols received ${raw.symbols - raw.symbolErrors}/${raw.symbols}`;
+export const describeSettings = (t: TrialSettings) =>
+  `Tones=${t.tones}, Base=${t.lowestFrequency}, Delta=${t.spacing}, Baud=${t.symbolRate}, Amp=${Number(t.amplitude.toFixed(3))}, Bytes=${t.payloadBytes}, Seed=${t.seed}, Guard=${t.guardSeconds}`;
+/** A control message decoded, followed by its raw bytes. */
+export const describeControlBytes = (m: ControlMessage, bytes: ArrayLike<number> = encodeControl(m)) => `${describeControl(m)} ${hexBytes(bytes)}`;
+export function describeControl(m: ControlMessage): string {
+  const trial = `trial ${m.trial + 1}`;
+  switch (m.kind) {
+    case 'propose': return `Propose ${trial}: ${describeSettings(m.settings)}`;
+    case 'ready': return `Ready for ${trial}`;
+    case 'start': return `Start marker ${trial} (${m.sampleRate} Hz)`;
+    case 'end': return `End marker ${trial}`;
+    case 'result': return `Result ${trial}: ${symbolsReceived(m.raw)}`;
+    case 'query': return `Query result of ${trial}`;
+    case 'ack': return `Ack ${trial}`;
+    case 'done': return `Done after ${m.trial} trials`;
+    case 'lost': return `Lost ${trial} (timing markers not heard)`;
+  }
+}
+export const describeTestSent = (p: Proposal) => `Test ${`trial ${p.trial + 1}`}: ${hexBytes(trialPayload(p.settings))}`;
+export const describeTestReceived = (m: TrialMeasurement) => `Test trial ${m.trial + 1}: ${hexBytes(m.received)} ${symbolsReceived(m.raw)}`;

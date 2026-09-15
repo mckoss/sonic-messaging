@@ -3,7 +3,7 @@
   import { AudioEngine } from '../audio';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation, type Proposal } from '../experiment';
+  import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -19,9 +19,7 @@
   let error = '', notes = '', seconds = 0, finalizing = false, cancelled = false;
   let role: 'idle' | 'controller' | 'partner' | 'replay' = 'idle';
   let log: string[] = [], logBox: HTMLOListElement;
-  const describe=(p:Proposal)=>`Trial ${p.trial+1}, Tones=${p.settings.tones}, Base=${p.settings.lowestFrequency}, Delta=${p.settings.spacing}, Baud=${p.settings.symbolRate}`;
-  const received=(raw:{symbolErrors:number;symbols:number})=>`Symbols received ${raw.symbols-raw.symbolErrors}/${raw.symbols}`;
-  function append(entry:string){log=[...log,entry].slice(-200);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
+  function append(entry:string){log=[...log,entry].slice(-2000);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
   const megabytes=(bytes:number)=>`${(bytes/1048576).toFixed(1)} MB`;
   const duration=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
   async function refreshLibrary() {
@@ -130,12 +128,9 @@
   onMount(()=>{
     engine=new AudioEngine();
     const off=engine.onCooperative(event=>{
-      if(event.kind==='trial')append(`${event.direction==='sent'?'<-':'->'} ${describe(event.proposal)}`);
-      else if(event.kind==='measurement'){
-        measurements=[...measurements,event.measurement];
-        append(role==='replay'?`${describe(event.measurement)}: ${received(event.measurement.raw)}`:`<- ${received(event.measurement.raw)}`);
-      }
-      else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;append(`-> ${received(event.observation.raw)}`);}
+      if(event.kind==='wire')append(event.line);
+      else if(event.kind==='measurement')measurements=[...measurements,event.measurement];
+      else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;}
       else if(!finalizing && role!=='idle'){
         status=event.detail;
         if(event.finished||event.log)append(event.detail);
