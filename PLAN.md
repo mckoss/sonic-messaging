@@ -98,6 +98,11 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 
 FSK now performs sync acquisition and CRC-validated live decoding. Add equivalent acquisition for CSS and DSSS before automatic mode classification.
 
+## Interoperable legacy modes (backlog)
+
+- [ ] Add a Bell 103 compatibility mode: 300 baud asynchronous FSK with 8N1 start/stop framing and continuous phase, originate tones 1070 Hz space / 1270 Hz mark and answer tones 2025 Hz space / 2225 Hz mark. Send and receive plain ASCII with no sync word, length header or CRC, so it interoperates with real modems, acoustic couplers and software such as minimodem.
+- [ ] Add amateur radio SSTV signaling as an analog mode: frequency-modulated luminance across 1500–2300 Hz with 1200 Hz sync pulses, preceded by the VIS header (1900 Hz leaders, 1200 Hz break and start/stop bits, 30 ms data bits at 1100 Hz for 1 and 1300 Hz for 0, even parity). Start with one common mode (e.g. Martin M1, Scottie S1 or Robot 36); encode images, and decode with sync tracking and slant correction.
+
 ## Messaging
 
 - [ ] Define authenticated packet identities, sequencing, ACKs, and retry behavior.
