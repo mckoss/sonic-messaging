@@ -46,7 +46,7 @@ const dir=join(tmpdir(),'sonic-cooperative-tests');mkdirSync(dir,{recursive:true
 test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path}`]}});
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
-    test.setTimeout(45000);await page.goto('/sonic-messaging/#tests');
+    test.setTimeout(120000);await page.goto('/sonic-messaging/#tests');
     await page.getByLabel('Test amplitude').fill('0.9'); // Partner settings are ignored, even when invalid.
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
@@ -62,5 +62,19 @@ test.describe('live partner',()=>{
     await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
     await expect(page.getByTestId('experiment-results')).toHaveText(original,{useInnerText:true});
+    // The live run was saved to browser storage while recording and survives a reload.
+    await page.reload();
+    const recordings=page.getByTestId('recordings');
+    await expect(recordings.locator('tbody tr')).toHaveCount(1);
+    await expect(recordings.locator('tbody tr')).toContainText('partner');
+    await expect(recordings.locator('tbody tr')).toContainText('1');
+    const stored=page.waitForEvent('download');await recordings.getByRole('button',{name:'Save WAV'}).click();
+    expect((await stored).suggestedFilename()).toMatch(/^sonic-partner-.*\.wav$/);
+    await recordings.getByRole('button',{name:'Replay'}).click();
+    await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+    await expect(page.getByTestId('experiment-results')).toHaveText(original,{useInnerText:true});
+    page.once('dialog',dialog=>dialog.accept());
+    await recordings.getByRole('button',{name:'Clear all'}).click();
+    await expect(recordings).toContainText('No saved recordings.');
   });
 });

@@ -3,7 +3,10 @@ import { validateSearch, type SearchSettings, type TrialMeasurement } from '../e
 
 // Bound memory on mobile; recordings remain available to download at the limit.
 export const MAX_RECORDING_SECONDS = 120;
-export const MAX_RECORDING_BYTES = 100 * 1024 * 1024;
+/** Experiment runs stream to browser storage instead of memory, so they may run longer. */
+export const MAX_EXPERIMENT_SECONDS = 600;
+// A 10-minute float WAV at 96 kHz is about 220 MiB.
+export const MAX_RECORDING_BYTES = 240 * 1024 * 1024;
 export interface RecordingMetadata {
   format: 'sonic-recording';
   version: 1;
@@ -17,7 +20,7 @@ export interface RecordingMetadata {
   /** Retained only to preserve audio from retired shared-schedule WAVs. */
   experiment?: unknown;
   /** Partner recordings carry no config; the controller's proposals define every trial. */
-  cooperative?: { version: 1; config?: SearchSettings; measurements?: TrialMeasurement[] };
+  cooperative?: { version: 1; role?: 'controller' | 'partner'; config?: SearchSettings; measurements?: TrialMeasurement[] };
 }
 export interface Recording { metadata: RecordingMetadata; samples: Float32Array }
 
@@ -70,25 +73,48 @@ export class RecordingCapture {
   }
 }
 
-/** IEEE float WAV preserves captured Float32 values; sMET embeds experiment settings. */
-export function encodeRecording(recording: Recording): ArrayBuffer {
-  const { metadata, samples } = recording;
+/** Everything before the sample data; the RIFF and data sizes need only the sample count. */
+function wavHeader(metadata: RecordingMetadata, sampleCount: number): ArrayBuffer {
   validateMetadata(metadata);
   const json = new TextEncoder().encode(JSON.stringify(metadata));
   const padded = json.length + (json.length % 2);
-  const buffer = new ArrayBuffer(64 + padded + samples.length * 4);
+  const buffer = new ArrayBuffer(64 + padded);
   const view = new DataView(buffer);
   const tag = (at: number, text: string) => [...text].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
-  tag(0, 'RIFF'); view.setUint32(4, buffer.byteLength - 8, true); tag(8, 'WAVE');
+  tag(0, 'RIFF'); view.setUint32(4, buffer.byteLength + sampleCount * 4 - 8, true); tag(8, 'WAVE');
   tag(12, 'fmt '); view.setUint32(16, 16, true);
   view.setUint16(20, 3, true); view.setUint16(22, 1, true);
   view.setUint32(24, metadata.sampleRate, true); view.setUint32(28, metadata.sampleRate * 4, true);
   view.setUint16(32, 4, true); view.setUint16(34, 32, true);
-  tag(36, 'fact'); view.setUint32(40, 4, true); view.setUint32(44, samples.length, true);
+  tag(36, 'fact'); view.setUint32(40, 4, true); view.setUint32(44, sampleCount, true);
   tag(48, 'sMET'); view.setUint32(52, json.length, true); new Uint8Array(buffer, 56, json.length).set(json);
-  tag(56 + padded, 'data'); view.setUint32(60 + padded, samples.length * 4, true);
-  for (let i = 0; i < samples.length; i++) view.setFloat32(64 + padded + i * 4, samples[i], true);
+  tag(56 + padded, 'data'); view.setUint32(60 + padded, sampleCount * 4, true);
   return buffer;
+}
+
+/** IEEE float WAV preserves captured Float32 values; sMET embeds experiment settings. */
+export function encodeRecording(recording: Recording): ArrayBuffer {
+  const { metadata, samples } = recording;
+  const header = wavHeader(metadata, samples.length);
+  const buffer = new ArrayBuffer(header.byteLength + samples.length * 4);
+  new Uint8Array(buffer).set(new Uint8Array(header));
+  const view = new DataView(buffer);
+  for (let i = 0; i < samples.length; i++) view.setFloat32(header.byteLength + i * 4, samples[i], true);
+  return buffer;
+}
+
+const littleEndian = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+/** Same bytes as encodeRecording, but chunks go straight into the Blob without one large copy. */
+export function recordingWavBlob(metadata: RecordingMetadata, chunks: Float32Array[]): Blob {
+  const count = chunks.reduce((n, chunk) => n + chunk.length, 0);
+  const parts: BlobPart[] = [wavHeader(metadata, count)];
+  for (const chunk of chunks) {
+    const bytes = new Uint8Array(chunk.length * 4);
+    if (littleEndian) bytes.set(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length * 4));
+    else { const view = new DataView(bytes.buffer); chunk.forEach((v, i) => view.setFloat32(i * 4, v, true)); }
+    parts.push(bytes);
+  }
+  return new Blob(parts, { type: 'audio/wav' });
 }
 
 export function decodeRecording(buffer: ArrayBuffer): Recording {
@@ -117,7 +143,7 @@ export function decodeRecording(buffer: ArrayBuffer): Recording {
     offset = start + size + size % 2;
   }
   if (!metadata || metadata.sampleRate !== sampleRate || !data?.size ||
-      data.size / 4 > MAX_RECORDING_SECONDS * sampleRate) return fail();
+      data.size / 4 > MAX_EXPERIMENT_SECONDS * sampleRate) return fail();
   const samples = new Float32Array(data.size / 4);
   for (let i = 0; i < samples.length; i++) {
     samples[i] = view.getFloat32(data.offset + i * 4, true);

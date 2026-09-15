@@ -71,37 +71,51 @@ export function replayAcquisition(samples:Float32Array,m:TrialMeasurement):Acqui
   });
 }
 
-/** Retains the real channel, quiet intervals and control conversation for repeatable analysis. */
+const ANALYSIS_WINDOW_SECONDS=60,MAX_TRACKED_TRIALS=64;
+function remember<T>(map:Map<string,T>,key:string,value:T){map.set(key,value);if(map.size>MAX_TRACKED_TRIALS)map.delete(map.keys().next().value!);}
+/**
+ * Scores trials from a rolling window of recent audio: a trial (markers, guards and a packet of at most
+ * 15 s) spans well under the window, so long sessions don't grow memory. Positions stay absolute.
+ */
 export class CooperativeAnalyzer {
   private buffer:Float32Array;
   private length=0;
+  private origin=0;
   private decoder:FskStreamDecoder;
   private proposals=new Map<string,Proposal>();
   private starts=new Map<string,{position:number;rate:number}>();
-  private measured=new Set<string>();
+  private measured=new Map<string,true>();
   constructor(readonly sampleRate:number,private control:(m:ControlMessage)=>void,
     private measurement:(m:TrialMeasurement)=>void,private problem:(message:string)=>void,private analyze=true,
     private controlError:(message:string)=>void=()=>{}){
-    this.buffer=new Float32Array(sampleRate*120);this.decoder=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
+    this.buffer=new Float32Array(sampleRate*ANALYSIS_WINDOW_SECONDS);this.decoder=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
   }
   push(chunk:Float32Array){
-    if(this.length+chunk.length>this.buffer.length)return;
-    this.buffer.set(chunk,this.length);this.length+=chunk.length;
+    const overflow=this.length+chunk.length-this.buffer.length;
+    if(overflow>0){
+      // Drop at least half the window at once so compaction stays rare.
+      const drop=Math.min(this.length,Math.max(overflow,this.buffer.length>>1));
+      this.buffer.copyWithin(0,drop,this.length);this.length-=drop;this.origin+=drop;
+    }
+    this.buffer.set(chunk.subarray(Math.max(0,chunk.length-this.buffer.length)),this.length);this.length+=Math.min(chunk.length,this.buffer.length);
     for(const packet of this.decoder.push(chunk)){
       // A valid frame that isn't control is usually test data sent on the control tones.
       const m=decodeControl(packet.payload);if(!m)continue;
       const key=`${m.session}:${m.trial}`;
       if(this.analyze){
-        if(m.kind==='propose'&&!this.proposals.has(key)&&this.proposals.size<16)this.proposals.set(key,{session:m.session,trial:m.trial,settings:m.settings});
-        if(m.kind==='start'&&this.proposals.has(key)&&!this.starts.has(key))this.starts.set(key,{position:packet.startPosition,rate:m.sampleRate});
+        if(m.kind==='propose'&&!this.proposals.has(key))remember(this.proposals,key,{session:m.session,trial:m.trial,settings:m.settings});
+        if(m.kind==='start'&&this.proposals.has(key)&&!this.starts.has(key))remember(this.starts,key,{position:packet.startPosition,rate:m.sampleRate});
         if(m.kind==='end'&&!this.measured.has(key)){
           const p=this.proposals.get(key),start=this.starts.get(key);
+          remember(this.measured,key,true);
           if(!p||!start){
-            this.measured.add(key);
             this.problem(`Trial ${m.trial+1}: end marker heard but the ${p?'start marker':'proposal'} was missed; not scored.`);
           }else{
-            this.measured.add(key);
-            try{this.measurement(measureTrial(this.buffer.subarray(0,this.length),this.sampleRate,p,start.position,packet.startPosition,start.rate));}
+            try{
+              const o=this.origin,r=measureTrial(this.buffer.subarray(0,this.length),this.sampleRate,p,start.position-o,packet.startPosition-o,start.rate);
+              this.measurement({...r,testStart:r.testStart+o,testEnd:r.testEnd+o,startMarker:r.startMarker+o,endMarker:r.endMarker+o,
+                acquisition:r.acquisition.map(a=>({...a,offsetSamples:a.offsetSamples+o}))});
+            }
             catch(e){this.problem(e instanceof Error?e.message:String(e));}
           }
         }

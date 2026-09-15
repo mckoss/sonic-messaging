@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeRecording, encodeRecording, RecordingCapture, type RecordingMetadata } from './recording';
+import { decodeRecording, encodeRecording, recordingWavBlob, RecordingCapture, type RecordingMetadata } from './recording';
 import { encodeFsk } from '../dsp/fsk';
 import { FskStreamDecoder } from '../dsp/fsk-stream';
 import { simulateChannel } from '../dsp/channel';
@@ -16,6 +16,17 @@ describe('recorded microphone fixtures', () => {
     const decoded = decodeRecording(encodeRecording({ metadata, samples }));
     expect(decoded.metadata).toEqual(metadata);
     expect(new Uint8Array(decoded.samples.buffer)).toEqual(new Uint8Array(samples.buffer));
+  });
+
+  it('exports stored chunks as the same WAV bytes as an in-memory recording', async () => {
+    const samples = Float32Array.from({ length: 1001 }, (_, i) => Math.sin(i / 7) * 0.8);
+    const chunked = await recordingWavBlob(metadata, [samples.subarray(0, 400), samples.subarray(400, 999), samples.subarray(999)]).arrayBuffer();
+    expect(new Uint8Array(chunked)).toEqual(new Uint8Array(encodeRecording({ metadata, samples })));
+  });
+
+  it('imports experiment recordings longer than the two-minute live capture cap', () => {
+    const samples = new Float32Array(8000 * 130);
+    expect(decodeRecording(encodeRecording({ metadata: { ...metadata, sampleRate: 8000 }, samples })).samples.length).toBe(samples.length);
   });
 
   it('owns captured samples before transfer and stops on discontinuity', () => {

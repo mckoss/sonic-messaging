@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { AudioEngine } from '../audio';
-  import { RecordingCapture, encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording } from '../audio/recording';
+  import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
+  import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
   import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation, type Proposal } from '../experiment';
   export let active = false;
   export let unavailable = false;
@@ -11,7 +12,9 @@
   let config = defaultSearch();
   let measurements: TrialMeasurement[] = [], feedback: SearchObservation[] = [];
   let best: {value:number;errors:number;symbols:number} | undefined;
-  let recording: Recording | undefined, capture: RecordingCapture | undefined;
+  // `recording` is an in-memory run (a loaded file, or a stored run loaded for replay); `currentId` names the latest stored run.
+  let recording: Recording | undefined, writer: RecordingWriter | undefined, currentId: string | undefined;
+  let library: StoredRecording[] = [], storageUsage = '', finishing: Promise<void> = Promise.resolve();
   let status = 'Start the partner first, then run a trial or optimize on the controller.';
   let error = '', notes = '', seconds = 0, finalizing = false, cancelled = false;
   let role: 'idle' | 'controller' | 'partner' | 'replay' = 'idle';
@@ -19,6 +22,56 @@
   const describe=(p:Proposal)=>`Trial ${p.trial+1}, Tones=${p.settings.tones}, Base=${p.settings.lowestFrequency}, Delta=${p.settings.spacing}, Baud=${p.settings.symbolRate}`;
   const received=(raw:{symbolErrors:number;symbols:number})=>`Symbols received ${raw.symbols-raw.symbolErrors}/${raw.symbols}`;
   function append(entry:string){log=[...log,entry].slice(-200);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
+  const megabytes=(bytes:number)=>`${(bytes/1048576).toFixed(1)} MB`;
+  const duration=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+  async function refreshLibrary() {
+    try {
+      library=await listRecordings();
+      const estimate=await navigator.storage?.estimate?.();
+      storageUsage=estimate?.usage!==undefined&&estimate.quota?`Browser storage: ${megabytes(estimate.usage)} used of ${megabytes(estimate.quota)} available.`:'';
+    } catch(e){storageUsage=`Saved recordings unavailable: ${e instanceof Error?e.message:String(e)}`;}
+  }
+  async function currentRecording():Promise<Recording|undefined> {
+    await finishing;
+    if(!recording&&currentId)recording=await loadStoredRecording(currentId);
+    return recording;
+  }
+  async function saveCurrent() {
+    error='';
+    try {
+      await finishing;
+      if(currentId&&!recording)download('sonic-cooperative.wav',await storedRecordingBlob(currentId),'audio/wav');
+      else if(recording)download('sonic-cooperative.wav',encodeRecording(recording),'audio/wav');
+    } catch(e){error=String(e);}
+  }
+  async function openStored(entry:StoredRecording) {
+    error='';
+    try {
+      recording=await loadStoredRecording(entry.id);currentId=entry.id;notes=entry.metadata.notes;
+      if(entry.metadata.cooperative?.config)config=entry.metadata.cooperative.config;
+      await replay();
+    } catch(e){error=String(e);}
+  }
+  async function saveStored(entry:StoredRecording) {
+    error='';
+    try {download(`sonic-${entry.role}-${entry.createdAt.replace(/[:.]/g,'-')}.wav`,await storedRecordingBlob(entry.id),'audio/wav');}
+    catch(e){error=String(e);}
+  }
+  async function removeStored(entry:StoredRecording) {
+    error='';
+    try {
+      await deleteRecording(entry.id);
+      if(currentId===entry.id){currentId=undefined;recording=undefined;}
+    } catch(e){error=String(e);}
+    await refreshLibrary();
+  }
+  async function clearStored() {
+    if(!confirm(`Delete all ${library.length} saved recordings from this browser?`))return;
+    error='';
+    try {await clearRecordings();if(currentId){currentId=undefined;recording=undefined;}}
+    catch(e){error=String(e);}
+    await refreshLibrary();
+  }
   function download(name:string,data:BlobPart,type:string) {
     const url=URL.createObjectURL(new Blob([data],{type})),link=document.createElement('a');
     link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -28,19 +81,28 @@
     finalizing=true;cancelled=true;
     if(role==='replay')engine.stopReplay();
     else { engine.stopCooperative();engine.stopListening(); }
-    if(capture){recording=capture.finish();capture=undefined;recording.metadata.cooperative!.measurements=measurements;}
+    if(writer){
+      const w=writer,trials=measurements.length||feedback.length;writer=undefined;
+      finishing=w.finish(trials,measurements).catch(e=>{error=`Recording could not be saved: ${e instanceof Error?e.message:String(e)}`;}).then(refreshLibrary);
+    }
     active=false;role='idle';finalizing=false;status='Stopped; partial recordings and completed measurements are retained.';
   }
   async function start(selected:'controller'|'partner',single=false) {
     error='';
     try {
       const run=selected==='controller'?validateSearch({...config,budget:single?1:config.budget}):undefined;
-      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;log=[];
+      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;currentId=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
-      capture=new RecordingCapture({format:'sonic-recording',version:1,createdAt:new Date().toISOString(),
+      const metadata:RecordingMetadata={format:'sonic-recording',version:1,createdAt:new Date().toISOString(),
         appVersion:__APP_VERSION__,sampleRate:engine.state.sampleRate!,inputSettings:{...engine.state.inputSettings},
-        fsk:CONTROL_FSK,userAgent:navigator.userAgent,notes,cooperative:{version:1,config:run}});
+        fsk:CONTROL_FSK,userAgent:navigator.userAgent,notes,cooperative:{version:1,role:selected,config:run}};
+      try {
+        const created=await RecordingWriter.create(metadata,e=>{append(`Recording stopped (${e.message}); measurements continue.`);});
+        if(cancelled){void created.finish(0);return;}
+        writer=created;currentId=created.id;void refreshLibrary();
+      } catch(e){append(`Recording unavailable (${e instanceof Error?e.message:String(e)}); measurements continue without a saved recording.`);}
+      if(cancelled)return;
       engine.configureCooperative(selected,run,crypto.getRandomValues(new Uint32Array(1))[0]);
     } catch(e){error=String(e);stop();}
   }
@@ -51,14 +113,14 @@
       if(file.size>MAX_RECORDING_BYTES)throw new Error('File is too large');
       const loaded=decodeRecording(await file.arrayBuffer());
       if(!loaded.metadata.cooperative)throw new Error('This WAV has no cooperative experiment metadata. Older recordings can be opened in the general recording panel.');
-      if(loaded.metadata.cooperative.config)config=loaded.metadata.cooperative.config;recording=loaded;notes=loaded.metadata.notes;
+      if(loaded.metadata.cooperative.config)config=loaded.metadata.cooperative.config;recording=loaded;currentId=undefined;notes=loaded.metadata.notes;
       measurements=[];feedback=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
     }catch(e){error=String(e);}finally{input.value='';active=false;}
   }
   async function replay() {
-    if(!recording)return;
     active=true;role='replay';cancelled=false;measurements=[];feedback=[];best=undefined;log=[];error='';
     try {
+      const recording=await currentRecording();if(!recording)return;
       await beforeStart();status='Replaying recorded control markers and test data…';
       await engine.replayRecording(recording,CONTROL_FSK,p=>seconds=p);
       recording.metadata.cooperative!.measurements=measurements;
@@ -80,9 +142,10 @@
         if(event.finished&&role!=='replay'){const detail=status;stop();status=detail;}
       }
     });
+    void refreshLibrary();
     const offCapture=engine.onCapture(event=>{
-      if(!capture)return;
-      try {const full=capture.append(event.samples,event.sampleRate,event.sequence);seconds=capture.seconds;if(full)stop();}
+      if(!writer||writer.failed)return;
+      try {const full=writer.append(event.samples,event.sampleRate,event.sequence);seconds=writer.seconds;if(full)stop();}
       catch(e){error=String(e);stop();}
     });
     const offHealth=engine.onWorkerHealth(value=>{if(!value.healthy){error=value.reason??'Experiment worker unavailable';stop();}});
@@ -122,15 +185,28 @@
   {#if error}<p role="alert">{error}</p>{/if}
   {#if log.length}<ol class="log" data-testid="experiment-log" aria-label="Experiment log" bind:this={logBox}>{#each log as entry}<li>{entry}</li>{/each}</ol>{/if}
   <div class="actions">
-    {#if recording}<button disabled={active || unavailable} on:click={()=>download('sonic-cooperative.wav',encodeRecording(recording!),'audio/wav')}>Save experiment WAV</button><button disabled={active || unavailable} on:click={replay}>Replay experiment</button>{/if}
+    {#if recording || currentId}<button disabled={active || unavailable} on:click={saveCurrent}>Save experiment WAV</button><button disabled={active || unavailable} on:click={replay}>Replay experiment</button>{/if}
     {#if measurements.length || feedback.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
   <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Raw symbol errors</th><th>Internal acquisition / exact message</th></tr></thead><tbody>
     {#each measurements.length ? measurements : feedback as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.raw.symbolErrors}/{row.raw.symbols}</td><td>{#if 'acquisition' in row}{(row as TrialMeasurement).acquisition.filter(a=>a.acquired).length}/4 acquired · {(row as TrialMeasurement).acquisition.filter(a=>a.exact).length}/4 exact{:else}See partner recording{/if}</td></tr>{/each}
   </tbody></table></div>
-  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.8, CRC (no FEC) with acknowledgement and retries after 4.5 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 110 seconds; recordings stay in memory until saved. Both timing markers must be received to score a trial. Error counts are measured; calibrated acoustic S/N is not yet available.</p>
+  <section class="library" aria-label="Saved recordings" data-testid="recordings">
+    <div class="library-head"><h3>Saved recordings</h3><button disabled={active || !library.length} on:click={clearStored}>Clear all</button></div>
+    <p>Each run is saved in this browser while it records, up to 10 minutes. {storageUsage}</p>
+    {#if library.length}
+      <div class="scroll"><table><thead><tr><th>Recorded</th><th>Role</th><th>Length</th><th>Trials</th><th>Size</th><th></th></tr></thead><tbody>
+        {#each library as entry (entry.id)}<tr>
+          <td>{new Date(entry.createdAt).toLocaleString()}{entry.complete ? '' : ' (partial)'}</td><td>{entry.role}</td><td>{duration(entry.seconds)}</td>
+          <td>{entry.trials}</td><td>{megabytes(entry.bytes)}</td>
+          <td class="row-actions"><button disabled={active || unavailable || entry.id === writer?.id} on:click={()=>openStored(entry)}>Replay</button><button disabled={entry.id === writer?.id} on:click={()=>saveStored(entry)}>Save WAV</button><button disabled={active} on:click={()=>removeStored(entry)}>Delete</button></td>
+        </tr>{/each}
+      </tbody></table></div>
+    {:else}<p>No saved recordings.</p>{/if}
+  </section>
+  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.8, CRC (no FEC) with acknowledgement and retries after 4.5 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. Both timing markers must be received to score a trial. Error counts are measured; calibrated acoustic S/N is not yet available.</p>
 </section>
 <style>
-.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
+.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
 </style>

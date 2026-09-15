@@ -41,6 +41,14 @@ describe('cooperative acoustic measurement',()=>{
     expect(result.results[0].raw.bitErrors).toBe(0);
     expect(result.results[0].samplesPerSymbol).toBeGreaterThan(80);
   });
+  it('scores trials after more than a minute of audio with absolute positions',()=>{
+    const quiet=new Float32Array(rate*75),samples=new Float32Array(quiet.length+fixture().length);samples.set(fixture(),quiet.length);
+    const late=analyze(samples),early=analyze(fixture());
+    expect(late.problems).toEqual([]);expect(late.results).toHaveLength(1);
+    expect(late.results[0].raw).toEqual(early.results[0].raw);
+    expect(late.results[0].testStart).toBeCloseTo(early.results[0].testStart+quiet.length,6);
+    expect(late.results[0].acquisition).toEqual(early.results[0].acquisition.map(a=>({...a,offsetSamples:a.offsetSamples+quiet.length})));
+  });
   it('rejects inconsistent marker timing and does not score missing markers',()=>{
     const wave=trialWave(proposal,rate),l=trialLayout(proposal,rate);
     expect(()=>measureTrial(wave,rate,proposal,0,l.endMarker*1.02,rate)).toThrow('timing');
