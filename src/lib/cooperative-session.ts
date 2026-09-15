@@ -1,17 +1,23 @@
-import { MAX_RETRIES, MAX_SESSION_SECONDS, REPLY_TIMEOUT_MS, ParameterSearch, testSymbolCount, type ControlMessage, type CooperativeEvent, type Proposal,
+import { MAX_SESSION_SECONDS, ParameterSearch, testListenSeconds, testSymbolCount, type ControlMessage, type CooperativeEvent, type Proposal,
   type SearchSettings, type TrialMeasurement } from './experiment';
-export type Outgoing = { kind:'control'; message:ControlMessage } | { kind:'trial'; proposal:Proposal };
-/** Stop-and-wait coordination. Retries resend coordination/results, never the measured waveform.
- * Every frame carries its sender's device ID. The partner is passive: it has no settings, follows the controller
- * it last heard a test_suite from, treats that controller counting trials back down as a restarted run, and
- * listens until stopped. */
+import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, type PacketBody } from './packet-manager';
+
+/** Sends a frame through the packet manager; returns its sequence number. */
+export type SendPacket = (body: PacketBody, ackRequested: boolean) => number;
+
+/**
+ * The cooperative test protocol, on top of the packet manager's ACKs and retries:
+ *   controller: test_suite(T, …) [ACK]  →  test packet  →  partner: result(T, …) or lost(T) [ACK]  →  next trial
+ * The partner is passive: it has no settings, follows the controller it last heard a test_suite from, treats that
+ * controller counting trials back down as a restarted run, and listens until stopped.
+ */
 export class CooperativeSession {
   private phase='idle';
   private proposal?:Proposal;
-  private result?:ControlMessage & {kind:'result'};
-  private retry?:Outgoing;
-  private attempts=0;
-  private deadline=Infinity;
+  private suiteSeq?:number;
+  private doneSeq?:number;
+  /** Controller: when to give up waiting for this trial's result or lost. */
+  private resultDeadline=Infinity;
   private started?:number;
   /** The controller a partner is following. */
   private controller?:number;
@@ -19,100 +25,96 @@ export class CooperativeSession {
   private nextId=0;
   private finished=false;
   constructor(readonly role:'controller'|'partner', config:SearchSettings|undefined, readonly sender:number,
-    private output:(action:Outgoing)=>void, private event:(event:CooperativeEvent)=>void) {
+    private send:SendPacket, private event:(event:CooperativeEvent)=>void) {
     if(role==='controller'){if(!config)throw new Error('Controller requires search settings');this.search=new ParameterSearch(config);}
   }
   private status(phase:string,detail:string,finished=false,log=false){this.phase=phase;this.finished=finished;this.event({kind:'status',phase,detail,finished,log});}
   start(now:number){this.started=now;if(this.role==='controller')this.next();else this.status('listening','Listening for a controller.');}
-  private send(action:Outgoing,retry=true){this.deadline=Infinity;if(retry){this.retry=action;this.attempts=0;}this.output(action);}
+  private control(message:ControlMessage){return this.send({kind:'control',message},true);}
   private next(){
+    this.resultDeadline=Infinity;this.suiteSeq=undefined;
     const settings=this.search!.next();
-    if(!settings){this.status('finishing','Finishing the cooperative session.');this.send({kind:'control',message:{kind:'done',sender:this.sender,trial:this.nextId}},false);return;}
+    if(!settings){this.status('finishing','Finishing the cooperative session.');this.doneSeq=this.control({kind:'done',sender:this.sender,trial:this.nextId});return;}
     this.proposal={sender:this.sender,trial:this.nextId++,settings};
-    this.status('waiting-ready',`Negotiating trial ${this.proposal.trial+1}.`);
-    this.send({kind:'control',message:{kind:'test_suite',...this.proposal}});
+    this.status('waiting-ack',`Proposing trial ${this.proposal.trial+1}.`);
+    this.suiteSeq=this.control({kind:'test_suite',...this.proposal});
   }
-  /** Called only after speaker playback drains. */
-  sent(now:number){
+  /** The packet manager heard the ACK for frame `seq`. */
+  confirmed(seq:number){
     if(this.finished)return;
-    if(this.phase==='acknowledging'){this.next();return;}
-    if(this.phase==='finishing'){this.status('complete','Search complete; best means best measured across these tests.',true);return;}
-    this.deadline=now+REPLY_TIMEOUT_MS;
+    if(seq===this.doneSeq){this.status('complete','Search complete; best means best measured across these tests.',true);return;}
+    if(this.role==='controller'&&seq===this.suiteSeq&&this.phase==='waiting-ack'){
+      this.status('testing',`Trial ${this.proposal!.trial+1} confirmed; sending its test packet.`);
+      this.send({kind:'trial',proposal:this.proposal!},false);
+    }
   }
+  /** The packet manager gave up on frame `seq` after its retries. */
+  failed(seq:number,body:PacketBody){
+    if(this.finished)return;
+    if(seq===this.doneSeq){this.status('complete','Search complete; the partner did not confirm done.',true);return;}
+    if(this.role==='controller'&&seq===this.suiteSeq){this.stop('No ACK for test_suite after retries; the control link timed out.');return;}
+    if(this.role==='partner'&&body.kind==='control')
+      this.status('listening',`Trial ${body.message.trial+1} ${body.message.kind} was never confirmed; still listening.`,false,true);
+  }
+  /** Controller: the test packet finished playing; the partner's result or lost should follow. */
+  trialSent(now:number){
+    if(this.finished||this.role!=='controller'||this.phase!=='testing')return;
+    // The partner replies when its listener closes, then may need every retry to get the reply through.
+    this.resultDeadline=now+testListenSeconds(this.proposal!.settings)*1000+(DEFAULT_RETRIES+1)*(ACK_TIMEOUT_MS+3000);
+    this.status('waiting-result',`Trial ${this.proposal!.trial+1} sent; waiting for the partner's result.`);
+  }
+  /** A control message delivered once by the packet manager (duplicates are already ACKed and dropped). */
   receive(m:ControlMessage){
     if(this.finished)return;
     if(this.role==='partner'){
       if(m.kind==='test_suite'){
-        if(this.proposal&&m.sender===this.controller&&m.trial===this.proposal.trial){
-          if(JSON.stringify(m.settings)!==JSON.stringify(this.proposal.settings))return;
-          if(this.result)this.send({kind:'control',message:this.result});
-          else this.send({kind:'control',message:{kind:'ready',sender:this.sender,trial:m.trial}});
-          return;
-        }
-        // A new controller, or the same one counting trials back down (restarted): follow it rather than ignore it.
-        this.controller=m.sender;this.proposal={sender:m.sender,trial:m.trial,settings:m.settings};this.result=undefined;
-        this.status('waiting-test',`Ready for trial ${m.trial+1}; listening for its test packet.`);
-        this.send({kind:'control',message:{kind:'ready',sender:this.sender,trial:m.trial}});return;
+        // A new controller, or the same one counting trials back down (restarted): follow it.
+        this.controller=m.sender;this.proposal={sender:m.sender,trial:m.trial,settings:m.settings};
+        this.status('waiting-test',`Listening for trial ${m.trial+1} test packet.`);return;
       }
-      if(m.sender!==this.controller)return;
-      if(m.kind==='done'){this.retry=undefined;this.deadline=Infinity;this.status('listening','Controller finished; still listening for the next run.',false,true);return;}
-      if(m.trial!==this.proposal?.trial)return;
-      if(m.kind==='query'&&this.result){this.send({kind:'control',message:this.result});return;}
-      if(m.kind==='query'){
-        // The test packet was never received, so there is nothing to report; say so instead of leaving the controller querying.
-        this.retry=undefined;this.deadline=Infinity;
-        this.status('listening',`Trial ${m.trial+1} test packet not received; told the controller.`,false,true);
-        this.send({kind:'control',message:{kind:'lost',sender:this.sender,trial:m.trial}},false);return;
-      }
-      if(m.kind==='ack'&&this.result){this.retry=undefined;this.deadline=Infinity;this.status('listening','Result acknowledged; waiting for the next candidate.');return;}
-    }else{
-      // Replies come from the partner's own sender ID; our own transmissions heard back are kinds ignored here.
-      if(m.sender===this.sender)return;
-      // The partner is still repeating an earlier result, so our ack was lost; repeat it once.
-      if(m.kind==='result'&&this.proposal&&m.trial<this.proposal.trial){this.output({kind:'control',message:{kind:'ack',sender:this.sender,trial:m.trial}});return;}
-      if(m.trial!==this.proposal?.trial)return;
-      if(m.kind==='ready'&&this.phase==='waiting-ready'){
-        this.status('waiting-result',`Transmitting trial ${m.trial+1}; then waiting for receiver error counts.`);
-        this.retry={kind:'control',message:{kind:'query',sender:this.sender,trial:m.trial}};this.attempts=0;
-        this.send({kind:'trial',proposal:this.proposal!},false);return;
-      }
-      if(m.kind==='result'&&this.phase==='waiting-result'){
-        const p=this.proposal!;
-        if(m.raw.bits!==p.settings.payloadBytes*8||m.raw.symbols!==testSymbolCount(p.settings))return;
-        const observation={...p,raw:m.raw};
-        if(this.search!.add(observation))this.event({kind:'feedback',observation,best:this.search!.best()});
-        this.status('acknowledging',`Received trial ${m.trial+1}: ${m.raw.symbolErrors}/${m.raw.symbols} symbol errors.`);
-        this.send({kind:'control',message:{kind:'ack',sender:this.sender,trial:m.trial}},false);
-      }
-      if(m.kind==='lost'&&this.phase==='waiting-result'){
-        // Not lost feedback: the partner never received it, so propose the same point again as a new trial.
-        this.event({kind:'lost',proposal:this.proposal!});
-        this.status('waiting-ready',`Partner did not receive trial ${m.trial+1}; proposing it again.`,false,true);
-        this.next();
-      }
+      if(m.sender===this.controller&&m.kind==='done')this.status('listening','Controller finished; still listening for the next run.',false,true);
+      return;
+    }
+    if(m.sender===this.sender||m.trial!==this.proposal?.trial||(this.phase!=='testing'&&this.phase!=='waiting-result'))return;
+    if(m.kind==='result'){
+      const p=this.proposal!;
+      if(m.raw.bits!==p.settings.payloadBytes*8||m.raw.symbols!==testSymbolCount(p.settings))return;
+      const observation={...p,raw:m.raw};
+      if(this.search!.add(observation))this.event({kind:'feedback',observation,best:this.search!.best()});
+      this.next();
+    }else if(m.kind==='lost'){
+      // Not lost feedback: the partner never received the packet, so propose the same point again as a new trial.
+      this.event({kind:'lost',proposal:this.proposal!});
+      this.status('lost',`Partner did not receive trial ${m.trial+1}; proposing it again.`,false,true);
+      this.next();
     }
   }
-  /** The test listener heard the expected packet's sync: it's on the air, so don't retry ready over it. */
+  /** Partner: the test listener heard the expected packet's sync. */
   testHeard(p:Proposal){
-    if(this.finished||this.role!=='partner'||p.sender!==this.controller||p.trial!==this.proposal?.trial||this.result)return;
-    this.deadline=Infinity;this.status('measuring',`Receiving trial ${p.trial+1} test packet.`);
+    if(this.finished||this.role!=='partner'||p.sender!==this.controller||p.trial!==this.proposal?.trial)return;
+    this.status('measuring',`Receiving trial ${p.trial+1} test packet.`);
   }
   measured(m:TrialMeasurement){
     if(this.finished||this.role!=='partner'||m.sender!==this.controller||m.trial!==this.proposal?.trial)return;
-    this.result={kind:'result',sender:this.sender,trial:m.trial,raw:m.raw};
-    this.status('waiting-ack',`Returning trial ${m.trial+1} error counts.`);this.send({kind:'control',message:this.result});
+    this.status('reporting',`Returning trial ${m.trial+1} result.`);
+    this.control({kind:'result',sender:this.sender,trial:m.trial,raw:m.raw});
+  }
+  /** Partner: the test listener closed without receiving the packet. */
+  lost(p:Proposal){
+    if(this.finished||this.role!=='partner'||p.sender!==this.controller||p.trial!==this.proposal?.trial)return;
+    this.status('reporting',`Trial ${p.trial+1} test packet not received; telling the controller.`,false,true);
+    this.control({kind:'lost',sender:this.sender,trial:p.trial});
   }
   tick(now:number){
     if(this.finished)return;
     if(this.started!==undefined&&now-this.started>MAX_SESSION_SECONDS*1000){this.stop('Session time limit reached; completed measurements are retained.');return;}
-    if(now<this.deadline||!this.retry)return;
-    if(++this.attempts>MAX_RETRIES){
-      if(this.role==='partner'){this.retry=undefined;this.deadline=Infinity;this.status('listening','No response from controller; still listening.',false,true);return;}
-      this.stop('Control link timed out. The test waveform was not automatically repeated.');return;
+    if(this.role==='controller'&&now>=this.resultDeadline){
+      this.event({kind:'lost',proposal:this.proposal!});
+      this.status('lost',`No result for trial ${this.proposal!.trial+1}; proposing it again.`,false,true);
+      this.next();
     }
-    this.deadline=Infinity;this.output(this.retry);this.event({kind:'status',phase:this.phase,detail:`No reply; retrying control exchange (${this.attempts}/${MAX_RETRIES}).`,log:true});
   }
   stop(detail='Stopped; partial recordings and completed measurements are retained.'){
-    this.retry=undefined;this.deadline=Infinity;this.status('stopped',detail,true);
+    this.resultDeadline=Infinity;this.status('stopped',detail,true);
   }
 }

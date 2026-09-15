@@ -6,11 +6,12 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
   goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
-import { FRAME_TYPE } from '../lib/dsp/frame';
+import { FRAME_TYPE, frameId } from '../lib/dsp/frame';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
-import { CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
-import { CooperativeSession, type Outgoing } from '../lib/cooperative-session';
+import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
+import { CooperativeSession } from '../lib/cooperative-session';
+import { PacketManager, type OutgoingPacket } from '../lib/packet-manager';
 import { describeWire, describeTestSent, type ControlMessage, type CooperativeEvent } from '../lib/experiment';
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -33,23 +34,31 @@ let alignedBoundary = -1;
 let cooperativeAnalyzer: CooperativeAnalyzer | undefined;
 let cooperativeSession: CooperativeSession | undefined;
 let cooperativeTimer: ReturnType<typeof setInterval> | undefined;
-let outgoing: Outgoing[] = [], deferredControl: ControlMessage[] = [];
-let activeToken = 0, nextToken = 0, cooperativeRate = 48000;
+let packetManager: PacketManager | undefined;
+/** Frames heard while this device is transmitting are handled once its playback ends (half duplex). */
+type HeardFrame = { kind: 'control'; message: ControlMessage; seq: number; ackRequested: boolean } | { kind: 'ack'; from: number; sender: number; seq: number };
+let outgoing: OutgoingPacket[] = [], deferred: HeardFrame[] = [], playing: OutgoingPacket | undefined;
+let activeToken = 0, nextToken = 0, cooperativeRate = 48000, cooperativeSender = 0;
 function cooperativeEvent(event: CooperativeEvent) { send({ type: 'cooperative-event', event }); }
 function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
-  const action = outgoing.shift()!;
-  const wire = (text: string) => cooperativeEvent({ kind: 'wire', line: `<- ${text}` });
-  if (action.kind === 'control') wire(describeWire(action.message));
-  else wire(describeTestSent(action.proposal));
-  const samples = guardedWave(action.kind === 'control' ? controlWave(action.message, cooperativeRate)
-    : trialWave(action.proposal, cooperativeRate), cooperativeRate);
-  activeToken = ++nextToken;
+  const packet = outgoing.shift()!, { body, seq } = packet;
+  const retry = packet.attempt ? ` (retry ${packet.attempt}/${packetManager?.retries ?? 0})` : '';
+  const line = body.kind === 'control' ? describeWire(body.message, seq) : body.kind === 'trial' ? describeTestSent(body.proposal, seq)
+    : `${frameId(cooperativeSender, seq)} ACK ${frameId(body.sender, body.seq)}`;
+  cooperativeEvent({ kind: 'wire', line: `-> ${line}${retry}` });
+  const wave = body.kind === 'control' ? controlWave(body.message, cooperativeRate, seq, packet.ackRequested)
+    : body.kind === 'trial' ? trialWave(body.proposal, cooperativeRate, seq)
+    : ackWave(cooperativeSender, seq, body.sender, body.seq, cooperativeRate);
+  const samples = guardedWave(wave, cooperativeRate);
+  activeToken = ++nextToken; playing = packet;
   send({ type: 'cooperative-audio', token: activeToken, samples, sampleRate: cooperativeRate }, [samples.buffer]);
 }
-function receiveControl(message: ControlMessage) {
-  if (activeToken) { if (deferredControl.length < 16) deferredControl.push(message); }
-  else cooperativeSession?.receive(message);
+function handleHeard(frame: HeardFrame) {
+  if (activeToken) { if (deferred.length < 32) deferred.push(frame); return; }
+  if (frame.kind === 'ack') { packetManager?.acked(frame.sender, frame.seq); return; }
+  // Duplicates are ACKed again by the packet manager but delivered only once.
+  if (!packetManager || packetManager.receive(frame.message.sender, frame.seq, frame.ackRequested)) cooperativeSession?.receive(frame.message);
 }
 
 function send(message: DspWorkerResponse, transfer: Transferable[] = []): void {
@@ -290,7 +299,7 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
       send({ type: 'fsk-reception', token: progress.type, position: progress.position,
         ...('byte' in progress ? { byte: progress.byte } : {}),
         ...('length' in progress ? { length: progress.length } : {}),
-        ...('sender' in progress ? { sender: progress.sender, frameType: progress.frameType } : {}) });
+        ...('sender' in progress ? { sender: progress.sender, seq: progress.seq, frameType: progress.frameType } : {}) });
     }
     for (const packet of packets) {
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
@@ -375,36 +384,49 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
     switch (data.type) {
       case 'configure-cooperative':
         if (cooperativeTimer) clearInterval(cooperativeTimer);
-        outgoing = []; deferredControl = []; activeToken = 0; cooperativeSession = undefined;
-        cooperativeRate = data.sampleRate;
+        outgoing = []; deferred = []; activeToken = 0; playing = undefined; cooperativeSession = undefined; packetManager = undefined;
+        cooperativeRate = data.sampleRate; cooperativeSender = data.sender;
         configureDetector('off');
         cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, {
-          control: receiveControl,
+          control: (message, frame) => handleHeard({ kind: 'control', message, ...frame }),
+          ack: (from, target) => handleHeard({ kind: 'ack', from, ...target }),
           measurement: measurement => { cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement); },
           testHeard: proposal => cooperativeSession?.testHeard(proposal),
-          lost: proposal => cooperativeEvent({ kind: 'lost', proposal }),
+          lost: proposal => { cooperativeEvent({ kind: 'lost', proposal }); cooperativeSession?.lost(proposal); },
           wire: line => cooperativeEvent({ kind: 'wire', line }),
           analyze: data.role !== 'controller',
           self: data.sender
         });
         if (data.role !== 'replay') {
-          cooperativeSession = new CooperativeSession(data.role, data.config, data.sender,
-            action => { outgoing.push(action); drainOutgoing(); }, cooperativeEvent);
+          const manager = packetManager = new PacketManager(data.sender, packet => { outgoing.push(packet); drainOutgoing(); }, {
+            confirmed: seq => cooperativeSession?.confirmed(seq),
+            failed: (seq, body) => {
+              cooperativeEvent({ kind: 'status', phase: 'unconfirmed', detail: `No ACK for ${frameId(data.sender, seq)} after ${manager.retries} retries.`, log: true });
+              cooperativeSession?.failed(seq, body);
+            }
+          });
+          cooperativeSession = new CooperativeSession(data.role, data.config, data.sender, (body, ack) => manager.send(body, ack), cooperativeEvent);
           cooperativeSession.start(performance.now());
-          cooperativeTimer = setInterval(() => cooperativeSession?.tick(performance.now()), 250);
+          cooperativeTimer = setInterval(() => { const now = performance.now(); manager.tick(now); cooperativeSession?.tick(now); }, 250);
         }
         break;
       case 'cooperative-played':
         if (data.token !== activeToken) break;
         activeToken = 0;
-        cooperativeSession?.sent(performance.now());
-        while (!activeToken && deferredControl.length) cooperativeSession?.receive(deferredControl.shift()!);
+        if (playing) {
+          const now = performance.now();
+          if (playing.ackRequested) packetManager?.sent(playing.seq, now);
+          if (playing.body.kind === 'trial') cooperativeSession?.trialSent(now);
+          playing = undefined;
+        }
+        while (!activeToken && deferred.length) handleHeard(deferred.shift()!);
         drainOutgoing();
         break;
       case 'stop-cooperative':
         if (cooperativeTimer) clearInterval(cooperativeTimer);
         cooperativeTimer = undefined; cooperativeAnalyzer = undefined;
-        outgoing = []; deferredControl = []; activeToken = 0;
+        outgoing = []; deferred = []; activeToken = 0; playing = undefined;
+        packetManager?.clear(); packetManager = undefined;
         cooperativeSession?.stop(data.reason); cooperativeSession = undefined;
         break;
       case 'configure-spectrum': configure(data.options); break;

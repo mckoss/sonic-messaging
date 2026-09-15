@@ -1,6 +1,5 @@
 import { bitsToBytes, bytesToBits } from './bits';
 import { frame, unframe } from './frame';
-import { golayRadiusForBitsPerSymbol } from './golay';
 import type { DecodeResult, FskConfig, Waveform } from './types';
 
 function validate(config: FskConfig) {
@@ -42,6 +41,6 @@ export function decodeFsk(samples: Float32Array, config: FskConfig): DecodeResul
     confidence += (energies[best] - second) / (energies[best] + 1e-12);
     for (let b = bitsPerSymbol - 1; b >= 0; b--) bits.push((best >>> b) & 1);
   }
-  const parsed = unframe(bitsToBytes(bits), golayRadiusForBitsPerSymbol(bitsPerSymbol));
-  return { payload: parsed.payload, sender: parsed.sender, frameType: parsed.type, ok: !!parsed.payload, confidence: confidence / Math.max(1, symbols), errors: parsed.error ? [parsed.error] : [] };
+  const parsed = unframe(bitsToBytes(bits));
+  return { payload: parsed.payload, sender: parsed.sender, seq: parsed.seq, frameType: parsed.type, ok: !!parsed.payload, confidence: confidence / Math.max(1, symbols), errors: parsed.error ? [parsed.error] : [] };
 }

@@ -1,4 +1,4 @@
-import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, PAYLOAD_OFFSET, senderHex, type FrameAddress } from './dsp/frame';
+import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, frameId, PAYLOAD_OFFSET, senderHex, type FrameAddress } from './dsp/frame';
 /** Cooperative experiments use an acoustic control link; no shared schedule is required. */
 export interface TrialSettings {
   tones: number; lowestFrequency: number; spacing: number; symbolRate: number;
@@ -11,9 +11,6 @@ export interface SearchSettings {
 export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.8 };
 // 0.8 leaves headroom so output resampling and device processing don't clip the control tones.
 export const MAX_SESSION_SECONDS = 600;
-/** Text replies are longer: a result is ~2 s of air plus a 0.5 s quiet lead, then decode and audio latency. */
-export const REPLY_TIMEOUT_MS = 6000;
-export const MAX_RETRIES = 5;
 /** Test packets always play at the control amplitude, which leaves headroom below clipping. */
 export const TEST_AMPLITUDE = 0.8;
 export const MAX_TESTS = 100;
@@ -60,6 +57,8 @@ export interface TrialMeasurement extends Proposal {
   /** In-window S/N per payload symbol, in dB. */
   snrDb: number[];
   raw: RawResult; sampleRate: number;
+  /** The test packet frame's sequence number. */
+  seq: number;
   /** Absolute sample position where the receiver locked the frame's sync. */
   startPosition: number;
   /** How far symbol tracking moved the sampling windows by the end of the frame. */
@@ -68,7 +67,7 @@ export interface TrialMeasurement extends Proposal {
 }
 export type ControlMessage =
   | ({ kind: 'test_suite' } & Proposal)
-  | { kind: 'ready' | 'query' | 'ack' | 'done' | 'lost'; sender: number; trial: number }
+  | { kind: 'done' | 'lost'; sender: number; trial: number }
   | { kind: 'result'; sender: number; trial: number; raw: RawResult };
 export type ControlKind = ControlMessage['kind'];
 
@@ -105,8 +104,8 @@ function args(m: ControlMessage): (string | number)[] {
 }
 export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', ')})`;
 export const encodeControl = (m: ControlMessage): Uint8Array => new TextEncoder().encode(controlText(m));
-export const controlAddress = (m: ControlMessage): FrameAddress => ({ sender: m.sender, type: FRAME_TYPE.control });
-const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 7, ready: 1, result: 8, query: 1, ack: 1, done: 1, lost: 1 };
+export const controlAddress = (m: ControlMessage, seq = 0, ackRequested = false): FrameAddress => ({ sender: m.sender, seq, type: FRAME_TYPE.control, ackRequested });
+const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 7, result: 8, done: 1, lost: 1 };
 /** Parses a control payload; `sender` comes from the frame it arrived in. */
 export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage | undefined {
   if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
@@ -172,7 +171,7 @@ export class ParameterSearch {
 }
 export type CooperativeEvent =
   | { kind:'status'; phase:string; detail:string; finished?:boolean; log?:boolean }
-  /** One line of what went over the air: `<-` sent, `->` received, `X` heard but garbled. */
+  /** One line of what went over the air: `->` sent from this device, `<-` received, `X` heard but garbled. */
   | { kind:'wire'; line:string }
   | { kind:'measurement'; measurement:TrialMeasurement }
   | { kind:'feedback'; observation:SearchObservation; best?:{value:number;errors:number;symbols:number} }
@@ -189,20 +188,17 @@ export function describeControl(m: ControlMessage): string {
   const trial = `trial ${m.trial + 1}`;
   switch (m.kind) {
     case 'test_suite': return `${trial} settings: ${describeSettings(m.settings)}`;
-    case 'ready': return `partner ready for ${trial}`;
     case 'result': return `${trial}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, median S/N ${m.raw.snrMedianDb.toFixed(1)} dB`;
-    case 'query': return `asking for ${trial} result`;
-    case 'ack': return `${trial} result received`;
     case 'done': return `run finished after ${m.trial} trials`;
     case 'lost': return `partner did not receive the ${trial} test packet`;
   }
 }
-/** Sender and raw wire text, then its meaning; for text payloads the raw data is already readable. */
-export const describeWire = (m: ControlMessage, bytes?: Uint8Array) =>
-  `${senderHex(m.sender)} ${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
-export const describeTestSent = (p: Proposal) => `${senderHex(p.sender)} test packet ${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1}`;
+/** Frame ID (sender#seq) and raw wire text, then its meaning; for text payloads the raw data is already readable. */
+export const describeWire = (m: ControlMessage, seq: number, bytes?: Uint8Array) =>
+  `${frameId(m.sender, seq)} ${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
+export const describeTestSent = (p: Proposal, seq: number) => `${frameId(p.sender, seq)} test packet ${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1}`;
 export const describeTestReceived = (m: TrialMeasurement) =>
-  `${senderHex(m.sender)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · drift ${signedMs(m.timingDriftMs)}`;
+  `${frameId(m.sender, m.seq)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · drift ${signedMs(m.timingDriftMs)}`;
 const signedMs = (ms: number) => `${ms >= 0 ? '+' : '−'}${Math.abs(ms).toFixed(1)} ms`;
 
 /** Air time of one guarded FSK frame carrying `payloadBytes`, in seconds. */
@@ -210,21 +206,23 @@ function frameSeconds(payloadBytes: number, tones: number, symbolRate: number, g
   return Math.ceil((payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(tones)) / symbolRate + guardSeconds;
 }
 const controlSeconds = (m: ControlMessage) => frameSeconds(encodeControl(m).length, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate);
+/** An ACK frame's payload is the confirmed frame's sender and sequence number. */
+const ackSeconds = () => frameSeconds(4, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate);
 const testPacketSeconds = (t: TrialSettings) => frameSeconds(t.payloadBytes, t.tones, t.symbolRate);
 /**
- * Rough duration of one clean test (no retries): test_suite, ready, test packet, result, ack, each with 0.5 s quiet
+ * Rough duration of one clean test (no retries): test_suite, its ACK, test packet, result, its ACK, each with 0.5 s quiet
  * guards on both sides plus ~0.4 s of decode and audio latency per exchange.
  */
 export function estimateTestSeconds(t: TrialSettings): number {
   const trial = 9, raw = { symbolErrors: 10, symbols: 64, bitErrors: 10, bits: 128, confidence: 0.85, snrMedianDb: 18.5, crcOk: true };
-  return [controlSeconds({ kind: 'test_suite', sender: 0, trial, settings: t }), controlSeconds({ kind: 'ready', sender: 0, trial }),
-    testPacketSeconds(t), controlSeconds({ kind: 'result', sender: 0, trial, raw }), controlSeconds({ kind: 'ack', sender: 0, trial })]
+  return [controlSeconds({ kind: 'test_suite', sender: 0, trial, settings: t }), ackSeconds(),
+    testPacketSeconds(t), controlSeconds({ kind: 'result', sender: 0, trial, raw }), ackSeconds()]
     .reduce((total, seconds) => total + seconds + 0.4, 0);
 }
 /**
- * How long the partner's test listener stays open after hearing test_suite: its own ready reply, the controller's
+ * How long the partner's test listener stays open after hearing test_suite: its own ACK, the controller's
  * reaction and the test packet's air time, plus generous latency. A retried test_suite restarts the window.
  */
 export function testListenSeconds(t: TrialSettings): number {
-  return controlSeconds({ kind: 'ready', sender: 0, trial: 99 }) + testPacketSeconds(t) + 3;
+  return ackSeconds() + testPacketSeconds(t) + 3;
 }

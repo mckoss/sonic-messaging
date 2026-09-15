@@ -3,6 +3,7 @@ import type { FrameAddress } from './frame';
 export interface DecodeResult {
   payload?: Uint8Array;
   sender?: number;
+  seq?: number;
   frameType?: number;
   ok: boolean;
   confidence: number;

@@ -34,5 +34,5 @@ export function detectDsssUsers(samples: Float32Array, configs: DsssConfig[]): A
 export function decodeDsss(samples: Float32Array, config: DsssConfig): DecodeResult {
   const values = correlations(samples, config), parsed = unframe(bitsToBytes(values.map(v => v >= 0 ? 1 : 0)));
   const confidence = values.reduce((a, v) => a + Math.min(1, Math.abs(v)), 0) / Math.max(1, values.length);
-  return { payload: parsed.payload, sender: parsed.sender, frameType: parsed.type, ok: !!parsed.payload, confidence, errors: parsed.error ? [parsed.error] : [], metrics: { userCorrelation: dsssDetectionMetric(samples, config) } };
+  return { payload: parsed.payload, sender: parsed.sender, seq: parsed.seq, frameType: parsed.type, ok: !!parsed.payload, confidence, errors: parsed.error ? [parsed.error] : [], metrics: { userCorrelation: dsssDetectionMetric(samples, config) } };
 }

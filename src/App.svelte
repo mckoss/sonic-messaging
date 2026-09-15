@@ -13,7 +13,7 @@
   import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
   import { get } from 'svelte/store';
   import { DEVICE_SENDER } from './lib/sender';
-  import { FRAME_TYPE_NAMES, senderHex } from './lib/dsp/frame';
+  import { ADDRESS_BYTES, FRAME_TYPE_NAMES, frameId, LENGTH_BYTES } from './lib/dsp/frame';
   import { RecordingCapture, encodeRecording, decodeRecording, MAX_RECORDING_BYTES, MAX_RECORDING_SECONDS,
     type Recording } from './lib/audio/recording';
 
@@ -387,7 +387,7 @@
       try {
         const text = decoded.decode(event.payload);
         const type = event.frameType === 0x03 ? '' : ` ${FRAME_TYPE_NAMES[event.frameType] ?? `type ${event.frameType}`}`;
-        packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: `${senderHex(event.sender)}${type}: ${text}`,
+        packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: `${frameId(event.sender, event.seq)}${type}: ${text}`,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
       } catch {
         logs = [`${new Date().toLocaleTimeString()} · RX FSK frame with valid CRC rejected: payload is not UTF-8 text`, ...logs].slice(0, 10);
@@ -406,9 +406,9 @@
         receptionDecoder = new TextDecoder(); receivingMessage = '';
         addMarker('<SYNC>', 4);
       } else if (event.token === 'length') {
-        addMarker(`LEN ${event.length ?? '?'}`, 3);
+        addMarker(`LEN ${event.length ?? '?'}`, LENGTH_BYTES);
       } else if (event.token === 'address') {
-        addMarker(`FROM ${senderHex(event.sender ?? 0)}`, 3);
+        addMarker(`FROM ${frameId(event.sender ?? 0, event.seq ?? 0)}`, ADDRESS_BYTES);
       } else if (event.token === 'crc-confirm') {
         receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
         addMarker('✓', 2);

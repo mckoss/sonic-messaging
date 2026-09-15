@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { FRAME_TYPE, SYNC_BYTES } from './frame';
-import { golayEncode } from './golay';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { simulateChannel } from './channel';
@@ -209,9 +208,7 @@ describe('continuous FSK receiver', () => {
 
   it('abandons a truncated frame with a valid length once the carrier disappears', () => {
     // Sync plus a well-formed header claiming 200 payload bytes, then only a moment of data.
-    const length = golayEncode(200);
-    const bogus = frameSymbolWaveform(config,
-      [...SYNC_BYTES, (length >>> 16) & 0xff, (length >>> 8) & 0xff, length & 0xff, 0x55]);
+    const bogus = frameSymbolWaveform(config, [...SYNC_BYTES, 0, 200, 0x55]);
     const clean = encodeFsk(new TextEncoder().encode('after'), config).samples;
     const gap = new Float32Array(20 * Math.round(config.sampleRate / config.symbolRate));
     const samples = new Float32Array(bogus.length + gap.length + clean.length);
@@ -224,43 +221,18 @@ describe('continuous FSK receiver', () => {
     expect(progress.some(event => event.type === 'length' && event.length === 200)).toBe(true);
   });
 
-  it('corrects a corrupted length-field symbol and rejects an unrecoverable one', () => {
-    const payload = new TextEncoder().encode('fec length');
+  it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {
+    const payload = new TextEncoder().encode('length hit');
     const spp = Math.round(config.sampleRate / config.symbolRate);
-    // Length field = header bytes 4-6 = symbols 16..27 at 2 bits/symbol.
-    const corruptSymbols = (indices: number[]) => {
-      const samples = encodeFsk(payload, config).samples.slice();
-      for (const symbol of indices) {
-        for (let i = 0; i < spp; i++) {
-          samples[symbol * spp + i] = 0.8 * Math.sin(2 * Math.PI * config.frequencies[3] * i / config.sampleRate);
-        }
-      }
-      return samples;
-    };
-    // One wrong symbol (2 bit errors) is inside the Golay correction radius.
-    const recovered = new FskStreamDecoder(config).push(corruptSymbols([18]));
-    expect(recovered.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['fec length']);
-    // Three wrong symbols are detected as uncorrectable: no bogus frame commit.
-    const rejecting = new FskStreamDecoder(config);
-    expect(rejecting.push(corruptSymbols([17, 20, 23]))).toEqual([]);
-    expect(rejecting.drainProgress().some(event => event.type === 'crc-error')).toBe(true);
-  });
-
-  it('corrects one bad 8-FSK length symbol (3 bit errors) at the wider adaptive radius', () => {
-    const octal = {
-      sampleRate: 48_000, symbolRate: 400,
-      frequencies: Array.from({ length: 8 }, (_, i) => 2400 + 800 * i)
-    };
-    const payload = new TextEncoder().encode('radius 3');
-    const samples = encodeFsk(payload, octal).samples.slice();
-    const spp = Math.round(octal.sampleRate / octal.symbolRate);
-    // Length field = bits 32..55 → symbols 11..18 at 3 bits/symbol; symbol 12
-    // (bits 36-38) carries zeros for this short payload, so tone 7 flips 3 bits.
-    for (let i = 0; i < spp; i++) {
-      samples[12 * spp + i] = 0.8 * Math.sin(2 * Math.PI * octal.frequencies[7] * i / octal.sampleRate);
-    }
-    const packets = new FskStreamDecoder(octal).push(samples);
-    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['radius 3']);
+    // Length field = bytes 4-5 = symbols 16..23 at 2 bits/symbol; there is no length FEC, so the CRC rejects it.
+    const damaged = encodeFsk(payload, config).samples.slice();
+    for (let i = 0; i < spp; i++) damaged[21 * spp + i] = 0.8 * Math.sin(2 * Math.PI * config.frequencies[3] * i / config.sampleRate);
+    const next = encodeFsk(new TextEncoder().encode('next'), config).samples;
+    const gap = new Float32Array(40 * spp), samples = new Float32Array(damaged.length + gap.length + next.length);
+    samples.set(damaged); samples.set(next, damaged.length + gap.length);
+    const receiver = new FskStreamDecoder(config);
+    expect(receiver.push(samples).map(packet => new TextDecoder().decode(packet.payload))).toEqual(['next']);
+    expect(receiver.drainProgress().some(event => event.type === 'crc-error')).toBe(true);
   });
 
   it('reports no 2-FSK sync on a steady tone parked at the mark frequency', () => {

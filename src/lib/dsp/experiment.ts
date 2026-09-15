@@ -3,15 +3,19 @@ import { CONTROL_FSK, controlAddress, decodeControl, describeTestReceived, descr
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder, type FskStreamFrame, type FskStreamProgress } from './fsk-stream';
 import { bytesToBits } from './bits';
-import { FRAME_TYPE, FRAME_TYPE_NAMES, frame, PAYLOAD_OFFSET, senderHex } from './frame';
+import { decodeAck, encodeAck, FRAME_TYPE, FRAME_TYPE_NAMES, frame, frameId, PAYLOAD_OFFSET } from './frame';
 
-export function controlWave(message:ControlMessage,sampleRate:number):Float32Array {
-  return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,address:controlAddress(message)}).samples;
+export function controlWave(message:ControlMessage,sampleRate:number,seq=0,ackRequested=false):Float32Array {
+  return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,address:controlAddress(message,seq,ackRequested)}).samples;
+}
+/** An ACK frame from `sender` confirming `target#targetSeq`, on the control settings. */
+export function ackWave(sender:number,seq:number,target:number,targetSeq:number,sampleRate:number):Float32Array {
+  return encodeFsk(encodeAck(target,targetSeq),{...CONTROL_FSK,sampleRate,address:{sender,seq,type:FRAME_TYPE.ack}}).samples;
 }
 /** A trial's test packet is an ordinary frame of type test on the trial's settings; nothing else marks it. */
-export function trialWave(proposal:Proposal,sampleRate:number):Float32Array {
+export function trialWave(proposal:Proposal,sampleRate:number,seq=0):Float32Array {
   if(trialFsk(proposal.settings).frequencies.slice(-1)[0]>=sampleRate/2)throw new Error('Test tones exceed the audio sample rate');
-  const address={sender:proposal.sender,type:FRAME_TYPE.test};
+  const address={sender:proposal.sender,seq,type:FRAME_TYPE.test};
   return encodeFsk(trialPayload(proposal.settings),{...trialFsk(proposal.settings),sampleRate,address}).samples;
 }
 /** Guard every outgoing exchange with quiet; before a test packet this is the only (unannounced) delay. */
@@ -43,12 +47,15 @@ export function scoreTestFrame(proposal:Proposal,received:FskStreamFrame,sampleR
   });
   raw.snrMedianDb=median(snrDb);
   const bytes=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
-  return {...proposal,received:bytes,snrDb,raw,sampleRate,startPosition:received.startPosition,
+  return {...proposal,seq:received.seq,received:bytes,snrDb,raw,sampleRate,startPosition:received.startPosition,
     timingDriftMs:received.timingOffset/sampleRate*1000,confusion};
 }
 
 export interface AnalyzerOptions {
-  control?:(m:ControlMessage)=>void;
+  /** A control message, with its frame's sequence number and ACK request. */
+  control?:(m:ControlMessage,frame:{seq:number;ackRequested:boolean})=>void;
+  /** An ACK frame from `from` confirming `target#seq`. */
+  ack?:(from:number,target:{sender:number;seq:number})=>void;
   measurement?:(m:TrialMeasurement)=>void;
   /** The expected test packet's sync was heard; the trial is on the air. */
   testHeard?:(proposal:Proposal)=>void;
@@ -101,17 +108,24 @@ export class CooperativeAnalyzer {
   push(chunk:Float32Array){
     for(const packet of this.control.push(chunk)){
       if(packet.sender===this.options.self)continue;
+      const id=frameId(packet.sender,packet.seq);
+      if(packet.frameType===FRAME_TYPE.ack){
+        const target=decodeAck(packet.payload);
+        if(target){this.wire(`<- ${id} ACK ${frameId(target.sender,target.seq)}`);this.options.ack?.(packet.sender,target);}
+        else this.wire(`<- ${id} ACK ${hexBytes(packet.payload)} · malformed`);
+        continue;
+      }
       if(packet.frameType!==FRAME_TYPE.control){
         // A test packet on the control tones and baud also decodes here; the test listener reports it.
         if(!(packet.frameType===FRAME_TYPE.test&&this.test))
-          this.wire(`-> ${senderHex(packet.sender)} ${FRAME_TYPE_NAMES[packet.frameType]??`type ${packet.frameType}`} ${hexBytes(packet.payload)}`);
+          this.wire(`<- ${id} ${FRAME_TYPE_NAMES[packet.frameType]??`type ${packet.frameType}`} ${hexBytes(packet.payload)}`);
         continue;
       }
       const m=decodeControl(packet.payload,packet.sender);
-      if(!m){this.wire(`-> ${senderHex(packet.sender)} "${String.fromCharCode(...packet.payload)}" · unparseable control message`);continue;}
-      this.wire(`-> ${describeWire(m,packet.payload)}`);
+      if(!m){this.wire(`<- ${id} "${String.fromCharCode(...packet.payload)}" · unparseable control message`);continue;}
+      this.wire(`<- ${describeWire(m,packet.seq,packet.payload)}`);
       if(this.options.analyze&&m.kind==='test_suite')this.listenForTest(m);
-      this.options.control?.(m);
+      this.options.control?.(m,{seq:packet.seq,ackRequested:packet.ackRequested});
     }
     // While a test listener shares control's tones, its failures are reported there instead.
     const progress=this.control.drainProgress();
@@ -139,7 +153,7 @@ export class CooperativeAnalyzer {
       if(received.crcOk&&received.frameType!==FRAME_TYPE.test)continue;
       const m=scoreTestFrame(t.proposal,received,this.sampleRate);
       if(!m)continue;
-      this.wire(`-> ${describeTestReceived(m)}`);
+      this.wire(`<- ${describeTestReceived(m)}`);
       this.test=undefined;
       this.options.measurement?.(m);
       return;

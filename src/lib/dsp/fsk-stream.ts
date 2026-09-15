@@ -1,6 +1,5 @@
 import { bitsToBytes } from './bits';
-import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
-import { golayRadiusForBitsPerSymbol } from './golay';
+import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import { SymbolTimingLoop } from './symbol-timing';
 import type { FskConfig } from './types';
@@ -59,7 +58,9 @@ function syncSymbolTemplate(bitsPerSymbol: number): number[] {
 export interface FskStreamPacket {
   payload: Uint8Array;
   sender: number;
+  seq: number;
   frameType: number;
+  ackRequested: boolean;
   confidence: number;
   startPosition: number;
   endPosition: number;
@@ -73,7 +74,9 @@ export interface FskStreamFrame {
   crcOk: boolean;
   /** From the address bytes; unverified when the CRC failed. */
   sender: number;
+  seq: number;
   frameType: number;
+  ackRequested: boolean;
   payloadLength: number;
   /** Decided tone index and winning-tone score for every frame symbol, sync included. */
   symbols: number[];
@@ -90,7 +93,7 @@ export type FskStreamProgress =
   | { type: 'sync'; position: number }
   | { type: 'length'; length: number; position: number }
   /** Unverified until crc-confirm; lets displays label the sender while the payload streams in. */
-  | { type: 'address'; sender: number; frameType: number; position: number }
+  | { type: 'address'; sender: number; seq: number; frameType: number; ackRequested: boolean; position: number }
   | { type: 'byte'; byte: number; position: number }
   | { type: 'crc-confirm' | 'crc-error'; position: number };
 
@@ -104,8 +107,6 @@ export class FskStreamDecoder {
   private readonly samplesPerSymbol: number;
   private readonly bitsPerSymbol: number;
   private readonly phaseStep: number;
-  /** Golay correction radius for the length field, sized to one bad symbol. */
-  private readonly lengthRadius: number;
   private progress: FskStreamProgress[] = [];
   private frames: FskStreamFrame[] = [];
   private reportedPayloadBytes = 0;
@@ -140,7 +141,6 @@ export class FskStreamDecoder {
     this.samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
     this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
-    this.lengthRadius = golayRadiusForBitsPerSymbol(this.bitsPerSymbol);
     this.resetTiming();
   }
 
@@ -355,20 +355,14 @@ export class FskStreamDecoder {
     const headerSymbols = Math.ceil((HEADER_BYTES * 8) / this.bitsPerSymbol);
     if (start + headerSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
     const header = this.decodeCandidateBytes(HEADER_BYTES).bytes;
-    // Golay-protected length: up to 2 corrupted bits (one bad 4-FSK symbol)
-    // are corrected in place; a worse header is rejected here instead of
-    // committing the decoder to an arbitrarily long bogus frame.
-    const payloadLength = decodeFrameLength(header, SYNC.length, this.lengthRadius);
-    if (payloadLength === undefined) {
-      this.progress.push({ type: 'crc-error',
-        position: this.frameBytePosition(start, HEADER_BYTES) });
-      this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
-      return null;
-    }
+    // The length has no error correction: a corrupted one is caught by the CRC at the end of the frame, an
+    // impossible one by the size limit below, and a spuriously long one by carrier loss.
+    const payloadLength = decodeFrameLength(header, LENGTH_OFFSET);
     const maxPayload = Math.min(MAX_LIVE_PAYLOAD_BYTES, Math.floor(
       (MAX_LIVE_FRAME_SECONDS * this.config.symbolRate * this.bitsPerSymbol) / 8
     ) - PAYLOAD_OFFSET - TRAILER_BYTES);
     if (payloadLength > Math.max(0, maxPayload)) {
+      this.progress.push({ type: 'crc-error', position: this.frameBytePosition(start, HEADER_BYTES) });
       // Skip the whole validated sync: a phase-step skip re-matches the same sync
       // and re-runs phase refinement repeatedly, stalling the worker for seconds.
       this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
@@ -387,7 +381,7 @@ export class FskStreamDecoder {
     if (!this.reportedAddress && availableBytes >= PAYLOAD_OFFSET) {
       this.reportedAddress = true;
       const address = readFrameAddress(this.decodeCandidateBytes(PAYLOAD_OFFSET).bytes, ADDRESS_OFFSET);
-      this.progress.push({ type: 'address', sender: address.sender, frameType: address.type,
+      this.progress.push({ type: 'address', sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested,
         position: this.frameBytePosition(start, PAYLOAD_OFFSET) });
     }
     const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - PAYLOAD_OFFSET));
@@ -426,10 +420,10 @@ export class FskStreamDecoder {
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
-    const parsed = unframe(decoded.bytes, this.lengthRadius);
+    const parsed = unframe(decoded.bytes);
     const framePosition = this.frameBytePosition(start, frameBytes);
     const address = readFrameAddress(decoded.bytes, ADDRESS_OFFSET);
-    this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, frameType: address.type, payloadLength,
+    this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested, payloadLength,
       symbols: this.candidateSymbols.slice(0, frameSymbols), scores: this.candidateScores.slice(0, frameSymbols),
       confidence: decoded.confidence, startPosition: this.streamPosition + start, endPosition: framePosition,
       timingOffset: this.timing.offset });
@@ -447,7 +441,7 @@ export class FskStreamDecoder {
     this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
-    return { payload: parsed.payload, sender: parsed.sender!, frameType: parsed.type!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
+    return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {

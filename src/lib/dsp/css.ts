@@ -42,5 +42,5 @@ export function decodeCss(samples: Float32Array, config: CssConfig): DecodeResul
     for (let b = sf - 1; b >= 0; b--) bits.push((best >>> b) & 1);
   }
   const parsed = unframe(bitsToBytes(bits));
-  return { payload: parsed.payload, sender: parsed.sender, frameType: parsed.type, ok: !!parsed.payload, confidence: totalConfidence / Math.max(1, count), errors: parsed.error ? [parsed.error] : [] };
+  return { payload: parsed.payload, sender: parsed.sender, seq: parsed.seq, frameType: parsed.type, ok: !!parsed.payload, confidence: totalConfidence / Math.max(1, count), errors: parsed.error ? [parsed.error] : [] };
 }
