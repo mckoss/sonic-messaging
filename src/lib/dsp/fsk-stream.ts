@@ -65,6 +65,26 @@ export interface FskStreamPacket {
   endPosition: number;
 }
 
+/**
+ * Every fully decoded frame, whether or not its CRC passed, with the symbol decisions the receiver made. Lets
+ * experiments score ordinary reception: symbol errors and S/N of what was actually heard, including corrupted frames.
+ */
+export interface FskStreamFrame {
+  crcOk: boolean;
+  /** From the address bytes; unverified when the CRC failed. */
+  sender: number;
+  frameType: number;
+  payloadLength: number;
+  /** Decided tone index and winning-tone score for every frame symbol, sync included. */
+  symbols: number[];
+  scores: number[];
+  confidence: number;
+  startPosition: number;
+  endPosition: number;
+  /** Where symbol tracking had moved the sampling windows by the end of the frame, in samples. */
+  timingOffset: number;
+}
+
 /** position is the absolute stream sample index where the reported item ends. */
 export type FskStreamProgress =
   | { type: 'sync'; position: number }
@@ -87,6 +107,7 @@ export class FskStreamDecoder {
   /** Golay correction radius for the length field, sized to one bad symbol. */
   private readonly lengthRadius: number;
   private progress: FskStreamProgress[] = [];
+  private frames: FskStreamFrame[] = [];
   private reportedPayloadBytes = 0;
   private reportedLength = false;
   private reportedAddress = false;
@@ -95,6 +116,7 @@ export class FskStreamDecoder {
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
+  private candidateScores: number[] = [];
   /** Tracks symbol timing through the current candidate after sync acquisition. */
   private timing!: SymbolTimingLoop;
   /** Carrier-loss scan state for the current candidate. */
@@ -149,9 +171,9 @@ export class FskStreamDecoder {
   reset(): void {
     this.samples = new Float32Array(0); this.sampleCount = 0;
     this.searchOffset = 0; this.candidateOffset = undefined;
-    this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
+    this.progress = []; this.frames = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.streamPosition = 0;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     this.syncScanCache.clear();
   }
@@ -239,6 +261,8 @@ export class FskStreamDecoder {
   }
 
   drainProgress(): FskStreamProgress[] { return this.progress.splice(0); }
+  /** Frames completed since the last call, CRC-valid or not. */
+  drainFrames(): FskStreamFrame[] { return this.frames.splice(0); }
 
   /**
    * Absolute stream position where the locked candidate frame starts, or undefined
@@ -266,7 +290,7 @@ export class FskStreamDecoder {
         this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false; this.reportedAddress = false;
-        this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
+        this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
         this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         // Reference power for carrier-loss detection: what this frame's sync measured.
         let syncPower = 0;
@@ -404,6 +428,11 @@ export class FskStreamDecoder {
     decoded.bytes.set(SYNC, 0);
     const parsed = unframe(decoded.bytes, this.lengthRadius);
     const framePosition = this.frameBytePosition(start, frameBytes);
+    const address = readFrameAddress(decoded.bytes, ADDRESS_OFFSET);
+    this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, frameType: address.type, payloadLength,
+      symbols: this.candidateSymbols.slice(0, frameSymbols), scores: this.candidateScores.slice(0, frameSymbols),
+      confidence: decoded.confidence, startPosition: this.streamPosition + start, endPosition: framePosition,
+      timingOffset: this.timing.offset });
     if (!parsed.payload) {
       this.progress.push({ type: 'crc-error', position: framePosition });
       // The sync itself was validated, so resume the search beyond it rather than
@@ -416,7 +445,7 @@ export class FskStreamDecoder {
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     return { payload: parsed.payload, sender: parsed.sender!, frameType: parsed.type!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
   }
@@ -426,7 +455,7 @@ export class FskStreamDecoder {
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
   }
 
@@ -450,6 +479,7 @@ export class FskStreamDecoder {
       }
       this.candidateSymbols.push(symbol);
       this.candidateConfidences.push(decision.confidence);
+      this.candidateScores.push(decision.scores[symbol]);
       this.timing.observe(buffered, start, symbol, at);
     }
     const bits: number[] = [];

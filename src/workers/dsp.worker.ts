@@ -41,11 +41,7 @@ function drainOutgoing() {
   const action = outgoing.shift()!;
   const wire = (text: string) => cooperativeEvent({ kind: 'wire', line: `<- ${text}` });
   if (action.kind === 'control') wire(describeWire(action.message));
-  else {
-    const { sender, trial } = action.proposal;
-    wire(describeWire({ kind: 'test', sender, trial, sampleRate: cooperativeRate }));
-    wire(describeTestSent(action.proposal));
-  }
+  else wire(describeTestSent(action.proposal));
   const samples = guardedWave(action.kind === 'control' ? controlWave(action.message, cooperativeRate)
     : trialWave(action.proposal, cooperativeRate), cooperativeRate);
   activeToken = ++nextToken;
@@ -382,10 +378,15 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         outgoing = []; deferredControl = []; activeToken = 0; cooperativeSession = undefined;
         cooperativeRate = data.sampleRate;
         configureDetector('off');
-        cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, receiveControl, measurement => {
-          cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement);
-        }, detail => cooperativeEvent({ kind: 'status', phase: 'unscored', detail, log: true }), data.role !== 'controller',
-        line => cooperativeEvent({ kind: 'wire', line }), data.sender);
+        cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, {
+          control: receiveControl,
+          measurement: measurement => { cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement); },
+          testHeard: proposal => cooperativeSession?.testHeard(proposal),
+          lost: proposal => cooperativeEvent({ kind: 'lost', proposal }),
+          wire: line => cooperativeEvent({ kind: 'wire', line }),
+          analyze: data.role !== 'controller',
+          self: data.sender
+        });
         if (data.role !== 'replay') {
           cooperativeSession = new CooperativeSession(data.role, data.config, data.sender,
             action => { outgoing.push(action); drainOutgoing(); }, cooperativeEvent);

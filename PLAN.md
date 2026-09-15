@@ -48,6 +48,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Record the real conversation, embed versioned configuration and measurements in WAV, and recompute from unchanged samples.
 - [x] Evaluate unknown timing internally on the receiver using fresh decoder offsets; report acquisition/CRC/exact recovery independently. Payload FEC remains none.
 - [x] Make the partner a settings-free passive listener that follows restarted controller runs and keeps listening until stopped; log each trial sent and the symbols received.
+- [x] Receive test packets as ordinary frames on a second, temporary listener (received / CRC failed / lost); retire the `test` start marker, the guard setting and the internal acquisition replays.
 - [x] Simplify the Test Suite: one **Start Test** run with a **Number of tests** (up to 100) and a duration estimate that warns past 10 minutes; test packets always play at amplitude 0.8.
 - [x] Give every frame a UDP-like sender ID and type covered by the CRC; drop session IDs from messages and the end marker from trials.
 - [x] Make control messages human-readable method calls (`test_suite`, `ready`, `test`, `end`, `result`, `query`, `ack`, `done`, `lost`) and report per-symbol in-window S/N with its median.

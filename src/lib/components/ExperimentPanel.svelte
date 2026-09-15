@@ -5,14 +5,18 @@
   import { senderHex } from '../dsp/frame';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation } from '../experiment';
+  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
   export let beforeStart: () => Promise<void>;
   let engine: AudioEngine;
   let config = defaultSearch();
-  let measurements: TrialMeasurement[] = [], feedback: SearchObservation[] = [];
+  let measurements: TrialMeasurement[] = [], feedback: SearchObservation[] = [], lostTrials: Proposal[] = [];
+  type Row = { trial:number; settings:Proposal['settings']; outcome:'received'|'CRC failed'|'lost'; raw?:RawResult };
+  // Partner and replay rows come from the receiver's own measurements; the controller's from results it was sent.
+  $: rows=[...(measurements.length?measurements:feedback).map((r):Row=>({trial:r.trial,settings:r.settings,outcome:r.raw.crcOk?'received':'CRC failed',raw:r.raw})),
+    ...lostTrials.map((p):Row=>({trial:p.trial,settings:p.settings,outcome:'lost'}))].sort((a,b)=>a.trial-b.trial);
   let best: {value:number;errors:number;symbols:number} | undefined;
   // `recording` is an in-memory run (a loaded file, or a stored run loaded for replay); `currentId` names the latest stored run.
   let recording: Recording | undefined, writer: RecordingWriter | undefined, currentId: string | undefined;
@@ -92,7 +96,7 @@
     error='';
     try {
       const run=selected==='controller'?validateSearch(config):undefined;
-      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;currentId=undefined;log=[];
+      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];lostTrials=[];best=undefined;recording=undefined;currentId=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
       const metadata:RecordingMetadata={format:'sonic-recording',version:1,createdAt:new Date().toISOString(),
@@ -115,17 +119,17 @@
       const loaded=decodeRecording(await file.arrayBuffer());
       if(!loaded.metadata.cooperative)throw new Error('This WAV has no cooperative experiment metadata. Older recordings can be opened in the general recording panel.');
       if(loaded.metadata.cooperative.config)config=loaded.metadata.cooperative.config;recording=loaded;currentId=undefined;notes=loaded.metadata.notes;
-      measurements=[];feedback=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
+      measurements=[];feedback=[];lostTrials=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
     }catch(e){error=String(e);}finally{input.value='';active=false;}
   }
   async function replay() {
-    active=true;role='replay';cancelled=false;measurements=[];feedback=[];best=undefined;log=[];error='';
+    active=true;role='replay';cancelled=false;measurements=[];feedback=[];lostTrials=[];best=undefined;log=[];error='';
     try {
       const recording=await currentRecording();if(!recording)return;
-      await beforeStart();status='Replaying recorded control markers and test data…';
+      await beforeStart();status='Replaying recorded control messages and test packets…';
       await engine.replayRecording(recording,CONTROL_FSK,p=>seconds=p);
       recording.metadata.cooperative!.measurements=measurements;
-      status=cancelled?'Replay stopped; partial results only.':'Replay complete. Unknown timing was tested internally on the same samples.';
+      status=cancelled?'Replay stopped; partial results only.':'Replay complete. Test packets were received from the recording as ordinary frames.';
     }catch(e){error=String(e);}finally{active=false;role='idle';}
   }
   onMount(()=>{
@@ -134,6 +138,7 @@
       if(event.kind==='wire')append(event.line);
       else if(event.kind==='measurement')measurements=[...measurements,event.measurement];
       else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;}
+      else if(event.kind==='lost')lostTrials=[...lostTrials,event.proposal];
       else if(!finalizing && role!=='idle'){
         status=event.detail;
         if(event.finished||event.log)append(event.detail);
@@ -162,7 +167,6 @@
       <label>Test baud <input type="number" bind:value={config.trial.symbolRate} /></label>
       <label>Payload bytes <input type="number" min="4" max="64" bind:value={config.trial.payloadBytes} /></label>
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
-      <label>Quiet guard (seconds) <input type="number" min="0.25" max="1.5" step="0.25" bind:value={config.trial.guardSeconds} /></label>
     </div>
     <div class="controls">
       <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option></select></label>
@@ -183,11 +187,11 @@
   {#if log.length}<ol class="log" data-testid="experiment-log" aria-label="Experiment log" bind:this={logBox}>{#each log as entry}<li>{entry}</li>{/each}</ol>{/if}
   <div class="actions">
     {#if recording || currentId}<button disabled={active || unavailable} on:click={saveCurrent}>Save experiment WAV</button><button disabled={active || unavailable} on:click={replay}>Replay experiment</button>{/if}
-    {#if measurements.length || feedback.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
+    {#if rows.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,lostTrials,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
-  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Raw symbol errors</th><th>Internal acquisition / exact message</th></tr></thead><tbody>
-    {#each measurements.length ? measurements : feedback as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.raw.symbolErrors}/{row.raw.symbols}</td><td>{#if 'acquisition' in row}{(row as TrialMeasurement).acquisition.filter(a=>a.acquired).length}/4 acquired · {(row as TrialMeasurement).acquisition.filter(a=>a.exact).length}/4 exact{:else}See partner recording{/if}</td></tr>{/each}
+  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
+    {#each rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
   </tbody></table></div>
   <section class="library" aria-label="Saved recordings" data-testid="recordings">
     <div class="library-head"><h3>Saved recordings</h3><button disabled={active || !library.length} on:click={clearStored}>Clear all</button></div>
@@ -202,7 +206,7 @@
       </tbody></table></div>
     {:else}<p>No saved recordings.</p>{/if}
   </section>
-  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> and a CRC (no FEC), with acknowledgement and retries after 6 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The start marker must be heard to score a trial. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
+  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 719)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> and a CRC (no FEC), with acknowledgement and retries after 6 seconds without a reply. Lost feedback is re-queried, never re-measured; a trial the partner never heard is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The partner receives each test packet as an ordinary frame on a second listener: received, CRC failed (symbols still scored), or lost if it isn't heard in time. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
 </section>
 <style>
 .experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.estimate{margin:0;align-self:center}.estimate.over{color:#ffcf6e}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}

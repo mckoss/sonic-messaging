@@ -7,21 +7,20 @@ import { encodeRecording } from '../../src/lib/audio/recording';
 import { CONTROL_FSK, defaultSearch, hexBytes, trialPayload, validateSearch } from '../../src/lib/experiment';
 import manifest from '../../package.json' with { type: 'json' };
 const sampleRate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
-const testLine=`-> 02CF test packet ${hexBytes(trialPayload(config.trial))} · trial 1: 64/64 symbols received, S/N dB [`;
+const testLine=`-> 02CF test packet ${hexBytes(trialPayload(config.trial))} · trial 1: received, 64/64 symbols received, S/N dB [`;
 const a=guardedWave(controlWave({kind:'test_suite',...proposal},sampleRate),sampleRate),b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
 const samples=new Float32Array(a.length+b.length);samples.set(a);samples.set(b,a.length);
 const wav=encodeRecording({samples,metadata:{format:'sonic-recording',version:1,appVersion:manifest.version,createdAt:'2026-09-14',sampleRate,fsk:CONTROL_FSK,inputSettings:{},userAgent:'fixture',notes:'',cooperative:{version:1,config}}});
-test('replays cooperative audio without microphone access and recomputes raw and acquisition results',async({page})=>{
+test('replays cooperative audio without microphone access and receives the test packet again',async({page})=>{
   await page.addInitScript(()=>{navigator.mediaDevices.getUserMedia=async()=>{throw Error('Replay must not request a microphone');};});
   await page.goto('/sonic-messaging/#tests');
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   await page.getByLabel('Load experiment WAV').setInputFiles({name:'cooperative.wav',mimeType:'audio/wav',buffer:Buffer.from(wav)});
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
   await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+  await expect(page.getByTestId('experiment-results')).toContainText('received');
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
-  await expect(page.getByTestId('experiment-results')).not.toContainText('0/128');
-  await expect(page.getByTestId('experiment-results')).toContainText('4/4 exact');
-  await expect(page.getByTestId('experiment-log')).toContainText('-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5) · trial 1 settings');
+  await expect(page.getByTestId('experiment-log')).toContainText('-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719) · trial 1 settings');
   await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await page.getByTestId('experiment-results').innerText();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
@@ -57,10 +56,11 @@ test.describe('live partner',()=>{
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
+    await expect(page.getByTestId('experiment-results')).toContainText('received');
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
     const log=page.getByTestId('experiment-log');
-    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000) · start marker',
-      testLine,' result(1, 0, 64, 0, 128,','· trial 1: 64/64 symbols received, median S/N','-> 02CF done(1) · run finished after 1 trials'])await expect(log).toContainText(line);
+    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 719)',' ready(1) · partner ready for trial 1',
+      testLine,' result(1, 0, 64, 0, 128,',', 1) · trial 1: received, 64/64 symbols received, median S/N','-> 02CF done(1) · run finished after 1 trials'])await expect(log).toContainText(line);
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();

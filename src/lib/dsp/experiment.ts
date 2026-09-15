@@ -1,197 +1,156 @@
-import { CONTROL_FSK, controlAddress, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore, trialFsk, trialPayload, validateTrial,
-  type Proposal, type TrialSettings, type ControlMessage, type TrialMeasurement, type AcquisitionResult } from '../experiment';
+import { CONTROL_FSK, controlAddress, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore,
+  testListenSeconds, trialFsk, trialPayload, type ControlMessage, type Proposal, type TrialMeasurement } from '../experiment';
 import { encodeFsk } from './fsk';
-import { FskStreamDecoder } from './fsk-stream';
-import { detectFskSymbol } from './fsk-detector';
-import { SymbolTimingLoop } from './symbol-timing';
+import { FskStreamDecoder, type FskStreamFrame, type FskStreamProgress } from './fsk-stream';
 import { bytesToBits } from './bits';
-import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, FRAME_TYPE_NAMES, frame, PAYLOAD_OFFSET, senderHex, SYNC_BYTES } from './frame';
+import { FRAME_TYPE, FRAME_TYPE_NAMES, frame, PAYLOAD_OFFSET, senderHex } from './frame';
 
 export function controlWave(message:ControlMessage,sampleRate:number):Float32Array {
   return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,address:controlAddress(message)}).samples;
 }
-export function trialLayout(proposal:Proposal,sampleRate:number){
-  const t=validateTrial(proposal.settings);
-  if(trialFsk(t).frequencies.slice(-1)[0]>=sampleRate/2)throw new Error('Test tones exceed the audio sample rate');
-  const startMarker=controlWave({kind:'test',sender:proposal.sender,trial:proposal.trial,sampleRate},sampleRate).length;
-  const guard=Math.round(t.guardSeconds*sampleRate),perSymbol=Math.round(sampleRate/t.symbolRate);
-  const testSymbols=Math.ceil((t.payloadBytes+FRAME_OVERHEAD_BYTES)*8/Math.log2(t.tones));
-  const testStart=startMarker+guard,testEnd=testStart+testSymbols*perSymbol;
-  return {startMarker,guard,perSymbol,testStart,testEnd};
-}
+/** A trial's test packet is an ordinary frame of type test on the trial's settings; nothing else marks it. */
 export function trialWave(proposal:Proposal,sampleRate:number):Float32Array {
-  // No end marker: the partner times the packet from the start marker, and nothing is left playing when it replies.
-  const layout=trialLayout(proposal,sampleRate);
-  const out=new Float32Array(layout.testEnd);
-  out.set(controlWave({kind:'test',sender:proposal.sender,trial:proposal.trial,sampleRate},sampleRate));
+  if(trialFsk(proposal.settings).frequencies.slice(-1)[0]>=sampleRate/2)throw new Error('Test tones exceed the audio sample rate');
   const address={sender:proposal.sender,type:FRAME_TYPE.test};
-  out.set(encodeFsk(trialPayload(proposal.settings),{...trialFsk(proposal.settings),sampleRate,address}).samples,layout.testStart);
-  return out;
+  return encodeFsk(trialPayload(proposal.settings),{...trialFsk(proposal.settings),sampleRate,address}).samples;
 }
-/** Guard every outgoing exchange; a trial's markers/test are one sample-timed waveform. */
+/** Guard every outgoing exchange with quiet; before a test packet this is the only (unannounced) delay. */
 export function guardedWave(samples:Float32Array,sampleRate:number):Float32Array {
   const guard=Math.round(sampleRate*0.5),out=new Float32Array(samples.length+guard*2);out.set(samples,guard);return out;
 }
 
-/** Where a trial's test packet ends in receiver samples, given where its start marker began. */
-export function testEndPosition(proposal:Proposal,startMarker:number,sampleRate:number,transmitterRate:number):number {
-  return startMarker+trialLayout(proposal,transmitterRate).testEnd*sampleRate/transmitterRate;
-}
 /**
- * Finds the test packet's own sync word near where the start marker predicts it, using the live receiver's
- * acquisition. Returns the frame start in `samples`, or undefined when no sync is heard within a symbol of the
- * prediction (the trial is then still scored from the marker alone).
+ * Scores what the ordinary receiver decoded for a trial's test packet, CRC-valid or not, against the known payload.
+ * Returns undefined when the frame can't be this trial's packet (wrong length).
  */
-function acquireSync(samples:Float32Array,sampleRate:number,t:TrialSettings,nominal:number,perSymbol:number):number|undefined{
-  const bps=Math.log2(t.tones),syncSymbols=Math.ceil(SYNC_BYTES.length*8/bps);
-  const from=Math.max(0,Math.floor(nominal-1.5*perSymbol)),to=Math.min(samples.length,Math.ceil(nominal+(syncSymbols+3)*perSymbol));
-  const decoder=new FskStreamDecoder({...trialFsk(t),sampleRate});
-  decoder.push(samples.subarray(from,to));
-  const sync=decoder.drainProgress().find(p=>p.type==='sync');
-  if(!sync)return;
-  const decoderPerSymbol=Math.round(sampleRate/t.symbolRate);
-  const anchor=from+sync.position-Math.round(SYNC_BYTES.length*8*decoderPerSymbol/bps);
-  return Math.abs(anchor-nominal)<=perSymbol?anchor:undefined;
-}
-/**
- * Coarse placement comes from the start marker and the sender's nominal sample rate. Like any received frame, timing
- * is then taken from the packet's sync header and tracked through the frame without knowledge of the data; the known
- * payload is used only to count errors.
- */
-export function measureTrial(samples:Float32Array,sampleRate:number,proposal:Proposal,startMarker:number,transmitterRate:number):TrialMeasurement {
-  const t=proposal.settings,layout=trialLayout(proposal,transmitterRate),scale=sampleRate/transmitterRate;
-  const nominal=startMarker+layout.testStart*scale,perSymbol=layout.perSymbol*scale;
-  if(nominal<0||startMarker+layout.testEnd*scale>samples.length)throw new Error('Incomplete trial capture');
-  const synced=acquireSync(samples,sampleRate,t,nominal,perSymbol),start=synced??nominal;
-  // Only payload symbols are scored, but the whole frame (sync, length, address, CRC) is known and helps alignment.
-  const expected=bytesToBits(frame(trialPayload(t),{sender:proposal.sender,type:FRAME_TYPE.test})),bps=Math.log2(t.tones),symbolCount=Math.ceil(expected.length/bps);
-  const frequencies=trialFsk(t).frequencies;
-  const timing=new SymbolTimingLoop(perSymbol,sampleRate,frequencies);
-  const header=PAYLOAD_OFFSET*8;
+export function scoreTestFrame(proposal:Proposal,received:FskStreamFrame,sampleRate:number):TrialMeasurement|undefined{
+  const t=proposal.settings;
+  if(received.payloadLength!==t.payloadBytes)return;
+  const expected=bytesToBits(frame(trialPayload(t),{sender:proposal.sender,type:FRAME_TYPE.test})),bps=Math.log2(t.tones);
+  const header=PAYLOAD_OFFSET*8,payloadBits=t.payloadBytes*8;
   const confusion=Array.from({length:t.tones},()=>Array(t.tones).fill(0) as number[]);
-  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:0,snrMedianDb:0},bits:number[]=[],snrDb:number[]=[];
-  for(let s=0;s<symbolCount;s++){
-    const at=timing.at(s),from=Math.max(0,Math.round(start+at)),to=Math.min(samples.length,Math.round(start+at+perSymbol));
-    const decision=detectFskSymbol(samples.subarray(from,to),sampleRate,frequencies);
-    let winner=0;for(let i=1;i<t.tones;i++)if(decision.scores[i]>decision.scores[winner])winner=i;
-    timing.observe(samples,start,winner,at);
+  const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:received.confidence,snrMedianDb:0,crcOk:received.crcOk};
+  const bits:number[]=[],snrDb:number[]=[];
+  received.symbols.forEach((winner,s)=>{
     let target=0;
     for(let b=0;b<bps;b++){
       const bit=s*bps+b;target=(target<<1)|(expected[bit]??0);
-      if(bit>=header&&bit<header+t.payloadBytes*8){const heard=(winner>>>(bps-b-1))&1;bits.push(heard);raw.bits++;if(heard!==expected[bit])raw.bitErrors++;}
+      if(bit>=header&&bit<header+payloadBits){const heard=(winner>>>(bps-b-1))&1;bits.push(heard);raw.bits++;if(heard!==expected[bit])raw.bitErrors++;}
     }
-    if(s*bps>=header&&(s+1)*bps<=header+t.payloadBytes*8){raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;raw.confidence+=decision.confidence;snrDb.push(snrDbFromScore(decision.scores[winner]));}
-  }
-  raw.confidence/=Math.max(1,raw.symbols);raw.snrMedianDb=median(snrDb);
-  const received=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
-  const timingOffsetMs=(start-nominal)/sampleRate*1000,timingDriftMs=timing.offset/sampleRate*1000;
-  const measurement:TrialMeasurement={...proposal,received,snrDb,raw,sampleRate,testStart:start,testEnd:start+symbolCount*perSymbol+timing.offset,
-    samplesPerSymbol:perSymbol,timingSource:synced===undefined?'marker':'sync',timingOffsetMs,timingDriftMs,startMarker,confusion,acquisition:[]};
-  measurement.acquisition=replayAcquisition(samples,measurement);
-  return measurement;
-}
-/** Crop only on the receiver. Fresh decoders never receive ground-truth packet positions. */
-export function replayAcquisition(samples:Float32Array,m:TrialMeasurement):AcquisitionResult[]{
-  const t=m.settings,lead=t.guardSeconds*m.sampleRate*0.8;
-  return [0,0.25,1.5,2.75].map(symbolOffset=>{
-    const advance=Math.min(symbolOffset*m.samplesPerSymbol,lead*0.75);
-    const from=Math.max(0,Math.floor(m.testStart-lead+advance)),to=Math.min(samples.length,Math.ceil(m.testEnd+t.guardSeconds*m.sampleRate*0.5));
-    const decoder=new FskStreamDecoder({...trialFsk(t),sampleRate:m.sampleRate});
-    const packets=[],progress=[];
-    for(let offset=from;offset<to;offset+=128){packets.push(...decoder.push(samples.subarray(offset,Math.min(to,offset+128))));progress.push(...decoder.drainProgress());}
-    const packet=packets.find(p=>Math.abs(p.startPosition+from-m.testStart)<m.samplesPerSymbol/2);
-    const expected=trialPayload(t);
-    const acquired=progress.some(p=>p.type==='sync'&&Math.abs(p.position+from-32*Math.round(m.sampleRate/t.symbolRate)/Math.log2(t.tones)-m.testStart)<m.samplesPerSymbol/2);
-    return {offsetSamples:from,acquired,crcOk:!!packet,exact:!!packet&&packet.payload.length===expected.length&&packet.payload.every((b,i)=>b===expected[i])};
+    if(s*bps>=header&&(s+1)*bps<=header+payloadBits){
+      raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;snrDb.push(snrDbFromScore(received.scores[s]));
+    }
   });
+  raw.snrMedianDb=median(snrDb);
+  const bytes=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
+  return {...proposal,received:bytes,snrDb,raw,sampleRate,startPosition:received.startPosition,
+    timingDriftMs:received.timingOffset/sampleRate*1000,confusion};
 }
 
-const ANALYSIS_WINDOW_SECONDS=60,MAX_TRACKED_TRIALS=64;
-function remember<T>(map:Map<string,T>,key:string,value:T){map.set(key,value);if(map.size>MAX_TRACKED_TRIALS)map.delete(map.keys().next().value!);}
+export interface AnalyzerOptions {
+  control?:(m:ControlMessage)=>void;
+  measurement?:(m:TrialMeasurement)=>void;
+  /** The expected test packet's sync was heard; the trial is on the air. */
+  testHeard?:(proposal:Proposal)=>void;
+  /** No test packet was heard before the listening window closed. */
+  lost?:(proposal:Proposal)=>void;
+  wire?:(line:string)=>void;
+  /** Listen for test packets after each test_suite (partner and replay). */
+  analyze?:boolean;
+  /** This device's sender ID; its own frames heard back are dropped unlogged. */
+  self?:number;
+}
+
+/** Tracks the bytes of a frame in progress so a failed one can be logged with what was heard. */
+class GarbleTracker {
+  private bytes:number[]=[];
+  private length?:number;
+  constructor(private wire:(line:string)=>void,private label:()=>string){}
+  observe(progress:FskStreamProgress[]){
+    for(const p of progress){
+      if(p.type==='sync'||p.type==='crc-confirm'){this.bytes=[];this.length=undefined;}
+      else if(p.type==='length')this.length=p.length;
+      else if(p.type==='byte')this.bytes.push(p.byte);
+      else if(p.type==='crc-error'){
+        const text=String.fromCharCode(...this.bytes.map(b=>b>=0x20&&b<=0x7e?b:0xb7));
+        const heard=this.bytes.length?` "${text}" ${hexBytes(this.bytes)}`:'';
+        const why=this.length===undefined?'header unreadable':this.bytes.length<this.length?`signal lost after ${this.bytes.length} of ${this.length} bytes`:'CRC failed';
+        this.wire(`X Garbled ${this.label()}${heard} (${why})`);
+        this.bytes=[];this.length=undefined;
+      }
+    }
+  }
+}
+
 /**
- * Scores trials from a rolling window of recent audio: a trial (markers, guards and a packet of at most
- * 15 s) spans well under the window, so long sessions don't grow memory. Positions stay absolute.
+ * Two listeners share the incoming audio. The control listener always runs. After each test_suite, a temporary
+ * listener on the trial's own settings receives the test packet exactly as ordinary reception would, until the packet
+ * is decoded or the expected listening window closes. Memory stays bounded however long the session runs.
  */
 export class CooperativeAnalyzer {
-  private buffer:Float32Array;
-  private length=0;
-  private origin=0;
-  private isPendingTestPacket(sender:number,payload:Uint8Array){
-    return [...this.starts.keys()].some(key=>{
-      const p=this.proposals.get(key),expected=p&&p.sender===sender?trialPayload(p.settings):undefined;
-      return !!expected&&expected.length===payload.length&&expected.every((b,i)=>b===payload[i]);
-    });
-  }
-  /** Scores each started trial once its whole test packet is in the window. */
-  private measureReady(){
-    const end=this.origin+this.length;
-    for(const [key,start] of [...this.starts]){
-      const p=this.proposals.get(key);
-      if(!p||end<testEndPosition(p,start.position,this.sampleRate,start.rate)+this.sampleRate*0.05)continue;
-      this.starts.delete(key);remember(this.measured,key,true);
-      try{
-        const o=this.origin,r=measureTrial(this.buffer.subarray(0,this.length),this.sampleRate,p,start.position-o,start.rate);
-        this.wire(`-> ${describeTestReceived(r)}`);
-        this.measurement({...r,testStart:r.testStart+o,testEnd:r.testEnd+o,startMarker:r.startMarker+o,
-          acquisition:r.acquisition.map(a=>({...a,offsetSamples:a.offsetSamples+o}))});
-      }catch(e){this.problem(`Trial ${p.trial+1}: ${e instanceof Error?e.message:String(e)}; not scored.`);}
-    }
-  }
-  private heard:number[]=[];
-  private heardLength?:number;
-  private decoder:FskStreamDecoder;
-  private proposals=new Map<string,Proposal>();
-  private starts=new Map<string,{position:number;rate:number}>();
-  private measured=new Map<string,true>();
-  constructor(readonly sampleRate:number,private control:(m:ControlMessage)=>void,
-    private measurement:(m:TrialMeasurement)=>void,private problem:(message:string)=>void,private analyze=true,
-    private wire:(line:string)=>void=()=>{},
-    /** This device's sender ID; its own frames heard back are logged and dropped. */
-    private self?:number){
-    this.buffer=new Float32Array(sampleRate*ANALYSIS_WINDOW_SECONDS);this.decoder=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
+  private position=0;
+  private control:FskStreamDecoder;
+  private controlGarble:GarbleTracker;
+  private test?:{proposal:Proposal;decoder:FskStreamDecoder;deadline:number;heard:boolean;garbled:boolean};
+  private wire:(line:string)=>void;
+  constructor(readonly sampleRate:number,private options:AnalyzerOptions={}){
+    this.wire=options.wire??(()=>{});
+    this.control=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
+    this.controlGarble=new GarbleTracker(this.wire,()=>'message');
   }
   push(chunk:Float32Array){
-    const overflow=this.length+chunk.length-this.buffer.length;
-    if(overflow>0){
-      // Drop at least half the window at once so compaction stays rare.
-      const drop=Math.min(this.length,Math.max(overflow,this.buffer.length>>1));
-      this.buffer.copyWithin(0,drop,this.length);this.length-=drop;this.origin+=drop;
-    }
-    this.buffer.set(chunk.subarray(Math.max(0,chunk.length-this.buffer.length)),this.length);this.length+=Math.min(chunk.length,this.buffer.length);
-    for(const packet of this.decoder.push(chunk)){
-      // This device's own transmissions, heard back by its microphone, are dropped unlogged.
-      if(packet.sender===this.self)continue;
-      const raw=packet.frameType===FRAME_TYPE.control?String.fromCharCode(...packet.payload)
-        :`${FRAME_TYPE_NAMES[packet.frameType]??`type ${packet.frameType}`} ${hexBytes(packet.payload)}`;
-      // A test packet on the control tones and baud also decodes here; its scored line reports it once instead.
-      if(packet.frameType===FRAME_TYPE.test&&this.isPendingTestPacket(packet.sender,packet.payload))continue;
-      const m=packet.frameType===FRAME_TYPE.control?decodeControl(packet.payload,packet.sender):undefined;
-      if(!m){
-        this.wire(`-> ${senderHex(packet.sender)} ${packet.frameType===FRAME_TYPE.control?`"${raw}" · unparseable control message`:raw}`);
+    for(const packet of this.control.push(chunk)){
+      if(packet.sender===this.options.self)continue;
+      if(packet.frameType!==FRAME_TYPE.control){
+        // A test packet on the control tones and baud also decodes here; the test listener reports it.
+        if(!(packet.frameType===FRAME_TYPE.test&&this.test))
+          this.wire(`-> ${senderHex(packet.sender)} ${FRAME_TYPE_NAMES[packet.frameType]??`type ${packet.frameType}`} ${hexBytes(packet.payload)}`);
         continue;
       }
-      const key=`${m.sender}:${m.trial}`;
+      const m=decodeControl(packet.payload,packet.sender);
+      if(!m){this.wire(`-> ${senderHex(packet.sender)} "${String.fromCharCode(...packet.payload)}" · unparseable control message`);continue;}
       this.wire(`-> ${describeWire(m,packet.payload)}`);
-      if(this.analyze){
-        if(m.kind==='test_suite'&&!this.proposals.has(key))remember(this.proposals,key,{sender:m.sender,trial:m.trial,settings:m.settings});
-        if(m.kind==='test'&&this.proposals.has(key)&&!this.starts.has(key)&&!this.measured.has(key))remember(this.starts,key,{position:packet.startPosition,rate:m.sampleRate});
-      }
-      this.control(m);
+      if(this.options.analyze&&m.kind==='test_suite')this.listenForTest(m);
+      this.options.control?.(m);
     }
-    if(this.analyze)this.measureReady();
-    // The control payload has CRC but no FEC, so any symbol error discards the whole message.
-    for(const p of this.decoder.drainProgress()){
-      if(p.type==='sync'){this.heard=[];this.heardLength=undefined;}
-      else if(p.type==='length')this.heardLength=p.length;
-      else if(p.type==='byte')this.heard.push(p.byte);
-      else if(p.type==='crc-confirm'){this.heard=[];this.heardLength=undefined;}
-      else if(p.type==='crc-error'){
-        const text=String.fromCharCode(...this.heard.map(b=>b>=0x20&&b<=0x7e?b:0xb7));
-        const bytes=this.heard.length?` "${text}" ${hexBytes(this.heard)}`:'';
-        const why=this.heardLength===undefined?'header unreadable':this.heard.length<this.heardLength?`signal lost after ${this.heard.length} of ${this.heardLength} bytes`:'CRC failed';
-        this.wire(`X Garbled message${bytes} (${why})`);
-        this.heard=[];this.heardLength=undefined;
-      }
+    // While a test listener shares control's tones, its failures are reported there instead.
+    const progress=this.control.drainProgress();
+    if(!this.test)this.controlGarble.observe(progress);
+    this.control.drainFrames();
+    this.position+=chunk.length;
+    if(this.test)this.pushTest(chunk);
+  }
+  private listenForTest(m:ControlMessage&{kind:'test_suite'}){
+    const deadline=this.position+Math.round(testListenSeconds(m.settings)*this.sampleRate);
+    const current=this.test?.proposal;
+    // A repeated test_suite for the trial already being listened for just extends the window.
+    if(current&&current.sender===m.sender&&current.trial===m.trial&&JSON.stringify(current.settings)===JSON.stringify(m.settings)){this.test!.deadline=deadline;return;}
+    this.test={proposal:{sender:m.sender,trial:m.trial,settings:m.settings},deadline,heard:false,garbled:false,
+      decoder:new FskStreamDecoder({...trialFsk(m.settings),sampleRate:this.sampleRate},this.position)};
+  }
+  private pushTest(chunk:Float32Array){
+    const t=this.test!;
+    t.decoder.push(chunk);
+    const progress=t.decoder.drainProgress();
+    if(!t.heard&&progress.some(p=>p.type==='sync')){t.heard=true;this.options.testHeard?.(t.proposal);}
+    for(const received of t.decoder.drainFrames()){
+      if(received.sender===this.options.self)continue;
+      // Someone else's valid frame on these settings isn't our test packet.
+      if(received.crcOk&&received.frameType!==FRAME_TYPE.test)continue;
+      const m=scoreTestFrame(t.proposal,received,this.sampleRate);
+      if(!m)continue;
+      this.wire(`-> ${describeTestReceived(m)}`);
+      this.test=undefined;
+      this.options.measurement?.(m);
+      return;
+    }
+    // A sync whose header then failed: keep listening, but note it.
+    if(progress.some(p=>p.type==='crc-error')&&!t.garbled){t.garbled=true;this.wire(`X Trial ${t.proposal.trial+1} test packet heard but its header was unreadable`);}
+    // Keep listening while a frame is mid-decode, even past the window.
+    if(this.position>=t.deadline&&t.decoder.lockedSymbolAnchor()===undefined){
+      this.wire(`X Trial ${t.proposal.trial+1} test packet not received (listened ${testListenSeconds(t.proposal.settings).toFixed(1)} s)`);
+      this.test=undefined;
+      this.options.lost?.(t.proposal);
     }
   }
 }
