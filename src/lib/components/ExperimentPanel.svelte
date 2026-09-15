@@ -6,7 +6,7 @@
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateTestSeconds, totalTests, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
+  import { defaultSearch, estimateRunSeconds, spacingForBaud, totalTests, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -21,7 +21,7 @@
   let regime: string | undefined;
   const addRow=(row:Omit<Row,'at'|'regime'>)=>{rows=[...rows,{...row,regime,at:new Date()}];};
   const describeRegime=(run:SearchSettings)=>{
-    const label={lowestFrequency:'base frequency',spacing:'tone spacing',tones:'number of tones'}[run.parameter];
+    const label={lowestFrequency:'base frequency',spacing:'tone spacing',tones:'number of tones',symbolRate:'test baud'}[run.parameter];
     const range=run.parameter==='tones'?'2–16':`${run.minimum}–${run.maximum} step ${run.step}`;
     return `varying ${label} ${range} · ${totalTests(run)} test${totalTests(run)===1?'':'s'}, ${run.repetitions}× each`;
   };
@@ -44,8 +44,8 @@
   function append(entry:string){log=[...log,entry].slice(-2000);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
   const megabytes=(bytes:number)=>`${(bytes/1048576).toFixed(1)} MB`;
   $: plan=(()=>{try{
-    const run=validateSearch(config),tests=totalTests(run);
-    return {tests,seconds:estimateTestSeconds(run.trial)*tests};
+    const run=validateSearch(config);
+    return {tests:totalTests(run),seconds:estimateRunSeconds(run)};
   }catch{return undefined;}})();
   const duration=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
   async function refreshLibrary() {
@@ -190,13 +190,14 @@
     <div class="controls">
       <label>Test tones <select bind:value={config.trial.tones}>{#each [2,4,8,16] as n}<option value={n}>{n}</option>{/each}</select></label>
       <label>Base frequency <input type="number" bind:value={config.trial.lowestFrequency} /></label>
-      <label>Tone spacing <input type="number" bind:value={config.trial.spacing} /></label>
+      <label>Tone spacing <input type="number" bind:value={config.trial.spacing} disabled={config.parameter==='symbolRate'} /></label>
       <label>Test baud <input type="number" bind:value={config.trial.symbolRate} /></label>
       <label>Payload bytes <input type="number" min="4" max="64" bind:value={config.trial.payloadBytes} /></label>
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
     </div>
     <div class="controls">
-      <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option></select></label>
+      <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option><option value="symbolRate">Test baud</option></select></label>
+      {#if config.parameter === 'symbolRate'}<p class="estimate">Tone spacing follows each baud: 2 × baud (e.g. {spacingForBaud(config.trial.symbolRate)} Hz at {config.trial.symbolRate} baud)</p>{/if}
       {#if config.parameter !== 'tones'}
         <label>Minimum <input type="number" bind:value={config.minimum} /></label>
         <label>Maximum <input type="number" bind:value={config.maximum} /></label>

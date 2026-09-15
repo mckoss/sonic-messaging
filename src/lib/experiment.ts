@@ -4,7 +4,7 @@ export interface TrialSettings {
   tones: number; lowestFrequency: number; spacing: number; symbolRate: number;
   payloadBytes: number; seed: number;
 }
-export type SearchParameter = 'lowestFrequency' | 'spacing' | 'tones';
+export type SearchParameter = 'lowestFrequency' | 'spacing' | 'tones' | 'symbolRate';
 export interface SearchSettings {
   trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number;
   /** How many times each value of the parameter is tested. */
@@ -33,6 +33,15 @@ export function defaultSearch(): SearchSettings {
   return { trial: { tones: 4, lowestFrequency: 1000, spacing: 200, symbolRate: 100,
     payloadBytes: 16, seed: 719 }, parameter: 'lowestFrequency', minimum: 600, maximum: 3000, step: 400, repetitions: 1 };
 }
+/**
+ * Non-coherent FSK needs tones spaced at a multiple of the symbol rate to stay orthogonal; twice that leaves margin
+ * for timing and frequency error. A baud sweep sets the gap for each value, since the right gap follows the rate.
+ */
+export const spacingForBaud = (symbolRate: number) => symbolRate * 2;
+/** One trial's settings with the swept parameter set to `value`. */
+export function withValue(t: TrialSettings, parameter: SearchParameter, value: number): TrialSettings {
+  return parameter === 'symbolRate' ? { ...t, symbolRate: value, spacing: spacingForBaud(value) } : { ...t, [parameter]: value };
+}
 /** Every value the run tests: all four tone counts, or minimum..maximum in steps. */
 export function searchValues(s: SearchSettings): number[] {
   if (s.parameter === 'tones') return [2, 4, 8, 16];
@@ -44,12 +53,12 @@ export function searchValues(s: SearchSettings): number[] {
 export const totalTests = (s: SearchSettings) => searchValues(s).length * s.repetitions;
 export function validateSearch(value: SearchSettings): SearchSettings {
   const s = { ...value, trial: validateTrial(value.trial) };
-  if (!['lowestFrequency','spacing','tones'].includes(s.parameter) || !Number.isInteger(s.repetitions) || s.repetitions < 1 || s.repetitions > MAX_REPETITIONS ||
+  if (!['lowestFrequency','spacing','tones','symbolRate'].includes(s.parameter) || !Number.isInteger(s.repetitions) || s.repetitions < 1 || s.repetitions > MAX_REPETITIONS ||
       !Number.isInteger(s.minimum) || !Number.isInteger(s.maximum) || s.minimum >= s.maximum ||
       !Number.isInteger(s.step) || s.step < 1) throw new Error(`Invalid search range or repetitions (1–${MAX_REPETITIONS})`);
   const values = searchValues(s);
   if (!values.length || values.length * s.repetitions > MAX_TESTS) throw new Error(`A run may send at most ${MAX_TESTS} test packets`);
-  for (const v of values) validateTrial({ ...s.trial, [s.parameter]: v });
+  for (const v of values) validateTrial(withValue(s.trial, s.parameter, v));
   return s;
 }
 export function trialPayload(t: TrialSettings): Uint8Array {
@@ -179,7 +188,7 @@ export class ParameterSearch {
     const n=this.observations.length,c=this.config;
     if(n>=totalTests(c))return;
     while(this.schedule.length<=n)this.schedule.push(...this.shuffled());
-    return validateTrial({...c.trial,[c.parameter]:this.schedule[n]});
+    return validateTrial(withValue(c.trial,c.parameter,this.schedule[n]));
   }
 }
 export type CooperativeEvent =
@@ -226,6 +235,10 @@ const testPacketSeconds = (t: TrialSettings) => frameSeconds(t.payloadBytes, t.t
  * Rough duration of one clean test (no retries): test_suite, its ACK, test packet, result, its ACK, each with 0.5 s quiet
  * guards on both sides plus ~0.4 s of decode and audio latency per exchange.
  */
+/** Estimated length of a whole run: every value, once per repetition, at that value's own air time. */
+export function estimateRunSeconds(s: SearchSettings): number {
+  return searchValues(s).reduce((total, value) => total + estimateTestSeconds(withValue(s.trial, s.parameter, value)), 0) * s.repetitions;
+}
 export function estimateTestSeconds(t: TrialSettings): number {
   const trial = 9, raw = { symbolErrors: 10, symbols: 64, bitErrors: 10, bits: 128, confidence: 0.85, snrMedianDb: 18.5, crcOk: true };
   return [controlSeconds({ kind: 'test_suite', sender: 0, trial, settings: t }), ackSeconds(),

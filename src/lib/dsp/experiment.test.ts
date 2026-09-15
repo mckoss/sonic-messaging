@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { MAX_REPETITIONS, searchValues, totalTests, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { MAX_REPETITIONS, estimateRunSeconds, searchValues, spacingForBaud, totalTests, withValue, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -279,6 +279,22 @@ describe('control protocol and search',()=>{
     expect(order.slice(0,7)).not.toEqual(values);
     expect(s.best()?.value).toBe(1400);
     expect(s.add(s.observations[0])).toBe(false);
+  });
+  it('sweeps test baud, setting each value its own orthogonal tone spacing',()=>{
+    const run=validateSearch({...config,parameter:'symbolRate',minimum:25,maximum:100,step:25,repetitions:1});
+    expect(searchValues(run)).toEqual([25,50,75,100]);
+    const s=new ParameterSearch(run,()=>0),seen:[number,number][]=[];
+    for(let i=0;i<4;i++){
+      const settings=s.next()!;seen.push([settings.symbolRate,settings.spacing]);
+      s.add({sender:1,trial:i,settings,raw:{symbolErrors:0,symbols:64,bits:128,bitErrors:0,confidence:1,snrMedianDb:20,crcOk:true}});
+    }
+    expect(seen.sort((a,b)=>a[0]-b[0])).toEqual([[25,50],[50,100],[75,150],[100,200]]);
+    expect(spacingForBaud(100)).toBe(200); // the existing default gap
+    // Slower tests take longer, so the run estimate adds each value's own air time.
+    const slow=estimateTestSeconds(withValue(config.trial,'symbolRate',25));
+    const fast=estimateTestSeconds(withValue(config.trial,'symbolRate',100));
+    expect(slow).toBeGreaterThan(fast);
+    expect(estimateRunSeconds(run)).toBeCloseTo([25,50,75,100].reduce((t,v)=>t+estimateTestSeconds(withValue(config.trial,'symbolRate',v)),0),6);
   });
   it('re-sends the same value when a trial is never received, keeping coverage exact',()=>{
     const run={...config,minimum:600,maximum:1400,step:400,repetitions:1};
