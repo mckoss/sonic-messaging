@@ -3,9 +3,10 @@
   import { AudioEngine } from '../audio';
   import { DEVICE_SENDER } from '../sender';
   import { senderHex } from '../dsp/frame';
+  import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult } from '../experiment';
+  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -13,10 +14,25 @@
   let engine: AudioEngine;
   let config = defaultSearch();
   let measurements: TrialMeasurement[] = [], feedback: SearchObservation[] = [], lostTrials: Proposal[] = [];
-  type Row = { trial:number; settings:Proposal['settings']; outcome:'received'|'CRC failed'|'lost'; raw?:RawResult };
-  // Partner and replay rows come from the receiver's own measurements; the controller's from results it was sent.
-  $: rows=[...(measurements.length?measurements:feedback).map((r):Row=>({trial:r.trial,settings:r.settings,outcome:r.raw.crcOk?'received':'CRC failed',raw:r.raw})),
-    ...lostTrials.map((p):Row=>({trial:p.trial,settings:p.settings,outcome:'lost'}))].sort((a,b)=>a.trial-b.trial);
+  type Row = { sender:number; trial:number; settings:Proposal['settings']; outcome:'received'|'CRC failed'|'lost'; raw?:RawResult; regime?:string; at:Date };
+  type Run = { sender:number; settings:Proposal['settings']; regime?:string; started:Date; last:number; rows:Row[] };
+  /** Rows in the order they arrived, so the newest are always last. */
+  let rows: Row[] = [];
+  let regime: string | undefined;
+  const addRow=(row:Omit<Row,'at'|'regime'>)=>{rows=[...rows,{...row,regime,at:new Date()}];};
+  const describeRegime=(run:SearchSettings)=>{
+    const label={lowestFrequency:'base frequency',spacing:'tone spacing',tones:'number of tones'}[run.parameter];
+    const range=run.parameter==='tones'?'2–16':`${run.minimum}–${run.maximum} step ${run.step}`;
+    return `varying ${label} ${range} · ${run.budget} test${run.budget===1?'':'s'}`;
+  };
+  // A partner keeps listening across controller runs: a new sender, or trial numbers starting over, begins a new run.
+  $: runs=rows.reduce((all:Run[],row)=>{
+    const current=all[all.length-1];
+    if(!current||current.sender!==row.sender||row.trial<=current.last)
+      all.push({sender:row.sender,settings:row.settings,regime:row.regime,started:row.at,last:row.trial,rows:[row]});
+    else {current.rows.push(row);current.last=row.trial;}
+    return all;
+  },[]);
   let best: {value:number;errors:number;symbols:number} | undefined;
   // `recording` is an in-memory run (a loaded file, or a stored run loaded for replay); `currentId` names the latest stored run.
   let recording: Recording | undefined, writer: RecordingWriter | undefined, currentId: string | undefined;
@@ -96,7 +112,7 @@
     error='';
     try {
       const run=selected==='controller'?validateSearch(config):undefined;
-      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];lostTrials=[];best=undefined;recording=undefined;currentId=undefined;log=[];
+      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];lostTrials=[];rows=[];best=undefined;recording=undefined;currentId=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
       const metadata:RecordingMetadata={format:'sonic-recording',version:1,createdAt:new Date().toISOString(),
@@ -108,6 +124,7 @@
         writer=created;currentId=created.id;void refreshLibrary();
       } catch(e){append(`Recording unavailable (${e instanceof Error?e.message:String(e)}); measurements continue without a saved recording.`);}
       if(cancelled)return;
+      regime=run?describeRegime(run):undefined;
       engine.configureCooperative(selected,run,DEVICE_SENDER);
     } catch(e){error=String(e);stop();}
   }
@@ -119,11 +136,11 @@
       const loaded=decodeRecording(await file.arrayBuffer());
       if(!loaded.metadata.cooperative)throw new Error('This WAV has no cooperative experiment metadata. Older recordings can be opened in the general recording panel.');
       if(loaded.metadata.cooperative.config)config=loaded.metadata.cooperative.config;recording=loaded;currentId=undefined;notes=loaded.metadata.notes;
-      measurements=[];feedback=[];lostTrials=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
+      measurements=[];feedback=[];lostTrials=[];rows=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
     }catch(e){error=String(e);}finally{input.value='';active=false;}
   }
   async function replay() {
-    active=true;role='replay';cancelled=false;measurements=[];feedback=[];lostTrials=[];best=undefined;log=[];error='';
+    active=true;role='replay';cancelled=false;measurements=[];feedback=[];lostTrials=[];rows=[];best=undefined;log=[];error='';
     try {
       const recording=await currentRecording();if(!recording)return;
       await beforeStart();status='Replaying recorded control messages and test packets…';
@@ -136,9 +153,16 @@
     engine=new AudioEngine();
     const off=engine.onCooperative(event=>{
       if(event.kind==='wire')append(event.line);
-      else if(event.kind==='measurement')measurements=[...measurements,event.measurement];
-      else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;}
-      else if(event.kind==='lost')lostTrials=[...lostTrials,event.proposal];
+      else if(event.kind==='measurement'){
+        measurements=[...measurements,event.measurement];
+        addRow({...event.measurement,outcome:event.measurement.raw.crcOk?'received':'CRC failed',raw:event.measurement.raw});
+      }
+      else if(event.kind==='feedback'){
+        feedback=[...feedback,event.observation];best=event.best;
+        // The controller's own rows come from results the partner sent back; a partner scores its own.
+        if(role==='controller')addRow({...event.observation,outcome:event.observation.raw.crcOk?'received':'CRC failed',raw:event.observation.raw});
+      }
+      else if(event.kind==='lost'){lostTrials=[...lostTrials,event.proposal];addRow({...event.proposal,outcome:'lost'});}
       else if(!finalizing && role!=='idle'){
         status=event.detail;
         if(event.finished||event.log)append(event.detail);
@@ -191,7 +215,10 @@
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
   <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
-    {#each rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
+    {#each runs as run}
+      <tr class="run-divider"><th colspan="5">Run from {senderHex(run.sender)} · {run.started.toLocaleTimeString()} · {describeSettings(run.settings)}{run.regime ? ` · ${run.regime}` : ''}</th></tr>
+      {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
+    {/each}
   </tbody></table></div>
   <section class="library" aria-label="Saved recordings" data-testid="recordings">
     <div class="library-head"><h3>Saved recordings</h3><button disabled={active || !library.length} on:click={clearStored}>Clear all</button></div>
@@ -209,5 +236,5 @@
   <p>Control: 4-FSK, 100 baud, 1000–1600 Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 719)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> a sequence number and a CRC (no FEC). Frames that ask for an ACK are retried up to 3 times, 4 seconds apart; a test packet is never re-sent, and a trial the partner did not receive is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The partner receives each test packet as an ordinary frame on a second listener: received, CRC failed (symbols still scored), or lost if it isn't heard in time. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
 </section>
 <style>
-.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.estimate{margin:0;align-self:center}.estimate.over{color:#ffcf6e}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
+.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.run-divider th{padding-top:12px;color:var(--blue);font-weight:650;white-space:normal;border-bottom:1px solid var(--blue)}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.estimate{margin:0;align-self:center}.estimate.over{color:#ffcf6e}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
 </style>
