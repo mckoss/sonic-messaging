@@ -7,7 +7,8 @@ export type SearchParameter = 'lowestFrequency' | 'spacing' | 'tones';
 export interface SearchSettings {
   trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number; budget: number;
 }
-export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.9 };
+export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.8 };
+// 0.8 leaves headroom so output resampling and device processing don't clip the control tones.
 export const MAX_SESSION_SECONDS = 110;
 /** Longest reply (~1.2 s result plus 1 s of quiet guards) and decode/audio latency fit well inside this. */
 export const REPLY_TIMEOUT_MS = 4500;
