@@ -61,9 +61,9 @@ describe('control protocol and search',()=>{
     expect(decodeControl(encodeControl({kind:'result',session:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1}}))).toBeUndefined();
   });
   it('retries lost results without retransmitting measured data, and deduplicates feedback',()=>{
-    const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[];
-    const c=new CooperativeSession('controller',{...config,budget:1},719,a=>cq.push(a),e=>events.push(e.kind));
-    const p=new CooperativeSession('partner',config,0,a=>pq.push(a),()=>{});
+    const cq:Outgoing[]=[],pq:Outgoing[]=[],events:string[]=[],partnerEvents:string[]=[];
+    const c=new CooperativeSession('controller',{...config,budget:1},719,a=>cq.push(a),e=>events.push(e.kind==='trial'?`trial-${e.direction}`:e.kind));
+    const p=new CooperativeSession('partner',config,0,a=>pq.push(a),e=>partnerEvents.push(e.kind==='trial'?`trial-${e.direction}`:e.kind));
     c.start(0);p.start(0);
     const propose=cq.shift()!;if(propose.kind!=='control')throw Error();c.sent(0);p.receive(propose.message);
     const ready=pq.shift()!;if(ready.kind!=='control')throw Error();p.sent(0);c.receive(ready.message);
@@ -73,6 +73,7 @@ describe('control protocol and search',()=>{
     if(query.kind!=='control')throw Error();expect(query.message.kind).toBe('query');p.receive(query.message);
     const result=pq.shift()!;if(result.kind!=='control')throw Error();c.receive(result.message);c.receive(result.message);
     expect(events.filter(e=>e==='feedback')).toHaveLength(1);expect(cq).toHaveLength(1);
+    expect(events.filter(e=>e==='trial-sent')).toHaveLength(1);expect(partnerEvents.filter(e=>e==='trial-received')).toHaveLength(1);
     c.sent(23000);expect(cq[cq.length-1]?.kind).toBe('control');
   });
   it('runs two cooperative devices through actual acoustic control decoding',()=>{

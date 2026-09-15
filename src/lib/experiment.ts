@@ -119,5 +119,6 @@ export class ParameterSearch {
 }
 export type CooperativeEvent =
   | { kind:'status'; phase:string; detail:string; finished?:boolean }
+  | { kind:'trial'; direction:'sent'|'received'; proposal:Proposal }
   | { kind:'measurement'; measurement:TrialMeasurement }
   | { kind:'feedback'; observation:SearchObservation; best?:{value:number;errors:number;symbols:number} };

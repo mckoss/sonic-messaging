@@ -17,8 +17,10 @@ test('replays cooperative audio without microphone access and recomputes raw and
   await page.getByLabel('Load experiment WAV').setInputFiles({name:'cooperative.wav',mimeType:'audio/wav',buffer:Buffer.from(wav)});
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
   await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
-  await expect(page.getByTestId('experiment-results')).toContainText('0/128');
+  await expect(page.getByTestId('experiment-results')).toContainText('0/64');
+  await expect(page.getByTestId('experiment-results')).not.toContainText('0/128');
   await expect(page.getByTestId('experiment-results')).toContainText('4/4 exact');
+  await expect(page.getByTestId('experiment-log')).toContainText('Trial 1, Tones=4, Base=1000, Delta=200, Baud=100: Symbols received 64/64');
   const original=await page.getByTestId('experiment-results').innerText();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
   await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
@@ -47,7 +49,9 @@ test.describe('live partner',()=>{
     test.setTimeout(45000);await page.goto('/sonic-messaging/#tests');
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
     await expect(page.getByTestId('experiment-status')).toContainText('Controller finished.',{timeout:25000});
-    await expect(page.getByTestId('experiment-results')).toContainText('0/128');
+    await expect(page.getByTestId('experiment-results')).toContainText('0/64');
+    await expect(page.getByTestId('experiment-log')).toContainText('-> Trial 1, Tones=4, Base=1000, Delta=200, Baud=100');
+    await expect(page.getByTestId('experiment-log')).toContainText('<- Symbols received 64/64');
     const original=await page.getByTestId('experiment-results').innerText();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();
     const saved=await (await pending).path();if(!saved)throw Error('Missing capture');

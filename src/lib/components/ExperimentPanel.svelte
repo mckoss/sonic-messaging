@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { AudioEngine } from '../audio';
   import { RecordingCapture, encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording } from '../audio/recording';
-  import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation } from '../experiment';
+  import { defaultSearch, validateSearch, CONTROL_FSK, type TrialMeasurement, type SearchObservation, type Proposal } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -15,6 +15,10 @@
   let status = 'Start the partner first, then run a trial or optimize on the controller.';
   let error = '', notes = '', seconds = 0, finalizing = false, cancelled = false;
   let role: 'idle' | 'controller' | 'partner' | 'replay' = 'idle';
+  let log: string[] = [], logBox: HTMLOListElement;
+  const describe=(p:Proposal)=>`Trial ${p.trial+1}, Tones=${p.settings.tones}, Base=${p.settings.lowestFrequency}, Delta=${p.settings.spacing}, Baud=${p.settings.symbolRate}`;
+  const received=(raw:{symbolErrors:number;symbols:number})=>`Symbols received ${raw.symbols-raw.symbolErrors}/${raw.symbols}`;
+  function append(entry:string){log=[...log,entry].slice(-200);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
   function download(name:string,data:BlobPart,type:string) {
     const url=URL.createObjectURL(new Blob([data],{type})),link=document.createElement('a');
     link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -31,7 +35,7 @@
     error='';
     try {
       const run=validateSearch({...config,budget:single?1:config.budget});
-      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;
+      active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
       capture=new RecordingCapture({format:'sonic-recording',version:1,createdAt:new Date().toISOString(),
@@ -48,12 +52,12 @@
       const loaded=decodeRecording(await file.arrayBuffer());
       if(!loaded.metadata.cooperative)throw new Error('This WAV has no cooperative experiment metadata. Older recordings can be opened in the general recording panel.');
       config=validateSearch(loaded.metadata.cooperative.config);recording=loaded;notes=loaded.metadata.notes;
-      measurements=[];feedback=[];best=undefined;status='Recording loaded. Replay to recompute measurements from its samples.';
+      measurements=[];feedback=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
     }catch(e){error=String(e);}finally{input.value='';active=false;}
   }
   async function replay() {
     if(!recording)return;
-    active=true;role='replay';cancelled=false;measurements=[];feedback=[];best=undefined;error='';
+    active=true;role='replay';cancelled=false;measurements=[];feedback=[];best=undefined;log=[];error='';
     try {
       await beforeStart();status='Replaying recorded control markers and test data…';
       await engine.replayRecording(recording,CONTROL_FSK,p=>seconds=p);
@@ -64,9 +68,17 @@
   onMount(()=>{
     engine=new AudioEngine();
     const off=engine.onCooperative(event=>{
-      if(event.kind==='measurement')measurements=[...measurements,event.measurement];
-      else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;}
-      else if(!finalizing && role!=='idle'){status=event.detail;if(event.finished&&role!=='replay'){const detail=status;stop();status=detail;}}
+      if(event.kind==='trial')append(`${event.direction==='sent'?'<-':'->'} ${describe(event.proposal)}`);
+      else if(event.kind==='measurement'){
+        measurements=[...measurements,event.measurement];
+        append(role==='replay'?`${describe(event.measurement)}: ${received(event.measurement.raw)}`:`<- ${received(event.measurement.raw)}`);
+      }
+      else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;append(`-> ${received(event.observation.raw)}`);}
+      else if(!finalizing && role!=='idle'){
+        status=event.detail;
+        if(event.finished||event.phase==='unscored'||event.detail.startsWith('Retrying'))append(event.detail);
+        if(event.finished&&role!=='replay'){const detail=status;stop();status=detail;}
+      }
     });
     const offCapture=engine.onCapture(event=>{
       if(!capture)return;
@@ -107,16 +119,17 @@
   {#if active}<button on:click={stop}>Stop experiment</button>{/if}
   <p role="status" data-testid="experiment-status">{status} {active?`${seconds.toFixed(1)} s`:''}</p>
   {#if error}<p role="alert">{error}</p>{/if}
+  {#if log.length}<ol class="log" data-testid="experiment-log" aria-label="Experiment log" bind:this={logBox}>{#each log as entry}<li>{entry}</li>{/each}</ol>{/if}
   <div class="actions">
     {#if recording}<button disabled={active || unavailable} on:click={()=>download('sonic-cooperative.wav',encodeRecording(recording!),'audio/wav')}>Save experiment WAV</button><button disabled={active || unavailable} on:click={replay}>Replay experiment</button>{/if}
     {#if measurements.length || feedback.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
-  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Raw symbol errors</th><th>Raw bit errors</th><th>Internal acquisition / exact message</th></tr></thead><tbody>
-    {#each measurements.length ? measurements : feedback as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.raw.symbolErrors}/{row.raw.symbols}</td><td>{row.raw.bitErrors}/{row.raw.bits}</td><td>{#if 'acquisition' in row}{(row as TrialMeasurement).acquisition.filter(a=>a.acquired).length}/4 acquired · {(row as TrialMeasurement).acquisition.filter(a=>a.exact).length}/4 exact{:else}See partner recording{/if}</td></tr>{/each}
+  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Raw symbol errors</th><th>Internal acquisition / exact message</th></tr></thead><tbody>
+    {#each measurements.length ? measurements : feedback as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.raw.symbolErrors}/{row.raw.symbols}</td><td>{#if 'acquisition' in row}{(row as TrialMeasurement).acquisition.filter(a=>a.acquired).length}/4 acquired · {(row as TrialMeasurement).acquisition.filter(a=>a.exact).length}/4 exact{:else}See partner recording{/if}</td></tr>{/each}
   </tbody></table></div>
   <p>Control: 4-FSK, 100 baud, 1000–1600 Hz, amplitude 0.9, CRC with acknowledgement and retries. Tests are never repeated to resolve lost feedback. Sessions stop after 110 seconds; recordings stay in memory until saved. Both timing markers must be received to score a trial. Error counts are measured; calibrated acoustic S/N is not yet available.</p>
 </section>
 <style>
-.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
+.experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
 </style>
