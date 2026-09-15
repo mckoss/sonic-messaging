@@ -12,6 +12,8 @@
   import { waterfallSamplesPerCssPixel } from './lib/audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
   import { get } from 'svelte/store';
+  import { DEVICE_SENDER } from './lib/sender';
+  import { FRAME_TYPE_NAMES, senderHex } from './lib/dsp/frame';
   import { RecordingCapture, encodeRecording, decodeRecording, MAX_RECORDING_BYTES, MAX_RECORDING_SECONDS,
     type Recording } from './lib/audio/recording';
 
@@ -103,7 +105,7 @@
   async function onTransmit(detail: { mode: Mode; payload: string; settings: Record<string, unknown> }) {
     busy = true;
     try {
-      const waveform = await lab.encode(detail);
+      const waveform = await lab.encode({ ...detail, sender: DEVICE_SENDER });
       await audio.transmit(waveform.samples);
       const seconds = waveform.samples.length / waveform.sampleRate;
       logs = [`${new Date().toLocaleTimeString()} · TX ${mode} "${detail.payload}" · ${seconds.toFixed(1)} s of audio`, ...logs].slice(0, 10);
@@ -384,7 +386,8 @@
       const decoded = new TextDecoder('utf-8', { fatal: true });
       try {
         const text = decoded.decode(event.payload);
-        packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: text,
+        const type = event.frameType === 0x03 ? '' : ` ${FRAME_TYPE_NAMES[event.frameType] ?? `type ${event.frameType}`}`;
+        packets = [{ time: new Date().toLocaleTimeString(), mode: event.mode, payload: `${senderHex(event.sender)}${type}: ${text}`,
           quality: `${Math.round(event.confidence * 100)}%` }, ...packets.filter(p => p.mode !== 'Waiting')].slice(0, 6);
       } catch {
         logs = [`${new Date().toLocaleTimeString()} · RX FSK frame with valid CRC rejected: payload is not UTF-8 text`, ...logs].slice(0, 10);
@@ -404,6 +407,8 @@
         addMarker('<SYNC>', 4);
       } else if (event.token === 'length') {
         addMarker(`LEN ${event.length ?? '?'}`, 3);
+      } else if (event.token === 'address') {
+        addMarker(`FROM ${senderHex(event.sender ?? 0)}`, 3);
       } else if (event.token === 'crc-confirm') {
         receivedMessages = [...receivedMessages, `${receivingMessage} ✓`].slice(-24); receivingMessage = '';
         addMarker('✓', 2);

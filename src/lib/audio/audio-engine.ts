@@ -92,10 +92,10 @@ export class AudioEngine {
   onCooperative(listener: (event: CooperativeEvent) => void): () => void {
     this.cooperativeListeners.add(listener); return () => this.cooperativeListeners.delete(listener);
   }
-  configureCooperative(role: 'controller' | 'partner' | 'replay', config?: SearchSettings, session = 0): void {
+  configureCooperative(role: 'controller' | 'partner' | 'replay', config?: SearchSettings, sender = 0): void {
     this.cooperativeGeneration++;
     this.cooperativeConfigured = role !== 'replay';
-    this.worker?.postMessage({ type: 'configure-cooperative', role, config, session,
+    this.worker?.postMessage({ type: 'configure-cooperative', role, config, sender,
       sampleRate: this.state.sampleRate! } satisfies DspWorkerRequest);
   }
   stopCooperative(reason?: string): void {
@@ -376,7 +376,8 @@ export class AudioEngine {
     this.configureFskDetector(fsk.frequencies, fsk.symbolRate);
 
     this.update({ replaying: true, sampleRate: recording.metadata.sampleRate });
-    if (recording.metadata.cooperative) this.configureCooperative('replay', recording.metadata.cooperative.config);
+    // The recording device's sender ID marks its own transmissions as echoes on replay; -1 matches no sender.
+    if (recording.metadata.cooperative) this.configureCooperative('replay', recording.metadata.cooperative.config, recording.metadata.cooperative.sender ?? -1);
     const started = performance.now();
     try {
       for (let offset = 0, sequence = 0; offset < recording.samples.length; offset += 4096, sequence++) {

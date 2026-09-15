@@ -6,8 +6,8 @@ import { controlWave, guardedWave, trialWave } from '../../src/lib/dsp/experimen
 import { encodeRecording } from '../../src/lib/audio/recording';
 import { CONTROL_FSK, defaultSearch, hexBytes, trialPayload, validateSearch } from '../../src/lib/experiment';
 import manifest from '../../package.json' with { type: 'json' };
-const sampleRate=8000,config=validateSearch(defaultSearch()),proposal={session:719,trial:0,settings:config.trial};
-const testLine=`-> ${hexBytes(trialPayload(config.trial))} · trial 1 test packet: 64/64 symbols received, S/N dB [`;
+const sampleRate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
+const testLine=`-> 02CF test packet ${hexBytes(trialPayload(config.trial))} · trial 1: 64/64 symbols received, S/N dB [`;
 const a=guardedWave(controlWave({kind:'test_suite',...proposal},sampleRate),sampleRate),b=guardedWave(trialWave(proposal,sampleRate),sampleRate);
 const samples=new Float32Array(a.length+b.length);samples.set(a);samples.set(b,a.length);
 const wav=encodeRecording({samples,metadata:{format:'sonic-recording',version:1,appVersion:manifest.version,createdAt:'2026-09-14',sampleRate,fsk:CONTROL_FSK,inputSettings:{},userAgent:'fixture',notes:'',cooperative:{version:1,config}}});
@@ -21,7 +21,7 @@ test('replays cooperative audio without microphone access and recomputes raw and
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
   await expect(page.getByTestId('experiment-results')).not.toContainText('0/128');
   await expect(page.getByTestId('experiment-results')).toContainText('4/4 exact');
-  await expect(page.getByTestId('experiment-log')).toContainText('-> test_suite(02CF, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) · trial 1 settings');
+  await expect(page.getByTestId('experiment-log')).toContainText('-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5) · trial 1 settings');
   await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await page.getByTestId('experiment-results').innerText();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
@@ -39,7 +39,7 @@ test('validates test power before requesting a microphone',async({page})=>{
 });
 
 const liveRate=48000;
-const pieces=[new Float32Array(liveRate*2),guardedWave(controlWave({kind:'test_suite',...proposal},liveRate),liveRate),new Float32Array(liveRate*3),guardedWave(trialWave(proposal,liveRate),liveRate),new Float32Array(liveRate*3),guardedWave(controlWave({kind:'done',session:719,trial:1},liveRate),liveRate)];
+const pieces=[new Float32Array(liveRate*2),guardedWave(controlWave({kind:'test_suite',...proposal},liveRate),liveRate),new Float32Array(liveRate*3),guardedWave(trialWave(proposal,liveRate),liveRate),new Float32Array(liveRate*3),guardedWave(controlWave({kind:'done',sender:719,trial:1},liveRate),liveRate)];
 const liveSamples=new Float32Array(pieces.reduce((n,p)=>n+p.length,0));let position=0;for(const piece of pieces){liveSamples.set(piece,position);position+=piece.length;}
 const header=Buffer.alloc(44),data=Buffer.alloc(liveSamples.length*2);
 header.write('RIFF');header.writeUInt32LE(36+data.length,4);header.write('WAVE',8);header.write('fmt ',12);header.writeUInt32LE(16,16);header.writeUInt16LE(1,20);header.writeUInt16LE(1,22);header.writeUInt32LE(liveRate,24);header.writeUInt32LE(liveRate*2,28);header.writeUInt16LE(2,32);header.writeUInt16LE(16,34);header.write('data',36);header.writeUInt32LE(data.length,40);
@@ -55,8 +55,8 @@ test.describe('live partner',()=>{
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
     const log=page.getByTestId('experiment-log');
-    for(const line of ['-> test_suite(02CF, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)','<- ready(02CF, 1) · partner ready for trial 1','-> test(02CF, 1, 48000)',
-      testLine,'-> end(02CF, 1)','<- result(02CF, 1, 0, 64, 0, 128,','· trial 1: 64/64 symbols received, median S/N','-> done(02CF, 1) · run finished after 1 trials'])await expect(log).toContainText(line);
+    for(const line of ['-> 02CF test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)',' ready(1) · partner ready for trial 1','-> 02CF test(1, 48000)',
+      testLine,' result(1, 0, 64, 0, 128,','· trial 1: 64/64 symbols received, median S/N','-> 02CF done(1) · run finished after 1 trials'])await expect(log).toContainText(line);
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();

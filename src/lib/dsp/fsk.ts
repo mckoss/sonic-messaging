@@ -13,7 +13,7 @@ function validate(config: FskConfig) {
 
 export function encodeFsk(payload: Uint8Array, config: FskConfig): Waveform {
   const { bits: bitsPerSymbol, n } = validate(config);
-  const bits = bytesToBits(frame(payload));
+  const bits = bytesToBits(frame(payload, config.address));
   while (bits.length % bitsPerSymbol) bits.push(0);
   const samples = new Float32Array((bits.length / bitsPerSymbol) * n);
   const amplitude = config.amplitude ?? 0.8;
@@ -43,5 +43,5 @@ export function decodeFsk(samples: Float32Array, config: FskConfig): DecodeResul
     for (let b = bitsPerSymbol - 1; b >= 0; b--) bits.push((best >>> b) & 1);
   }
   const parsed = unframe(bitsToBytes(bits), golayRadiusForBitsPerSymbol(bitsPerSymbol));
-  return { payload: parsed.payload, ok: !!parsed.payload, confidence: confidence / Math.max(1, symbols), errors: parsed.error ? [parsed.error] : [] };
+  return { payload: parsed.payload, sender: parsed.sender, frameType: parsed.type, ok: !!parsed.payload, confidence: confidence / Math.max(1, symbols), errors: parsed.error ? [parsed.error] : [] };
 }

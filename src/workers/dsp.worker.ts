@@ -6,6 +6,7 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
   goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
+import { FRAME_TYPE } from '../lib/dsp/frame';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
 import { CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
@@ -41,10 +42,9 @@ function drainOutgoing() {
   const wire = (text: string) => cooperativeEvent({ kind: 'wire', line: `<- ${text}` });
   if (action.kind === 'control') wire(describeWire(action.message));
   else {
-    const { session, trial } = action.proposal;
-    wire(describeWire({ kind: 'test', session, trial, sampleRate: cooperativeRate }));
+    const { sender, trial } = action.proposal;
+    wire(describeWire({ kind: 'test', sender, trial, sampleRate: cooperativeRate }));
     wire(describeTestSent(action.proposal));
-    wire(describeWire({ kind: 'end', session, trial }));
   }
   const samples = guardedWave(action.kind === 'control' ? controlWave(action.message, cooperativeRate)
     : trialWave(action.proposal, cooperativeRate), cooperativeRate);
@@ -293,7 +293,8 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence: numb
     for (const progress of fskStreamDecoder.drainProgress()) {
       send({ type: 'fsk-reception', token: progress.type, position: progress.position,
         ...('byte' in progress ? { byte: progress.byte } : {}),
-        ...('length' in progress ? { length: progress.length } : {}) });
+        ...('length' in progress ? { length: progress.length } : {}),
+        ...('sender' in progress ? { sender: progress.sender, frameType: progress.frameType } : {}) });
     }
     for (const packet of packets) {
       send({ type: 'packet', mode: 'FSK', ...packet }, [packet.payload.buffer as ArrayBuffer]);
@@ -328,15 +329,16 @@ function buildModem(request: SimulationRequest): {
   interferer?: Waveform; users?: DsssConfig[];
 } {
   const bytes = new TextEncoder().encode(request.payload), s = request.settings, sampleRate = 48_000;
+  const address = { sender: request.sender ?? 0, type: FRAME_TYPE.message };
   if (request.mode === 'FSK') {
     const tones = numeric(s.tones, 4), lowest = numeric(s.lowestFrequency, 3_800);
     const frequencies = fskFrequencies(lowest, numeric(s.toneSpacing, 800), tones);
-    const config: FskConfig = { sampleRate, symbolRate: numeric(s.symbolRate, 100), frequencies };
+    const config: FskConfig = { sampleRate, symbolRate: numeric(s.symbolRate, 100), frequencies, address };
     return { waveform: encodeFsk(bytes, config), decode: samples => decodeFsk(samples, config) };
   }
   if (request.mode === 'CSS') {
     const config: CssConfig = { sampleRate, centerFrequency: numeric(s.centerFrequency, 8_000),
-      bandwidth: numeric(s.bandwidth, 6_000), spreadingFactor: numeric(s.spreadingFactor, 8) };
+      bandwidth: numeric(s.bandwidth, 6_000), spreadingFactor: numeric(s.spreadingFactor, 8), address };
     return { waveform: encodeCss(bytes, config), decode: samples => decodeCss(samples, config) };
   }
   const length = numeric(s.codeLength, 127), degree = Math.round(Math.log2(length + 1));
@@ -345,7 +347,7 @@ function buildModem(request: SimulationRequest): {
     familyName === 'm-sequence' ? [mSequence(degree)] : goldCodes(degree);
   const index = Math.abs(Math.trunc(numeric(s.codeIndex, 0))) % codes.length;
   const base = { sampleRate, chipRate: numeric(s.chipRate, 4_000), carrierFrequency: numeric(s.centerFrequency, 6_000) };
-  const config: DsssConfig = { ...base, code: codes[index] };
+  const config: DsssConfig = { ...base, code: codes[index], address };
   const users = codes.slice(0, Math.min(codes.length, 32)).map(code => ({ ...base, code }));
   const other = { ...base, code: codes[(index + 1) % codes.length] };
   return { waveform: encodeDsss(bytes, config), decode: samples => decodeDsss(samples, config),
@@ -383,9 +385,9 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, receiveControl, measurement => {
           cooperativeEvent({ kind: 'measurement', measurement }); cooperativeSession?.measured(measurement);
         }, detail => cooperativeEvent({ kind: 'status', phase: 'unscored', detail, log: true }), data.role !== 'controller',
-        line => cooperativeEvent({ kind: 'wire', line }));
+        line => cooperativeEvent({ kind: 'wire', line }), data.sender);
         if (data.role !== 'replay') {
-          cooperativeSession = new CooperativeSession(data.role, data.config, data.session,
+          cooperativeSession = new CooperativeSession(data.role, data.config, data.sender,
             action => { outgoing.push(action); drainOutgoing(); }, cooperativeEvent);
           cooperativeSession.start(performance.now());
           cooperativeTimer = setInterval(() => cooperativeSession?.tick(performance.now()), 250);

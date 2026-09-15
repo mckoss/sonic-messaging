@@ -20,7 +20,7 @@ export interface RecordingMetadata {
   /** Retained only to preserve audio from retired shared-schedule WAVs. */
   experiment?: unknown;
   /** Partner recordings carry no config; the controller's proposals define every trial. */
-  cooperative?: { version: 1; role?: 'controller' | 'partner'; config?: SearchSettings; measurements?: TrialMeasurement[] };
+  cooperative?: { version: 1; role?: 'controller' | 'partner'; sender?: number; config?: SearchSettings; measurements?: TrialMeasurement[] };
 }
 export interface Recording { metadata: RecordingMetadata; samples: Float32Array }
 

@@ -1,5 +1,9 @@
+import type { FrameAddress } from './frame';
+
 export interface DecodeResult {
   payload?: Uint8Array;
+  sender?: number;
+  frameType?: number;
   ok: boolean;
   confidence: number;
   errors: string[];
@@ -16,6 +20,8 @@ export interface FskConfig {
   symbolRate: number;
   frequencies: number[];
   amplitude?: number;
+  /** Frame sender and type; defaults to sender 0000, type message. */
+  address?: FrameAddress;
 }
 
 export interface CssConfig {
@@ -25,6 +31,7 @@ export interface CssConfig {
   spreadingFactor?: number;
   samplesPerSymbol?: number;
   amplitude?: number;
+  address?: FrameAddress;
 }
 
 export interface DsssConfig {
@@ -33,6 +40,7 @@ export interface DsssConfig {
   carrierFrequency: number;
   code: Int8Array;
   amplitude?: number;
+  address?: FrameAddress;
 }
 
 export interface ChannelConfig {

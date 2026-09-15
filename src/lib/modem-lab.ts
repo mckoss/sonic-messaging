@@ -9,6 +9,8 @@ export interface SimulationRequest {
   snr: number;
   interferer: boolean;
   interfererPower: number;
+  /** Frame sender ID; defaults to 0000. */
+  sender?: number;
 }
 
 export interface SimulationResult {

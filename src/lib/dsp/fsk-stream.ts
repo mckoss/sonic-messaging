@@ -1,10 +1,11 @@
 import { bitsToBytes } from './bits';
-import { decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, SYNC_BYTES, unframe } from './frame';
+import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
 import { golayRadiusForBitsPerSymbol } from './golay';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import type { FskConfig } from './types';
 
 const SYNC = SYNC_BYTES;
+/** Sync and length: enough to size the frame before its address and payload arrive. */
 const HEADER_BYTES = SYNC.length + LENGTH_BYTES;
 const TRAILER_BYTES = 2;
 const MAX_LIVE_PAYLOAD_BYTES = MAX_PAYLOAD_BYTES;
@@ -56,6 +57,8 @@ function syncSymbolTemplate(bitsPerSymbol: number): number[] {
 
 export interface FskStreamPacket {
   payload: Uint8Array;
+  sender: number;
+  frameType: number;
   confidence: number;
   startPosition: number;
   endPosition: number;
@@ -65,6 +68,8 @@ export interface FskStreamPacket {
 export type FskStreamProgress =
   | { type: 'sync'; position: number }
   | { type: 'length'; length: number; position: number }
+  /** Unverified until crc-confirm; lets displays label the sender while the payload streams in. */
+  | { type: 'address'; sender: number; frameType: number; position: number }
   | { type: 'byte'; byte: number; position: number }
   | { type: 'crc-confirm' | 'crc-error'; position: number };
 
@@ -83,6 +88,7 @@ export class FskStreamDecoder {
   private progress: FskStreamProgress[] = [];
   private reportedPayloadBytes = 0;
   private reportedLength = false;
+  private reportedAddress = false;
   /** Absolute stream sample index of samples[0]. */
   private streamPosition: number;
   /** Decoded symbols/confidences for the current candidate, relative to its start. */
@@ -135,7 +141,7 @@ export class FskStreamDecoder {
   reset(): void {
     this.samples = new Float32Array(0); this.sampleCount = 0;
     this.searchOffset = 0; this.candidateOffset = undefined;
-    this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false;
+    this.progress = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.streamPosition = 0;
     this.candidateSymbols = []; this.candidateConfidences = [];
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
@@ -251,7 +257,7 @@ export class FskStreamDecoder {
         }
         this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
-        this.reportedLength = false;
+        this.reportedLength = false; this.reportedAddress = false;
         this.candidateSymbols = []; this.candidateConfidences = [];
         this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         // Reference power for carrier-loss detection: what this frame's sync measured.
@@ -329,7 +335,7 @@ export class FskStreamDecoder {
     }
     const maxPayload = Math.min(MAX_LIVE_PAYLOAD_BYTES, Math.floor(
       (MAX_LIVE_FRAME_SECONDS * this.config.symbolRate * this.bitsPerSymbol) / 8
-    ) - HEADER_BYTES - TRAILER_BYTES);
+    ) - PAYLOAD_OFFSET - TRAILER_BYTES);
     if (payloadLength > Math.max(0, maxPayload)) {
       // Skip the whole validated sync: a phase-step skip re-matches the same sync
       // and re-runs phase refinement repeatedly, stalling the worker for seconds.
@@ -341,17 +347,23 @@ export class FskStreamDecoder {
       this.progress.push({ type: 'length', length: payloadLength,
         position: this.frameBytePosition(start, HEADER_BYTES) });
     }
-    const frameBytes = HEADER_BYTES + payloadLength + TRAILER_BYTES;
+    const frameBytes = PAYLOAD_OFFSET + payloadLength + TRAILER_BYTES;
     const frameSymbols = Math.ceil((frameBytes * 8) / this.bitsPerSymbol);
     const availableBytes = Math.floor(
       (Math.floor((this.sampleCount - start) / this.samplesPerSymbol) * this.bitsPerSymbol) / 8
     );
-    const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - HEADER_BYTES));
+    if (!this.reportedAddress && availableBytes >= PAYLOAD_OFFSET) {
+      this.reportedAddress = true;
+      const address = readFrameAddress(this.decodeCandidateBytes(PAYLOAD_OFFSET).bytes, ADDRESS_OFFSET);
+      this.progress.push({ type: 'address', sender: address.sender, frameType: address.type,
+        position: this.frameBytePosition(start, PAYLOAD_OFFSET) });
+    }
+    const reportThrough = Math.min(payloadLength, Math.max(0, availableBytes - PAYLOAD_OFFSET));
     if (reportThrough > this.reportedPayloadBytes) {
-      const partial = this.decodeCandidateBytes(HEADER_BYTES + reportThrough).bytes;
+      const partial = this.decodeCandidateBytes(PAYLOAD_OFFSET + reportThrough).bytes;
       for (let index = this.reportedPayloadBytes; index < reportThrough; index++) {
-        this.progress.push({ type: 'byte', byte: partial[HEADER_BYTES + index],
-          position: this.frameBytePosition(start, HEADER_BYTES + index + 1) });
+        this.progress.push({ type: 'byte', byte: partial[PAYLOAD_OFFSET + index],
+          position: this.frameBytePosition(start, PAYLOAD_OFFSET + index + 1) });
       }
       this.reportedPayloadBytes = reportThrough;
     }
@@ -395,17 +407,17 @@ export class FskStreamDecoder {
     const startPosition = this.streamPosition + start;
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
-    this.reportedPayloadBytes = 0; this.reportedLength = false;
+    this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
-    return { payload: parsed.payload, confidence: decoded.confidence, startPosition, endPosition: framePosition };
+    return { payload: parsed.payload, sender: parsed.sender!, frameType: parsed.type!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {
     this.searchOffset = this.candidateOffset! + skip;
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
-    this.reportedLength = false;
+    this.reportedLength = false; this.reportedAddress = false;
     this.candidateSymbols = []; this.candidateConfidences = [];
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
   }

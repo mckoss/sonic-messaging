@@ -61,29 +61,53 @@ The older **Replay visible audio** and **Replay FFT view** controls play sound t
 
 ## Cooperative FSK experiments
 
-1. On the receiving device select **Listen as partner**. The partner needs no settings: each trial request carries them, a restarted controller is followed immediately, and the partner keeps listening across runs until stopped or the 110-second session limit. On the controller configure test tones, base frequency, spacing, baud, amplitude and seeded payload. Keep both devices at a fixed distance and volume; record environmental conditions in the notes.
-2. Select **Run one trial**, or choose base frequency, tone spacing or number of tones and select **Optimize**. The controller negotiates settings, waits for readiness, sends known data and receives raw symbol/bit error counts. On both devices the experiment log records everything that goes over the air: `<-` for each message sent, `->` for each message received, and `X` for a message heard but garbled (header unreadable, signal lost, or CRC failed), with the bytes that were heard. Each line gives the raw data, then its meaning (see Control protocol below); binary test packets are shown as bracketed hex. Nothing is filtered: a device's own transmissions heard by its microphone, repeats, and test data that happens to decode on the control profile (`-> [..] · not a control message`) all appear. Search explores the range, repeats reference settings and refines around the best measured symbol error rate. Equal error rates do not establish an optimum.
+1. On the receiving device select **Listen as partner**. The partner needs no settings: each trial request carries them, a restarted controller is followed immediately, and the partner keeps listening across runs until stopped or the 10-minute session limit. On the controller configure test tones, base frequency, spacing, baud, amplitude and seeded payload. Keep both devices at a fixed distance and volume; record environmental conditions in the notes.
+2. Select **Run one trial**, or choose base frequency, tone spacing or number of tones and select **Optimize**. The controller negotiates settings, waits for readiness, sends known data and receives raw symbol/bit error counts. On both devices the experiment log records everything that goes over the air: `<-` for each message sent, `->` for each message received, and `X` for a message heard but garbled (header unreadable, signal lost, or CRC failed), with the bytes that were heard. Each line gives the raw data, then its meaning (see Control protocol below); binary test packets are shown as bracketed hex. Nothing is filtered: a device's own transmissions heard by its microphone, repeats, and test packets (`-> 9F04 test packet [..]`) all appear. Search explores the range, repeats reference settings and refines around the best measured symbol error rate. Equal error rates do not establish an optimum.
 3. Both devices record their microphones continuously, and each run is saved to the browser's storage (IndexedDB) in 5-second chunks while it records, so it survives a reload. **Saved recordings** lists every run with its role, length, trial count and size; each can be replayed, saved as a WAV or deleted, and **Clear all** frees the storage. Save **experiment results** before leaving. Prefer the partner recording for receiver analysis. **Load experiment WAV** and **Replay experiment** recompute measurements without accessing audio hardware or changing environmental factors.
 
-Coordination uses fixed 4-FSK at 100 baud, 1000–1600 Hz and amplitude 0.8, leaving headroom below clipping. Tests use amplitude 0.01–0.5. CRC, acknowledgements and bounded retries protect coordination; this is not a guarantee that the control profile works in every room. A missing reply is retried after 6 seconds, up to five times. Lost feedback causes a query for cached results, never retransmission of the measured waveform; if the partner never heard both timing markers it answers the query with `lost` and the controller proposes the same settings again as a new trial. Corrupted control messages (CRC failures) are reported in the experiment log. Quiet guards separate exchanges. Each test is bracketed by two control timing markers in one sample-timed waveform; their observed positions establish payload alignment independently of the test's sync, including sample-clock scale correction within 1%. Missing or inconsistent markers leave a trial unscored.
+Coordination uses fixed 4-FSK at 100 baud, 1000–1600 Hz and amplitude 0.8, leaving headroom below clipping. Tests use amplitude 0.01–0.5. CRC, acknowledgements and bounded retries protect coordination; this is not a guarantee that the control profile works in every room. A missing reply is retried after 6 seconds, up to five times. Lost feedback causes a query for cached results, never retransmission of the measured waveform; if the partner never heard the start marker it answers the query with `lost` and the controller proposes the same settings again as a new trial. Corrupted control messages (CRC failures) are reported in the experiment log. Quiet guards separate exchanges. Each test packet follows a `test` start marker in one sample-timed waveform; the marker's observed position and the sender's nominal sample rate establish payload alignment independently of the test packet's own sync. A missed start marker leaves the trial unscored.
+
+### Frame format
+
+Every transmission in every mode (Send, experiments, simulation) uses one frame, modeled on a UDP datagram:
+
+```
+[1A CF FC 1D]  sync marker (CCSDS)                    4 bytes
+[LL LL LL]     payload length, Golay(24,12) protected  3 bytes
+[SS SS]        sender ID                              2 bytes
+[TT]           type                                   1 byte
+payload                                               N bytes
+[CC CC]        CRC-16 (CCITT, init FFFF)              2 bytes, over sender + type + payload
+```
+
+Lessons taken from UDP:
+
+- **Addressing belongs in the header.** The sender ID is a random 16-bit number each device picks when the app opens, shown as 4 hex digits (e.g. `9F04`). Messages never repeat it.
+- **Type works like a port.** It says which handler owns the payload, so each can change on its own: `01` control (text methods below), `02` test packet (binary), `03` message (text from the Send tab).
+- **The checksum covers the addressing.** A corrupted sender or type fails the CRC like corrupted data.
+- **Reliability is the application's job.** As in TFTP, trial numbers, `ack` and retries live in the control protocol, not the frame.
+- **Headers stay small.** At 100 baud 4-FSK every byte is 40 ms of air, so there is no destination field yet; every frame is effectively broadcast. The header and CRC add 12 bytes to any payload.
+
+A frame is surrounded by 0.5 s of silence. The Receive tab labels the sender as `FROM 9F04` in its RX lane and shows it with each decoded message.
 
 ### Control protocol
 
-Every transmission is framed as `[1A CF FC 1D]` sync, a 3-byte Golay-protected length, the payload, and a CRC-16 (CCITT, init FFFF); 0.5 s of silence precedes and follows it. Control payloads are plain ASCII method calls; session is 4 hex digits and trial numbers are 1-based. Only test packets are binary (seeded pseudo-random bytes known to both sides). Each method is parsed independently, so methods can change without versioning the whole protocol.
+Control frames (type `01`) carry plain ASCII method calls. Trial numbers are 1-based; who sent a message comes from the frame. Each method is parsed independently, so methods can change without versioning the whole protocol.
 
 | Method | Sent by | Meaning |
 |---|---|---|
-| `test_suite(S, T, base, delta, tones, baud, bytes, amp, seed, guard)` | controller | Settings for trial T |
-| `ready(S, T)` | partner | Ready to measure trial T |
-| `test(S, T, sampleRate)` | controller | Start marker; the binary test packet follows after the guard |
-| `end(S, T)` | controller | End marker, one sample-timed waveform with `test` and the packet |
-| `result(S, T, symbolErrors, symbols, bitErrors, bits, confidence, medianSnrDb)` | partner | Scores for trial T |
-| `query(S, T)` | controller | No result heard; asks the partner to repeat it |
-| `lost(S, T)` | partner | Both timing markers were not heard; the controller re-proposes the settings as a new trial |
-| `ack(S, T)` | controller | Result received |
-| `done(S, N)` | controller | Run finished after N trials |
+| `test_suite(T, base, delta, tones, baud, bytes, amp, seed, guard)` | controller | Settings for trial T |
+| `ready(T)` | partner | Ready to measure trial T |
+| `test(T, sampleRate)` | controller | Start marker; after the guard, the binary test packet (type `02`) follows in the same sample-timed waveform |
+| `result(T, symbolErrors, symbols, bitErrors, bits, confidence, medianSnrDb)` | partner | Scores for trial T |
+| `query(T)` | controller | No result heard; asks the partner to repeat it |
+| `lost(T)` | partner | The start marker wasn't heard; the controller re-proposes the settings as a new trial |
+| `ack(T)` | controller | Result received |
+| `done(N)` | controller | Run finished after N trials |
 
-A trial runs `test_suite` → `ready` → `test` + packet + `end` → `result` → `ack`. The experiment log shows each line as raw data then its meaning, for example `<- ready(1A2B, 1) · partner ready for trial 1`. The partner's received test packet line lists the in-window S/N of every payload symbol in dB (winning tone energy versus the rest of that symbol window) and its median, e.g. `-> [83 F9 …] · trial 1 test packet: 64/64 symbols received, S/N dB [24 22 19 …] median 21.4`.
+A trial runs `test_suite` → `ready` → `test` + test packet → `result` → `ack`. There is no end marker. The partner aligns the packet from the start marker and the sender's nominal sample rate, and scores it once the whole packet should have arrived, so nothing is still playing when it replies. The partner follows the controller it last heard a `test_suite` from; the same controller counting trials back down to 1 is a restarted run.
+
+The experiment log shows every frame as sender, raw data, then meaning, e.g. `<- 9F04 ready(1) · partner ready for trial 1`. A device's microphone also hears its own transmissions; frames carrying its own sender ID are logged as `-> From:Self ready(1) (ignored)` and dropped, so they never reach the session or scoring (on replay, the recording device's ID is used). The partner's received test packet line lists the in-window S/N of every payload symbol in dB (winning tone energy versus the rest of that symbol window) and its median, e.g. `-> 1A2B test packet [83 F9 …] · trial 1: 64/64 symbols received, S/N dB [24 22 19 …] median 21.4`.
 
 Raw BER compares payload bits only; SER compares symbols wholly inside the payload. Confidence and tone confusion matrices are saved in results. Unknown timing is evaluated **only on the receiver**, using four fresh decoders started at different offsets within the same recorded quiet lead. Acquisition, CRC validity and exact message recovery are saved separately from raw error counts. These four replays are correlated observations of one transmission, not four physical packet deliveries. Payload FEC is **none**; the existing length header uses Golay correction.
 

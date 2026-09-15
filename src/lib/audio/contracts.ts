@@ -31,7 +31,7 @@ export interface FskDetectorOptions {
 }
 
 export type DspWorkerRequest =
-  | { type: 'configure-cooperative'; role: 'controller' | 'partner' | 'replay'; config?: SearchSettings; session: number; sampleRate: number }
+  | { type: 'configure-cooperative'; role: 'controller' | 'partner' | 'replay'; config?: SearchSettings; sender: number; sampleRate: number }
   | { type: 'cooperative-played'; token: number }
   | { type: 'stop-cooperative'; reason?: string }
   | { type: 'replay-samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
@@ -48,7 +48,7 @@ export type DspWorkerResponse =
   | { type: 'replay-ack'; sequence: number }
   | { type: 'spectrum'; bins: TransferableSamples; sampleRate: number; fftSize: number; sequence: number; samplePosition: number }
   | { type: 'symbol-scores'; mode: 'FSK'; scores: TransferableSamples; symbol: number; confidence: number; powerDbfs: number; sequence: number; samplePosition: number }
-  | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; confidence: number }
+  | { type: 'packet'; mode: 'FSK'; payload: Uint8Array; sender: number; frameType: number; confidence: number }
   /**
    * Slot-aligned re-analysis of the span already painted before a sync lock
    * existed (the sync's own airtime), emitted once per acquired lock so the
@@ -56,8 +56,8 @@ export type DspWorkerResponse =
    */
   | { type: 'symbol-backfill'; samplesPerSymbol: number;
       slots: Array<{ position: number; scores: number[]; confidence: number }> }
-  | { type: 'fsk-reception'; token: 'sync' | 'length' | 'byte' | 'crc-confirm' | 'crc-error';
-      position: number; byte?: number; length?: number }
+  | { type: 'fsk-reception'; token: 'sync' | 'length' | 'address' | 'byte' | 'crc-confirm' | 'crc-error';
+      position: number; byte?: number; length?: number; sender?: number; frameType?: number }
   | { type: 'capture-gap'; samples: number; sampleRate: number;
       /** Omitted for zeroed-capture gaps the worker detects; 'backpressure' for chunks the engine dropped while the worker lagged. */
       source?: 'backpressure' }

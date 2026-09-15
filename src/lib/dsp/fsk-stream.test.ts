@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SYNC_BYTES } from './frame';
+import { FRAME_TYPE, SYNC_BYTES } from './frame';
 import { golayEncode } from './golay';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
@@ -42,10 +42,20 @@ describe('continuous FSK receiver', () => {
     const progress = receiver.drainProgress();
     expect(progress[0].type).toBe('sync');
     expect(progress[1]).toMatchObject({ type: 'length', length: payload.length });
+    expect(progress[2]).toMatchObject({ type: 'address', sender: 0, frameType: FRAME_TYPE.message });
+    expect(progress.filter(p => p.type === 'byte').map(p => 'byte' in p ? p.byte : -1)).toEqual([...payload]);
     expect(progress[progress.length - 1].type).toBe('crc-confirm');
     // Sync ends 16 symbols after the 73-sample offset; the phase lock is sample-accurate.
     const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
     expect(Math.abs(progress[0].position - (73 + 16 * samplesPerSymbol))).toBeLessThanOrEqual(2);
+  });
+
+  it('reports the frame sender and type with each packet', () => {
+    const payload = new TextEncoder().encode('from me');
+    const samples = encodeFsk(payload, { ...config, address: { sender: 0x9f04, type: FRAME_TYPE.control } }).samples;
+    const receiver = new FskStreamDecoder(config), packets = receiver.push(samples);
+    expect(packets).toMatchObject([{ payload, sender: 0x9f04, frameType: FRAME_TYPE.control }]);
+    expect(receiver.drainProgress().find(p => p.type === 'address')).toMatchObject({ sender: 0x9f04, frameType: FRAME_TYPE.control });
   });
 
   it('decodes consecutive packets and ignores leading noise', () => {
@@ -90,7 +100,8 @@ describe('continuous FSK receiver', () => {
     const samples = new Float32Array(first.length + second.length);
     samples.set(first); samples.set(second, first.length);
     const samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
-    samples.fill(0, 30 * samplesPerSymbol, 33 * samplesPerSymbol);
+    // Symbols 42-45 fall in the payload, past sync, length and the sender/type address.
+    samples.fill(0, 42 * samplesPerSymbol, 45 * samplesPerSymbol);
     const receiver = new FskStreamDecoder(config);
     const packets = receiver.push(samples);
     expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['clean']);

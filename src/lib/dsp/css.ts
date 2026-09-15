@@ -21,7 +21,7 @@ function template(symbol: number, c: CssConfig, n: number, alphabet: number, amp
 }
 
 export function encodeCss(payload: Uint8Array, config: CssConfig): Waveform {
-  const { sf, alphabet, n } = params(config), bits = bytesToBits(frame(payload));
+  const { sf, alphabet, n } = params(config), bits = bytesToBits(frame(payload, config.address));
   while (bits.length % sf) bits.push(0);
   const out = new Float32Array(bits.length / sf * n);
   for (let s = 0; s < bits.length / sf; s++) {
@@ -42,5 +42,5 @@ export function decodeCss(samples: Float32Array, config: CssConfig): DecodeResul
     for (let b = sf - 1; b >= 0; b--) bits.push((best >>> b) & 1);
   }
   const parsed = unframe(bitsToBytes(bits));
-  return { payload: parsed.payload, ok: !!parsed.payload, confidence: totalConfidence / Math.max(1, count), errors: parsed.error ? [parsed.error] : [] };
+  return { payload: parsed.payload, sender: parsed.sender, frameType: parsed.type, ok: !!parsed.payload, confidence: totalConfidence / Math.max(1, count), errors: parsed.error ? [parsed.error] : [] };
 }

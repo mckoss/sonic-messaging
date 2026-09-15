@@ -1,3 +1,4 @@
+import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, PAYLOAD_OFFSET, senderHex, type FrameAddress } from './dsp/frame';
 /** Cooperative experiments use an acoustic control link; no shared schedule is required. */
 export interface TrialSettings {
   tones: number; lowestFrequency: number; spacing: number; symbolRate: number; amplitude: number;
@@ -23,7 +24,7 @@ export function validateTrial(value: unknown): TrialSettings {
       !Number.isInteger(t.payloadBytes) || t.payloadBytes < 4 || t.payloadBytes > 64 ||
       !Number.isInteger(t.seed) || t.seed < 0 || t.seed > 0xffffffff ||
       !Number.isFinite(t.guardSeconds) || t.guardSeconds < 0.25 || t.guardSeconds > 1.5 ||
-      (t.payloadBytes + 9) * 8 / Math.log2(t.tones) / t.symbolRate > 15) throw new Error('Invalid trial settings (test power 0.01–0.5; packet duration at most 15 seconds)');
+      (t.payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(t.tones) / t.symbolRate > 15) throw new Error('Invalid trial settings (test power 0.01–0.5; packet duration at most 15 seconds)');
   return { ...t, amplitude: Math.max(656, Math.min(32767, Math.round(t.amplitude * 65535))) / 65535, guardSeconds: Math.round(t.guardSeconds * 1000) / 1000 };
 }
 export function defaultSearch(): SearchSettings {
@@ -43,7 +44,7 @@ export function trialPayload(t: TrialSettings): Uint8Array {
   let state = t.seed || 1;
   return Uint8Array.from({ length: t.payloadBytes }, () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state & 255; });
 }
-export interface Proposal { session: number; trial: number; settings: TrialSettings }
+export interface Proposal { sender: number; trial: number; settings: TrialSettings }
 export interface RawResult {
   symbolErrors: number; symbols: number; bitErrors: number; bits: number; confidence: number;
   /** Median over payload symbols of the in-window S/N: winning tone energy vs. the rest of the window, in dB. */
@@ -56,14 +57,13 @@ export interface TrialMeasurement extends Proposal {
   /** In-window S/N per payload symbol, in dB. */
   snrDb: number[];
   raw: RawResult; sampleRate: number; testStart: number; testEnd: number; samplesPerSymbol: number;
-  startMarker: number; endMarker: number; confusion: number[][]; acquisition: AcquisitionResult[];
+  startMarker: number; confusion: number[][]; acquisition: AcquisitionResult[];
 }
 export type ControlMessage =
   | ({ kind: 'test_suite' } & Proposal)
-  | { kind: 'ready' | 'query' | 'ack' | 'done' | 'lost'; session: number; trial: number }
-  | { kind: 'test'; session: number; trial: number; sampleRate: number }
-  | { kind: 'end'; session: number; trial: number }
-  | { kind: 'result'; session: number; trial: number; raw: RawResult };
+  | { kind: 'ready' | 'query' | 'ack' | 'done' | 'lost'; sender: number; trial: number }
+  | { kind: 'test'; sender: number; trial: number; sampleRate: number }
+  | { kind: 'result'; sender: number; trial: number; raw: RawResult };
 export type ControlKind = ControlMessage['kind'];
 
 /** In-window S/N from a detector score (the winning tone's share of window energy), clamped to a displayable range. */
@@ -78,64 +78,65 @@ export function median(values: readonly number[]): number {
 }
 
 /*
- * Control messages are plain ASCII method calls inside the usual CRC frame, e.g.
- *   test_suite(1A2B, 1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)
- * Session is 4 hex digits; trial numbers on the wire are 1-based. Each method is parsed on its own, so one
- * can change without versioning the rest. Test packets stay binary.
+ * Control messages are plain ASCII method calls in a frame of type control, e.g.
+ *   test_suite(1, 1000, 200, 4, 100, 16, 0.15, 719, 0.5)
+ * Who sent it travels in the frame's sender field, not the text. Trial numbers on the wire are 1-based. Each
+ * method is parsed on its own, so one can change without versioning the rest. Test packets stay binary.
  */
 const MAX_CONTROL_BYTES = 120;
-const session = (v: number) => v.toString(16).toUpperCase().padStart(4, '0');
 const decimal = (v: number, digits: number) => String(Number(v.toFixed(digits)));
-const INT = /^\d+$/, SIGNED = /^-?\d+(\.\d+)?$/, HEX4 = /^[0-9A-F]{4}$/;
+const INT = /^\d+$/, SIGNED = /^-?\d+(\.\d+)?$/;
 function args(m: ControlMessage): (string | number)[] {
-  const head = [session(m.session), m.trial + 1];
   switch (m.kind) {
     case 'test_suite': {
       const t = validateTrial(m.settings);
-      return [...head, t.lowestFrequency, t.spacing, t.tones, t.symbolRate, t.payloadBytes, decimal(t.amplitude, 5), t.seed, decimal(t.guardSeconds, 3)];
+      return [m.trial + 1, t.lowestFrequency, t.spacing, t.tones, t.symbolRate, t.payloadBytes, decimal(t.amplitude, 5), t.seed, decimal(t.guardSeconds, 3)];
     }
-    case 'test': return [...head, m.sampleRate];
-    case 'result': return [...head, m.raw.symbolErrors, m.raw.symbols, m.raw.bitErrors, m.raw.bits, decimal(m.raw.confidence, 2), decimal(m.raw.snrMedianDb, 1)];
-    case 'done': return [session(m.session), m.trial];
-    default: return head;
+    case 'test': return [m.trial + 1, m.sampleRate];
+    case 'result': return [m.trial + 1, m.raw.symbolErrors, m.raw.symbols, m.raw.bitErrors, m.raw.bits, decimal(m.raw.confidence, 2), decimal(m.raw.snrMedianDb, 1)];
+    case 'done': return [m.trial];
+    default: return [m.trial + 1];
   }
 }
 export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', ')})`;
-export function encodeControl(m: ControlMessage): Uint8Array {
-  if (m.session < 0 || m.session > 0xffff) throw new RangeError('Session must fit in 4 hex digits');
-  return new TextEncoder().encode(controlText(m));
-}
-const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 10, ready: 2, test: 3, end: 2, result: 8, query: 2, ack: 2, done: 2, lost: 2 };
-export function decodeControl(bytes: Uint8Array): ControlMessage | undefined {
+export const encodeControl = (m: ControlMessage): Uint8Array => new TextEncoder().encode(controlText(m));
+export const controlAddress = (m: ControlMessage): FrameAddress => ({ sender: m.sender, type: FRAME_TYPE.control });
+const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 9, ready: 1, test: 2, result: 7, query: 1, ack: 1, done: 1, lost: 1 };
+/** Parses a control payload; `sender` comes from the frame it arrived in. */
+export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage | undefined {
   if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
   const match = /^([a-z_]+)\(([^()]*)\)$/.exec(String.fromCharCode(...bytes));
   if (!match || !(match[1] in ARG_COUNTS)) return;
   const kind = match[1] as ControlKind, fields = match[2].split(',').map(f => f.trim());
-  if (fields.length !== ARG_COUNTS[kind] || !HEX4.test(fields[0]) || !INT.test(fields[1])) return;
-  const numbers = fields.slice(2).map(Number);
-  if (fields.slice(2).some(f => !SIGNED.test(f))) return;
-  const common = { session: parseInt(fields[0], 16), trial: Number(fields[1]) - 1 };
+  if (fields.length !== ARG_COUNTS[kind] || !INT.test(fields[0]) || fields.slice(1).some(f => !SIGNED.test(f))) return;
+  const count = Number(fields[0]), numbers = fields.slice(1).map(Number);
+  if (kind === 'done') return { kind, sender, trial: count };
+  const common = { sender, trial: count - 1 };
+  if (common.trial < 0) return;
   try {
     switch (kind) {
       case 'test_suite': {
-        if (common.trial < 0) return;
         const [lowestFrequency, spacing, tones, symbolRate, payloadBytes, amplitude, seed, guardSeconds] = numbers;
         return { kind, ...common, settings: validateTrial({ lowestFrequency, spacing, tones, symbolRate, amplitude, payloadBytes, seed, guardSeconds }) };
       }
       case 'test': {
         const sampleRate = numbers[0];
-        if (common.trial < 0 || !Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) return;
+        if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) return;
         return { kind, ...common, sampleRate };
       }
       case 'result': {
         const [symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb] = numbers;
-        if (common.trial < 0 || !symbols || !bits || symbolErrors > symbols || bitErrors > bits || confidence > 1) return;
+        if (!symbols || !bits || symbolErrors > symbols || bitErrors > bits || confidence > 1) return;
         return { kind, ...common, raw: { symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb } };
       }
-      case 'done': return { kind, session: common.session, trial: common.trial + 1 };
-      default: return common.trial < 0 ? undefined : { kind, ...common };
+      default: return { kind, ...common };
     }
   } catch { return; }
+}
+/** Test packet symbols lying wholly inside the payload, i.e. the ones a trial scores. */
+export function testSymbolCount(t: TrialSettings): number {
+  const bps = Math.log2(t.tones), header = PAYLOAD_OFFSET * 8;
+  return Math.floor((header + t.payloadBytes * 8) / bps) - Math.ceil(header / bps);
 }
 export interface SearchObservation extends Proposal { raw: RawResult }
 /** Coarse exploration, repeated references, then local refinement. Best means best measured, not a global optimum. */
@@ -154,7 +155,7 @@ export class ParameterSearch {
     return [...sums.values()].sort((a,b)=>a.errors/a.symbols-b.errors/b.symbols)[0];
   }
   add(r:SearchObservation):boolean {
-    if(this.observations.some(p=>p.session===r.session&&p.trial===r.trial))return false;
+    if(this.observations.some(p=>p.sender===r.sender&&p.trial===r.trial))return false;
     this.observations.push(r);return true;
   }
   next():TrialSettings|undefined {
@@ -188,7 +189,6 @@ export function describeControl(m: ControlMessage): string {
     case 'test_suite': return `${trial} settings: ${describeSettings(m.settings)}`;
     case 'ready': return `partner ready for ${trial}`;
     case 'test': return `${trial} test packet follows (sender at ${m.sampleRate} Hz)`;
-    case 'end': return `${trial} test packet ended`;
     case 'result': return `${trial}: ${symbolsReceived(m.raw)}, median S/N ${m.raw.snrMedianDb.toFixed(1)} dB`;
     case 'query': return `asking for ${trial} result`;
     case 'ack': return `${trial} result received`;
@@ -196,9 +196,9 @@ export function describeControl(m: ControlMessage): string {
     case 'lost': return `partner missed ${trial} (timing markers not heard)`;
   }
 }
-/** Raw wire text, then its meaning; for text payloads the raw data is already readable. */
+/** Sender and raw wire text, then its meaning; for text payloads the raw data is already readable. */
 export const describeWire = (m: ControlMessage, bytes?: Uint8Array) =>
-  `${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
-export const describeTestSent = (p: Proposal) => `${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1} test packet`;
+  `${senderHex(m.sender)} ${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
+export const describeTestSent = (p: Proposal) => `${senderHex(p.sender)} test packet ${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1}`;
 export const describeTestReceived = (m: TrialMeasurement) =>
-  `${hexBytes(m.received)} · trial ${m.trial + 1} test packet: ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)}`;
+  `${senderHex(m.sender)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)}`;
