@@ -34,7 +34,7 @@
   async function start(selected:'controller'|'partner',single=false) {
     error='';
     try {
-      const run=validateSearch({...config,budget:single?1:config.budget});
+      const run=selected==='controller'?validateSearch({...config,budget:single?1:config.budget}):undefined;
       active=true;role=selected;cancelled=false;seconds=0;measurements=[];feedback=[];best=undefined;recording=undefined;log=[];
       await beforeStart();await engine.startListening(inputDeviceId);
       if(cancelled){engine.stopListening();return;}
@@ -51,7 +51,7 @@
       if(file.size>MAX_RECORDING_BYTES)throw new Error('File is too large');
       const loaded=decodeRecording(await file.arrayBuffer());
       if(!loaded.metadata.cooperative)throw new Error('This WAV has no cooperative experiment metadata. Older recordings can be opened in the general recording panel.');
-      config=validateSearch(loaded.metadata.cooperative.config);recording=loaded;notes=loaded.metadata.notes;
+      if(loaded.metadata.cooperative.config)config=loaded.metadata.cooperative.config;recording=loaded;notes=loaded.metadata.notes;
       measurements=[];feedback=[];best=undefined;log=[];status='Recording loaded. Replay to recompute measurements from its samples.';
     }catch(e){error=String(e);}finally{input.value='';active=false;}
   }
@@ -76,7 +76,7 @@
       else if(event.kind==='feedback'){feedback=[...feedback,event.observation];best=event.best;append(`-> ${received(event.observation.raw)}`);}
       else if(!finalizing && role!=='idle'){
         status=event.detail;
-        if(event.finished||event.phase==='unscored'||event.detail.startsWith('Retrying'))append(event.detail);
+        if(event.finished||event.log||event.phase==='unscored')append(event.detail);
         if(event.finished&&role!=='replay'){const detail=status;stop();status=detail;}
       }
     });
@@ -92,6 +92,7 @@
 <section class="experiment" aria-label="Cooperative experiment">
   <h2>Cooperative FSK experiment</h2>
   <p>Two devices negotiate each test over a fixed stronger acoustic control channel. Keep device volume, distance and background conditions fixed. Raw symbol errors guide the search; acquisition is evaluated separately by internal recording replay. Payload FEC: none.</p>
+  <p>Settings apply only on the controller. A partner needs no configuration: it measures whatever trial the controller requests, follows a restarted controller, and keeps listening until stopped.</p>
   <fieldset disabled={active || unavailable}>
     <div class="controls">
       <label>Test tones <select bind:value={config.trial.tones}>{#each [2,4,8,16] as n}<option value={n}>{n}</option>{/each}</select></label>

@@ -47,11 +47,14 @@ test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-devi
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
     test.setTimeout(45000);await page.goto('/sonic-messaging/#tests');
+    await page.getByLabel('Test amplitude').fill('0.9'); // Partner settings are ignored, even when invalid.
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
-    await expect(page.getByTestId('experiment-status')).toContainText('Controller finished.',{timeout:25000});
+    await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
+    await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     await expect(page.getByTestId('experiment-results')).toContainText('0/64');
     await expect(page.getByTestId('experiment-log')).toContainText('-> Trial 1, Tones=4, Base=1000, Delta=200, Baud=100');
     await expect(page.getByTestId('experiment-log')).toContainText('<- Symbols received 64/64');
+    await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await page.getByTestId('experiment-results').innerText();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();
     const saved=await (await pending).path();if(!saved)throw Error('Missing capture');

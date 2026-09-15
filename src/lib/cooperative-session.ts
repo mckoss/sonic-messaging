@@ -1,7 +1,8 @@
 import { MAX_SESSION_SECONDS, ParameterSearch, type ControlMessage, type CooperativeEvent, type Proposal,
   type SearchSettings, type TrialMeasurement } from './experiment';
 export type Outgoing = { kind:'control'; message:ControlMessage } | { kind:'trial'; proposal:Proposal };
-/** Stop-and-wait coordination. Retries resend coordination/results, never the measured waveform. */
+/** Stop-and-wait coordination. Retries resend coordination/results, never the measured waveform.
+ * The partner is passive: it has no settings, follows the newest controller run and listens until stopped. */
 export class CooperativeSession {
   private phase='idle';
   private proposal?:Proposal;
@@ -14,11 +15,11 @@ export class CooperativeSession {
   private search?:ParameterSearch;
   private nextId=0;
   private finished=false;
-  constructor(readonly role:'controller'|'partner', config:SearchSettings, session:number,
+  constructor(readonly role:'controller'|'partner', config:SearchSettings|undefined, session:number,
     private output:(action:Outgoing)=>void, private event:(event:CooperativeEvent)=>void) {
-    if(role==='controller'){this.session=session;this.search=new ParameterSearch(config);}
+    if(role==='controller'){if(!config)throw new Error('Controller requires search settings');this.session=session;this.search=new ParameterSearch(config);}
   }
-  private status(phase:string,detail:string,finished=false){this.phase=phase;this.finished=finished;this.event({kind:'status',phase,detail,finished});}
+  private status(phase:string,detail:string,finished=false,log=false){this.phase=phase;this.finished=finished;this.event({kind:'status',phase,detail,finished,log});}
   start(now:number){this.started=now;if(this.role==='controller')this.next();else this.status('listening','Listening for a controller.');}
   private send(action:Outgoing,retry=true){this.deadline=Infinity;if(retry){this.retry=action;this.attempts=0;}this.output(action);}
   private next(){
@@ -39,21 +40,21 @@ export class CooperativeSession {
     if(this.finished)return;
     if(this.role==='partner'){
       if(m.kind==='propose'){
-        if(this.session!==undefined&&m.session!==this.session)return;
-        if(this.proposal&&m.trial<this.proposal.trial)return;
-        if(this.proposal&&m.trial===this.proposal.trial){
+        if(this.proposal&&m.session===this.session&&m.trial<this.proposal.trial)return;
+        if(this.proposal&&m.session===this.session&&m.trial===this.proposal.trial){
           if(JSON.stringify(m.settings)!==JSON.stringify(this.proposal.settings))return;
           if(this.result)this.send({kind:'control',message:this.result});
           else this.send({kind:'control',message:{kind:'ready',session:m.session,trial:m.trial}});
           return;
         }
+        // A different session means the controller restarted; abandon the old run rather than ignore the new one.
         this.session=m.session;this.proposal={session:m.session,trial:m.trial,settings:m.settings};this.result=undefined;
         this.event({kind:'trial',direction:'received',proposal:this.proposal});
         this.status('waiting-test',`Ready for trial ${m.trial+1}; timing will come from control markers.`);
         this.send({kind:'control',message:{kind:'ready',session:m.session,trial:m.trial}});return;
       }
       if(m.session!==this.session)return;
-      if(m.kind==='done'){this.status('complete','Controller finished. Save the recording and measurements.',true);return;}
+      if(m.kind==='done'){this.retry=undefined;this.deadline=Infinity;this.status('listening','Controller finished; still listening for the next run.',false,true);return;}
       if(m.trial!==this.proposal?.trial)return;
       if(m.kind==='start') {this.deadline=Infinity;this.status('measuring',`Capturing trial ${m.trial+1}.`);return;}
       if(m.kind==='query'&&this.result){this.send({kind:'control',message:this.result});return;}
@@ -85,8 +86,11 @@ export class CooperativeSession {
     if(this.finished)return;
     if(this.started!==undefined&&now-this.started>MAX_SESSION_SECONDS*1000){this.stop('Session time limit reached; completed measurements are retained.');return;}
     if(now<this.deadline||!this.retry)return;
-    if(++this.attempts>3){this.stop('Control link timed out. The test waveform was not automatically repeated.');return;}
-    this.deadline=Infinity;this.output(this.retry);this.event({kind:'status',phase:this.phase,detail:`Retrying control exchange (${this.attempts}/3).`});
+    if(++this.attempts>3){
+      if(this.role==='partner'){this.retry=undefined;this.deadline=Infinity;this.status('listening','No response from controller; still listening.',false,true);return;}
+      this.stop('Control link timed out. The test waveform was not automatically repeated.');return;
+    }
+    this.deadline=Infinity;this.output(this.retry);this.event({kind:'status',phase:this.phase,detail:`Retrying control exchange (${this.attempts}/3).`,log:true});
   }
   stop(detail='Stopped; partial recordings and completed measurements are retained.'){
     this.retry=undefined;this.deadline=Infinity;this.status('stopped',detail,true);

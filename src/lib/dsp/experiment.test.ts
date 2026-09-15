@@ -97,6 +97,24 @@ describe('control protocol and search',()=>{
     }
     expect(observations).toEqual([0,0]);expect(bursts).toBe(2);expect(queue).toHaveLength(0);
   });
+  it('keeps a settings-free partner listening across restarted controller runs',()=>{
+    const queue:Outgoing[]=[],finished:string[]=[],received:number[]=[];
+    const p=new CooperativeSession('partner',undefined,0,a=>queue.push(a),e=>{
+      if(e.kind==='status'&&e.finished)finished.push(e.detail);
+      if(e.kind==='trial')received.push(e.proposal.session);
+    });
+    const ready=(session:number)=>{const a=queue.shift();return a?.kind==='control'&&a.message.kind==='ready'&&a.message.session===session;};
+    p.start(0);
+    p.receive({kind:'propose',session:1,trial:0,settings:config.trial});expect(ready(1)).toBe(true);p.sent(0);
+    // Controller stopped mid-run and restarted with different settings; no done was heard.
+    p.receive({kind:'propose',session:2,trial:0,settings:{...config.trial,spacing:300}});expect(ready(2)).toBe(true);p.sent(1000);
+    p.receive({kind:'done',session:1,trial:1});p.receive({kind:'done',session:2,trial:1});
+    // Unanswered readiness gives up on the trial but never ends the session.
+    p.receive({kind:'propose',session:3,trial:0,settings:config.trial});expect(ready(3)).toBe(true);p.sent(2000);
+    for(let i=0;i<5;i++){p.tick(2000+(i+1)*13000);queue.splice(0).forEach(()=>p.sent(2000+(i+1)*13000));}
+    p.receive({kind:'propose',session:4,trial:0,settings:config.trial});expect(ready(4)).toBe(true);
+    expect(received).toEqual([1,2,3,4]);expect(finished).toEqual([]);
+  });
   it('bounds silence retries and rejects stale feedback',()=>{
     const queue:Outgoing[]=[],finished:string[]=[];
     const session=new CooperativeSession('controller',config,719,a=>queue.push(a),e=>{if(e.kind==='status'&&e.finished)finished.push(e.detail);});

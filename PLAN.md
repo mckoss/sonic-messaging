@@ -47,6 +47,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Search base frequency, tone spacing or tone count using measured symbol error rates, repeated references and local refinement.
 - [x] Record the real conversation, embed versioned configuration and measurements in WAV, and recompute from unchanged samples.
 - [x] Evaluate unknown timing internally on the receiver using fresh decoder offsets; report acquisition/CRC/exact recovery independently. Payload FEC remains none.
+- [x] Make the partner a settings-free passive listener that follows restarted controller runs and keeps listening until stopped; log each trial sent and the symbols received.
 - [x] Retire shared-plan imports and transmitter logs; preserve historical WAV audio import in the general recording panel.
 - [ ] Validate coordination reliability and parameter search on two physical devices; save field baselines. **Current: next milestone.**
 - [ ] Estimate in-band SNR using quiet-window noise and signal-plus-noise power; distinguish measured SNR from transmitter amplitude.

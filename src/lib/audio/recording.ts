@@ -16,7 +16,8 @@ export interface RecordingMetadata {
   notes: string;
   /** Retained only to preserve audio from retired shared-schedule WAVs. */
   experiment?: unknown;
-  cooperative?: { version: 1; config: SearchSettings; measurements?: TrialMeasurement[] };
+  /** Partner recordings carry no config; the controller's proposals define every trial. */
+  cooperative?: { version: 1; config?: SearchSettings; measurements?: TrialMeasurement[] };
 }
 export interface Recording { metadata: RecordingMetadata; samples: Float32Array }
 
@@ -37,7 +38,7 @@ export function validateMetadata(value: unknown): RecordingMetadata {
   }
   if (m.cooperative) {
     if (m.cooperative.version !== 1) throw new Error('Unsupported cooperative recording version');
-    m.cooperative.config = validateSearch(m.cooperative.config);
+    if (m.cooperative.config) m.cooperative.config = validateSearch(m.cooperative.config);
   }
   return m;
 }

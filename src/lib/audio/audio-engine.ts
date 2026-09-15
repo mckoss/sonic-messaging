@@ -92,7 +92,7 @@ export class AudioEngine {
   onCooperative(listener: (event: CooperativeEvent) => void): () => void {
     this.cooperativeListeners.add(listener); return () => this.cooperativeListeners.delete(listener);
   }
-  configureCooperative(role: 'controller' | 'partner' | 'replay', config: SearchSettings, session = 0): void {
+  configureCooperative(role: 'controller' | 'partner' | 'replay', config?: SearchSettings, session = 0): void {
     this.cooperativeGeneration++;
     this.cooperativeConfigured = role !== 'replay';
     this.worker?.postMessage({ type: 'configure-cooperative', role, config, session,

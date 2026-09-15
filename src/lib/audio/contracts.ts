@@ -31,7 +31,7 @@ export interface FskDetectorOptions {
 }
 
 export type DspWorkerRequest =
-  | { type: 'configure-cooperative'; role: 'controller' | 'partner' | 'replay'; config: SearchSettings; session: number; sampleRate: number }
+  | { type: 'configure-cooperative'; role: 'controller' | 'partner' | 'replay'; config?: SearchSettings; session: number; sampleRate: number }
   | { type: 'cooperative-played'; token: number }
   | { type: 'stop-cooperative'; reason?: string }
   | { type: 'replay-samples'; samples: TransferableSamples; sampleRate: number; sequence: number }
