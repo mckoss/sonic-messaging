@@ -36,8 +36,10 @@ test('replays cooperative audio without microphone access and receives the test 
 test('validates settings before requesting a microphone and estimates run length',async({page})=>{
   await page.goto('/sonic-messaging/#tests');
   await expect(page.getByRole('button',{name:'Run one trial'})).toHaveCount(0);
+  await expect(page.getByTestId('test-estimate')).toContainText('7 tests · ≈');
   await expect(page.getByTestId('test-estimate')).not.toContainText('over the 10-minute');
-  await page.getByLabel('Number of tests').fill('60');
+  await page.getByLabel('Repetitions per test').fill('9');
+  await expect(page.getByTestId('test-estimate')).toContainText('63 tests');
   await expect(page.getByTestId('test-estimate')).toContainText('over the 10-minute session limit');
   await page.getByLabel('Payload bytes').fill('200');
   await page.getByRole('button',{name:'Start Test',exact:true}).click();

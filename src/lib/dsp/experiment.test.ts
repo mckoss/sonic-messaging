@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { MAX_TESTS, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { MAX_REPETITIONS, searchValues, totalTests, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -20,6 +20,8 @@ function analyze(samples:Float32Array,options:AnalyzerOptions={}) {
   return {results,lost,lines};
 }
 const perSymbol=rate/config.trial.symbolRate;
+/** One value in the sweep, so `repetitions` alone sets how many tests a run sends. */
+const single={...config,minimum:1000,maximum:1001,step:400};
 describe('cooperative acoustic measurement',()=>{
   it('receives the test packet as an ordinary frame on a second listener and scores it',()=>{
     const first=analyze(fixture());expect(first.lost).toEqual([]);expect(first.results).toHaveLength(1);
@@ -94,7 +96,7 @@ describe('control protocol and search',()=>{
     expect(decodeControl(encodeControl({kind:'result',sender:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1,snrMedianDb:20,crcOk:true}}),1)).toBeUndefined();
   });
   /** A controller and partner whose packet managers exchange frames instantly, with optional losses. */
-  function pair(budget=1,drop:(packet:OutgoingPacket,from:'controller'|'partner')=>boolean=()=>false){
+  function pair(repetitions=1,drop:(packet:OutgoingPacket,from:'controller'|'partner')=>boolean=()=>false){
     const events:{controller:CooperativeEvent[];partner:CooperativeEvent[]}={controller:[],partner:[]};
     const wire:{from:'controller'|'partner';packet:OutgoingPacket}[]=[];
     const managers={
@@ -102,7 +104,7 @@ describe('control protocol and search',()=>{
       partner:new PacketManager(42,packet=>wire.push({from:'partner',packet}),{confirmed:seq=>sessions.partner.confirmed(seq),failed:(seq,body)=>sessions.partner.failed(seq,body)},3,4000,500)
     };
     const sessions={
-      controller:new CooperativeSession('controller',{...config,budget},719,(body,ack)=>managers.controller.send(body,ack),e=>events.controller.push(e)),
+      controller:new CooperativeSession('controller',{...single,repetitions},719,(body,ack)=>managers.controller.send(body,ack),e=>events.controller.push(e)),
       partner:new CooperativeSession('partner',undefined,42,(body,ack)=>managers.partner.send(body,ack),e=>events.partner.push(e))
     };
     let now=0;
@@ -190,7 +192,7 @@ describe('control protocol and search',()=>{
     const managers:PacketManager[]=[],sessions:CooperativeSession[]=[];
     for(let i=0;i<2;i++){
       managers.push(new PacketManager(senders[i],packet=>queue.push({from:i,packet}),{confirmed:seq=>sessions[i].confirmed(seq),failed:(seq,body)=>sessions[i].failed(seq,body)}));
-      sessions.push(new CooperativeSession(i===0?'controller':'partner',i===0?{...config,budget:2}:undefined,senders[i],(body,ack)=>managers[i].send(body,ack),
+      sessions.push(new CooperativeSession(i===0?'controller':'partner',i===0?{...single,repetitions:2}:undefined,senders[i],(body,ack)=>managers[i].send(body,ack),
         e=>{if(e.kind==='feedback')observations.push(e.observation.raw.bitErrors);}));
     }
     const analyzers=[0,1].map(i=>new CooperativeAnalyzer(rate,{self:senders[i],analyze:i===1,
@@ -256,12 +258,34 @@ describe('control protocol and search',()=>{
     expect(seconds).toBeGreaterThan(10);expect(seconds).toBeLessThan(25);
     expect(estimateTestSeconds(validateTrial({...config.trial,payloadBytes:64,symbolRate:25}))).toBeGreaterThan(seconds+10);
     expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(0.8);
-    expect(()=>validateSearch({...config,budget:MAX_TESTS+1})).toThrow('number of tests');
+    expect(()=>validateSearch({...config,repetitions:MAX_REPETITIONS+1})).toThrow('repetitions');
+    expect(()=>validateSearch({...config,step:1,repetitions:50})).toThrow('at most 200 test packets');
   });
-  it('searches using measured symbol error rates and obeys its budget',()=>{
-    const s=new ParameterSearch({...config,budget:8});
-    for(let i=0;i<8;i++){const settings=s.next()!;expect(settings).toBeDefined();s.add({sender:1,trial:i,settings,raw:{symbolErrors:settings.lowestFrequency===600?0:10,symbols:64,bits:128,bitErrors:10,confidence:.8,snrMedianDb:20,crcOk:true}});}
-    expect(s.next()).toBeUndefined();expect(s.best()?.value).toBe(600);
+  it('covers every value equally in a shuffled order, and picks the best measured one',()=>{
+    // Deterministic shuffling keeps the test stable; the schedule still covers each value once per repetition.
+    let seed=7;const random=()=>((seed=(seed*1103515245+12345)&0x7fffffff)/0x7fffffff);
+    const run={...config,minimum:600,maximum:3000,step:400,repetitions:3},values=searchValues(run);
+    expect(values).toEqual([600,1000,1400,1800,2200,2600,3000]);
+    expect(totalTests(run)).toBe(21);
+    const s=new ParameterSearch(run,random),order:number[]=[];
+    for(let i=0;i<21;i++){
+      const settings=s.next()!;order.push(settings.lowestFrequency);
+      s.add({sender:1,trial:i,settings,raw:{symbolErrors:settings.lowestFrequency===1400?0:10,symbols:64,bits:128,bitErrors:10,confidence:.8,snrMedianDb:20,crcOk:true}});
+    }
+    expect(s.next()).toBeUndefined();
+    for(const value of values)expect(order.filter(v=>v===value)).toHaveLength(3);
+    // Each repetition is a full pass, and at least one pass is not in ascending order.
+    for(let pass=0;pass<3;pass++)expect([...order.slice(pass*7,pass*7+7)].sort((a,b)=>a-b)).toEqual(values);
+    expect(order.slice(0,7)).not.toEqual(values);
+    expect(s.best()?.value).toBe(1400);
     expect(s.add(s.observations[0])).toBe(false);
+  });
+  it('re-sends the same value when a trial is never received, keeping coverage exact',()=>{
+    const run={...config,minimum:600,maximum:1400,step:400,repetitions:1};
+    const s=new ParameterSearch(run,()=>0);
+    const first=s.next()!;
+    expect(s.next()).toEqual(first); // nothing recorded yet, so the same value comes up again
+    s.add({sender:1,trial:0,settings:first,raw:{symbolErrors:0,symbols:64,bits:128,bitErrors:0,confidence:1,snrMedianDb:20,crcOk:true}});
+    expect(s.next()).not.toEqual(first);
   });
 });

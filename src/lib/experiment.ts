@@ -6,14 +6,17 @@ export interface TrialSettings {
 }
 export type SearchParameter = 'lowestFrequency' | 'spacing' | 'tones';
 export interface SearchSettings {
-  trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number; budget: number;
+  trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number;
+  /** How many times each value of the parameter is tested. */
+  repetitions: number;
 }
 export const CONTROL_FSK = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100, amplitude: 0.8 };
 // 0.8 leaves headroom so output resampling and device processing don't clip the control tones.
 export const MAX_SESSION_SECONDS = 600;
 /** Test packets always play at the control amplitude, which leaves headroom below clipping. */
 export const TEST_AMPLITUDE = 0.8;
-export const MAX_TESTS = 100;
+export const MAX_TESTS = 200;
+export const MAX_REPETITIONS = 50;
 export const trialFsk = (t: TrialSettings) => ({ frequencies: Array.from({ length: t.tones }, (_, i) => t.lowestFrequency + i * t.spacing), symbolRate: t.symbolRate, amplitude: TEST_AMPLITUDE });
 export function validateTrial(value: unknown): TrialSettings {
   const t = value as TrialSettings;
@@ -28,14 +31,24 @@ export function validateTrial(value: unknown): TrialSettings {
 }
 export function defaultSearch(): SearchSettings {
   return { trial: { tones: 4, lowestFrequency: 1000, spacing: 200, symbolRate: 100,
-    payloadBytes: 16, seed: 719 }, parameter: 'lowestFrequency', minimum: 600, maximum: 3000, step: 100, budget: 8 };
+    payloadBytes: 16, seed: 719 }, parameter: 'lowestFrequency', minimum: 600, maximum: 3000, step: 400, repetitions: 1 };
 }
+/** Every value the run tests: all four tone counts, or minimum..maximum in steps. */
+export function searchValues(s: SearchSettings): number[] {
+  if (s.parameter === 'tones') return [2, 4, 8, 16];
+  const values: number[] = [];
+  for (let value = s.minimum; value <= s.maximum; value += s.step) values.push(value);
+  return values;
+}
+/** Total test packets a run sends: every value, once per repetition. */
+export const totalTests = (s: SearchSettings) => searchValues(s).length * s.repetitions;
 export function validateSearch(value: SearchSettings): SearchSettings {
   const s = { ...value, trial: validateTrial(value.trial) };
-  if (!['lowestFrequency','spacing','tones'].includes(s.parameter) || !Number.isInteger(s.budget) || s.budget < 1 || s.budget > MAX_TESTS ||
+  if (!['lowestFrequency','spacing','tones'].includes(s.parameter) || !Number.isInteger(s.repetitions) || s.repetitions < 1 || s.repetitions > MAX_REPETITIONS ||
       !Number.isInteger(s.minimum) || !Number.isInteger(s.maximum) || s.minimum >= s.maximum ||
-      !Number.isInteger(s.step) || s.step < 1) throw new Error(`Invalid search range or number of tests (1–${MAX_TESTS})`);
-  const values = s.parameter === 'tones' ? [2,4,8,16] : [s.minimum, s.maximum];
+      !Number.isInteger(s.step) || s.step < 1) throw new Error(`Invalid search range or repetitions (1–${MAX_REPETITIONS})`);
+  const values = searchValues(s);
+  if (!values.length || values.length * s.repetitions > MAX_TESTS) throw new Error(`A run may send at most ${MAX_TESTS} test packets`);
   for (const v of values) validateTrial({ ...s.trial, [s.parameter]: v });
   return s;
 }
@@ -138,15 +151,20 @@ export function testSymbolCount(t: TrialSettings): number {
   return Math.floor((header + t.payloadBytes * 8) / bps) - Math.ceil(header / bps);
 }
 export interface SearchObservation extends Proposal { raw: RawResult }
-/** Coarse exploration, repeated references, then local refinement. Best means best measured, not a global optimum. */
+/**
+ * Balanced coverage rather than adaptive search: every value of the parameter is tested the same number of times,
+ * one shuffled pass per repetition, so no value gets more evidence than another. Order is randomized within each
+ * pass so drift in the room (someone moves, a fan starts) doesn't fall on the same values every run. A trial the
+ * partner never received is simply re-sent, keeping the coverage exact. Best means best measured, not a global optimum.
+ */
 export class ParameterSearch {
   readonly observations: SearchObservation[]=[];
-  private coarse:number[];
-  private spacing:number;
-  constructor(readonly config:SearchSettings) {
-    validateSearch(config);
-    this.coarse=config.parameter==='tones'?[2,4,8,16]:Array.from({length:5},(_,i)=>Math.round(config.minimum+(config.maximum-config.minimum)*i/4));
-    this.coarse=this.coarse.filter(v=>v!==config.trial[config.parameter]); this.spacing=Math.max(config.step,Math.round((config.maximum-config.minimum)/8));
+  private schedule:number[]=[];
+  constructor(readonly config:SearchSettings,private random:()=>number=Math.random) { validateSearch(config); }
+  private shuffled():number[] {
+    const values=searchValues(this.config);
+    for(let i=values.length-1;i>0;i--){const j=Math.floor(this.random()*(i+1));[values[i],values[j]]=[values[j],values[i]];}
+    return values;
   }
   best(): { value:number; errors:number; symbols:number } | undefined {
     const sums=new Map<number,{value:number;errors:number;symbols:number}>();
@@ -158,15 +176,10 @@ export class ParameterSearch {
     this.observations.push(r);return true;
   }
   next():TrialSettings|undefined {
-    const n=this.observations.length,c=this.config;if(n>=c.budget)return;
-    let value=c.trial[c.parameter];
-    if(n>0){
-      if(n%3===0)value=this.best()!.value;
-      else if(this.coarse.length)value=this.coarse.shift()!;
-      else if(c.parameter==='tones')value=[2,4,8,16][n%4];
-      else { value=Math.max(c.minimum,Math.min(c.maximum,this.best()!.value+(n%2?1:-1)*this.spacing));if(n%2===0)this.spacing=Math.max(c.step,Math.floor(this.spacing/2)); }
-    }
-    return validateTrial({...c.trial,[c.parameter]:value});
+    const n=this.observations.length,c=this.config;
+    if(n>=totalTests(c))return;
+    while(this.schedule.length<=n)this.schedule.push(...this.shuffled());
+    return validateTrial({...c.trial,[c.parameter]:this.schedule[n]});
   }
 }
 export type CooperativeEvent =

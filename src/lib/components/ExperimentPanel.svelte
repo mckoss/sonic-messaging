@@ -6,7 +6,7 @@
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateTestSeconds, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_TESTS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
+  import { defaultSearch, estimateTestSeconds, totalTests, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -23,7 +23,7 @@
   const describeRegime=(run:SearchSettings)=>{
     const label={lowestFrequency:'base frequency',spacing:'tone spacing',tones:'number of tones'}[run.parameter];
     const range=run.parameter==='tones'?'2–16':`${run.minimum}–${run.maximum} step ${run.step}`;
-    return `varying ${label} ${range} · ${run.budget} test${run.budget===1?'':'s'}`;
+    return `varying ${label} ${range} · ${totalTests(run)} test${totalTests(run)===1?'':'s'}, ${run.repetitions}× each`;
   };
   // A partner keeps listening across controller runs: a new sender, or trial numbers starting over, begins a new run.
   $: runs=rows.reduce((all:Run[],row)=>{
@@ -43,7 +43,10 @@
   let log: string[] = [], logBox: HTMLOListElement;
   function append(entry:string){log=[...log,entry].slice(-2000);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
   const megabytes=(bytes:number)=>`${(bytes/1048576).toFixed(1)} MB`;
-  $: estimatedSeconds=(()=>{try{return estimateTestSeconds(validateTrial(config.trial))*Math.max(0,config.budget);}catch{return undefined;}})();
+  $: plan=(()=>{try{
+    const run=validateSearch(config),tests=totalTests(run);
+    return {tests,seconds:estimateTestSeconds(run.trial)*tests};
+  }catch{return undefined;}})();
   const duration=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
   async function refreshLibrary() {
     try {
@@ -197,10 +200,10 @@
       {#if config.parameter !== 'tones'}
         <label>Minimum <input type="number" bind:value={config.minimum} /></label>
         <label>Maximum <input type="number" bind:value={config.maximum} /></label>
-        <label>Minimum step <input type="number" bind:value={config.step} /></label>
+        <label>Step <input type="number" min="1" bind:value={config.step} /></label>
       {/if}
-      <label>Number of tests <input type="number" min="1" max={MAX_TESTS} bind:value={config.budget} /></label>
-      {#if estimatedSeconds !== undefined}<p class="estimate" data-testid="test-estimate" class:over={estimatedSeconds > MAX_SESSION_SECONDS}>≈ {duration(estimatedSeconds)} without retries{#if estimatedSeconds > MAX_SESSION_SECONDS} · over the 10-minute session limit; later tests won't run{/if}</p>{/if}
+      <label>Repetitions per test <input type="number" min="1" max={MAX_REPETITIONS} bind:value={config.repetitions} /></label>
+      {#if plan}<p class="estimate" data-testid="test-estimate" class:over={plan.seconds > MAX_SESSION_SECONDS}>{plan.tests} test{plan.tests === 1 ? '' : 's'} · ≈ {duration(plan.seconds)} without retries{#if plan.seconds > MAX_SESSION_SECONDS} · over the 10-minute session limit; later tests won't run{/if}</p>{/if}
     </div>
     <label>Experiment notes <textarea rows="2" maxlength="4000" bind:value={notes} placeholder="Devices, distance, orientation, volume, background noise"></textarea></label>
     <div class="actions"><button on:click={()=>start('partner')}>Listen as partner</button><button on:click={()=>start('controller')}>Start Test</button><label>Load experiment WAV <input type="file" accept=".wav" on:change={load} /></label></div>
