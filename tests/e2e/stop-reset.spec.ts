@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { encodeFsk } from '../../src/lib/dsp/fsk';
+import { fskToneSet } from '../../src/lib/dsp/fsk-frequencies';
 
 const SAMPLE_RATE = 48_000;
 const PAYLOAD = 'HELLO WORLD';
-const CONFIG = { sampleRate: SAMPLE_RATE, symbolRate: 10, frequencies: [500, 600, 700, 800] };
+const CONFIG = { sampleRate: SAMPLE_RATE, symbolRate: 10, frequencies: fskToneSet(1500, 10, 4) };
 
 function toWav(samples: Float32Array, sampleRate: number): Buffer {
   const data = Buffer.alloc(samples.length * 2);

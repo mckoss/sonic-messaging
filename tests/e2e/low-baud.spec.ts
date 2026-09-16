@@ -46,11 +46,13 @@ test.use({
 });
 
 test('decodes a 10 baud packet live, spanning multi-second sync acquisition', async ({ page }) => {
+  // A 3-byte payload is a 16-byte frame: 64 symbols, 6.4 s at 10 baud, plus the fixture's lead and acquisition.
+  test.setTimeout(90_000);
   await page.goto('/sonic-messaging/');
   await page.getByLabel('Symbol rate').fill(String(CONFIG.symbolRate));
   await page.getByLabel('Symbol rate').press('Tab');
   await page.getByRole('tab', { name: /Receive/ }).click();
   await page.getByRole('button', { name: 'Start listening' }).click();
-  // 16 sync symbols alone take 1.6 s; the 44-symbol frame about 4.4 s.
-  await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 25_000 });
+  // 16 sync symbols alone take 1.6 s; the whole frame about 6.4 s.
+  await expect(page.getByTestId('symbol-waterfall')).toContainText(`${PAYLOAD} ✓`, { timeout: 60_000 });
 });
