@@ -68,6 +68,11 @@ export interface AnalyzerOptions {
   self?:number;
 }
 
+/** What it took to read a frame, when it took anything: worth seeing in the log, because it measures the margin left. */
+const recovery=(p:{echoCancelled?:boolean;softCorrected?:number})=>
+  [p.echoCancelled?'echo cancelled':'',p.softCorrected?`recovered ${p.softCorrected} weak symbol${p.softCorrected>1?'s':''}`:'']
+    .filter(Boolean).map(note=>` · ${note}`).join('');
+
 /** Tracks the bytes of a frame in progress so a failed one can be logged with what was heard. */
 class GarbleTracker {
   private bytes:number[]=[];
@@ -105,13 +110,20 @@ export class CooperativeAnalyzer {
     this.control=new FskStreamDecoder({...CONTROL_FSK,sampleRate});
     this.controlGarble=new GarbleTracker(this.wire,()=>'message');
   }
+  /**
+   * True while a control frame is actually being received: its sync has been verified and its symbols are being read.
+   * Starting a transmission now would talk over the rest of it and lose both frames, so the sender waits. Sync alone
+   * is the right test — it is only 0.6 s into a frame that may run for nine seconds, and it has already been checked
+   * symbol by symbol, so it does not fire on room noise.
+   */
+  get receiving():boolean{return this.control.lockedSymbolAnchor()!==undefined;}
   push(chunk:Float32Array){
     for(const packet of this.control.push(chunk)){
       if(packet.sender===this.options.self)continue;
       const id=frameId(packet.sender,packet.seq);
       if(packet.frameType===FRAME_TYPE.ack){
         const target=decodeAck(packet.payload);
-        if(target){this.wire(`<- ${id} ACK ${frameId(target.sender,target.seq)}`);this.options.ack?.(packet.sender,target);}
+        if(target){this.wire(`<- ${id} ACK ${frameId(target.sender,target.seq)}${recovery(packet)}`);this.options.ack?.(packet.sender,target);}
         else this.wire(`<- ${id} ACK ${hexBytes(packet.payload)} · malformed`);
         continue;
       }
@@ -123,7 +135,7 @@ export class CooperativeAnalyzer {
       }
       const m=decodeControl(packet.payload,packet.sender);
       if(!m){this.wire(`<- ${id} "${String.fromCharCode(...packet.payload)}" · unparseable control message`);continue;}
-      this.wire(`<- ${describeWire(m,packet.seq,packet.payload)}`);
+      this.wire(`<- ${describeWire(m,packet.seq,packet.payload)}${recovery(packet)}`);
       if(this.options.analyze&&m.kind==='test_suite')this.listenForTest(m);
       this.options.control?.(m,{seq:packet.seq,ackRequested:packet.ackRequested});
     }

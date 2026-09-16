@@ -18,6 +18,20 @@ export interface SearchSettings {
  * resampling and device processing don't clip the tones.
  */
 export const CONTROL_FSK = { frequencies: fskToneSet(1500, 25, 4), symbolRate: 25, amplitude: 0.8 };
+/** Quiet lead-in and tail wrapped around every transmission, so a frame never starts in a speaker's turn-on click. */
+export const GUARD_SECONDS = 0.5;
+/**
+ * Seconds of air a control frame with this payload occupies, guards included.
+ *
+ * The control link is deliberately slow, which makes air time the dominant timing constant in the protocol: at 25
+ * baud and 2 bits per symbol a 4-byte ACK already takes 3.7 s and a result(…) line takes about 9 s. Every timeout
+ * that waits on a reply has to be derived from this rather than guessed, or the protocol retransmits into replies
+ * that are still being played.
+ */
+export function controlAirtimeSeconds(payloadBytes: number): number {
+  const symbols = Math.ceil((payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(CONTROL_FSK.frequencies.length));
+  return symbols / CONTROL_FSK.symbolRate + 2 * GUARD_SECONDS;
+}
 export const MAX_SESSION_SECONDS = 600;
 /** Test packets always play at the control amplitude, which leaves headroom below clipping. */
 export const TEST_AMPLITUDE = 0.8;

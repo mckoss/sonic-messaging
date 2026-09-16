@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
 import { MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
-import { PacketManager, type OutgoingPacket } from '../packet-manager';
+import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
 const rate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 /** test_suite, then the test packet as an ordinary guarded frame, then enough quiet for the listener window to close. */
@@ -170,7 +170,8 @@ describe('control protocol and search',()=>{
     const {sessions,events,flush,tick}=pair(1);
     sessions.partner.start(0);sessions.controller.start(0);
     flush(()=>{});// the partner hears nothing and never reports
-    tick(testListenSeconds(config.trial)*1000+4*7000+1000);
+    // The controller waits out the listening window plus every ACK retry before calling the trial lost.
+    tick(testListenSeconds(config.trial)*1000+(DEFAULT_RETRIES+1)*(ACK_TIMEOUT_MS+3000)+1000);
     expect(events.controller.some(e=>e.kind==='lost')).toBe(true);
   });
   it('keeps a settings-free partner listening across restarted controller runs',()=>{

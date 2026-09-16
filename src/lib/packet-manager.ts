@@ -1,4 +1,5 @@
-import type { ControlMessage, Proposal } from './experiment';
+import { controlAirtimeSeconds, type ControlMessage, type Proposal } from './experiment';
+import { ACK_PAYLOAD_BYTES } from './dsp/frame';
 
 export type PacketBody =
   | { kind: 'control'; message: ControlMessage }
@@ -12,8 +13,17 @@ export interface PacketEvents {
   retry?: (packet: OutgoingPacket, retries: number) => void;
 }
 
-/** An ACK is a short frame; this allows for its air time, decode latency, and the peer finishing a transmission first. */
-export const ACK_TIMEOUT_MS = 4000;
+/**
+ * How long to wait for an ACK before retransmitting, measured from the end of our own playback.
+ *
+ * This has to clear the ACK's own air time, which on the 25-baud control link is 3.7 s for a frame carrying four
+ * bytes. A timeout guessed below that retransmits into an ACK that is still being played — and because the receiver
+ * is half duplex, the retransmission also deafens us to the very reply we are waiting for. Derived from the profile
+ * so changing the control baud cannot silently reintroduce that. Transmission is held off while the air is busy,
+ * so this bounds the idle wait, not the total time a reply may take.
+ */
+const ACK_TURNAROUND_SECONDS = 2;
+export const ACK_TIMEOUT_MS = Math.round(1000 * (controlAirtimeSeconds(ACK_PAYLOAD_BYTES) + ACK_TURNAROUND_SECONDS));
 export const DEFAULT_RETRIES = 3;
 const REMEMBERED_FRAMES = 256;
 

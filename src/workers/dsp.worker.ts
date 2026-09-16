@@ -40,8 +40,21 @@ type HeardFrame = { kind: 'control'; message: ControlMessage; seq: number; ackRe
 let outgoing: OutgoingPacket[] = [], deferred: HeardFrame[] = [], playing: { packet: OutgoingPacket; line: string } | undefined;
 let activeToken = 0, nextToken = 0, cooperativeRate = 48000, cooperativeSender = 0;
 function cooperativeEvent(event: CooperativeEvent) { send({ type: 'cooperative-event', event }); }
+/**
+ * Longest a queued frame waits for the air to clear before going out anyway. Nothing on this link legitimately
+ * transmits for this long, so a lock held past it means the decoder is chasing a frame that will never finish, and
+ * staying silent forever would be worse than risking one collision.
+ */
+const MAX_DEFER_MS = 20_000;
+let deferringSince: number | undefined;
 function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
+  // Listen before talking: a device that starts mid-frame garbles the frame it is already receiving and its own.
+  if (cooperativeAnalyzer?.receiving) {
+    deferringSince ??= Date.now();
+    if (Date.now() - deferringSince < MAX_DEFER_MS) return;
+  }
+  deferringSince = undefined;
   const packet = outgoing.shift()!, { body, seq } = packet;
   const retry = packet.attempt ? ` (retry ${packet.attempt}/${packetManager?.retries ?? 0})` : '';
   const described = body.kind === 'control' ? describeWire(body.message, seq) : body.kind === 'trial' ? describeTestSent(body.proposal, seq)
@@ -281,6 +294,8 @@ function backfillOnNewLock(sampleRate: number): void {
 
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
   cooperativeAnalyzer?.push(samples);
+  // A frame held back because the air was busy goes out as soon as the air clears.
+  if (outgoing.length) drainOutgoing();
   const chunkBase = captureSamples;
   storeCapturedAudio(samples, sampleRate);
   detectCaptureGaps(samples, sampleRate);
@@ -383,7 +398,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
     switch (data.type) {
       case 'configure-cooperative':
         if (cooperativeTimer) clearInterval(cooperativeTimer);
-        outgoing = []; deferred = []; activeToken = 0; playing = undefined; cooperativeSession = undefined; packetManager = undefined;
+        outgoing = []; deferred = []; activeToken = 0; playing = undefined; deferringSince = undefined; cooperativeSession = undefined; packetManager = undefined;
         cooperativeRate = data.sampleRate; cooperativeSender = data.sender;
         configureDetector('off');
         cooperativeAnalyzer = new CooperativeAnalyzer(data.sampleRate, {
@@ -425,7 +440,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'stop-cooperative':
         if (cooperativeTimer) clearInterval(cooperativeTimer);
         cooperativeTimer = undefined; cooperativeAnalyzer = undefined;
-        outgoing = []; deferred = []; activeToken = 0; playing = undefined;
+        outgoing = []; deferred = []; activeToken = 0; playing = undefined; deferringSince = undefined;
         packetManager?.clear(); packetManager = undefined;
         cooperativeSession?.stop(data.reason); cooperativeSession = undefined;
         break;

@@ -221,6 +221,45 @@ describe('continuous FSK receiver', () => {
     expect(progress.some(event => event.type === 'length' && event.length === 200)).toBe(true);
   });
 
+  it('keeps a frame whose transmitter fades while sending it', () => {
+    // A phone's speaker limiter pulls its output down as a long tone heats the voice coil: field recordings show
+    // 13 dB of fade across one frame. Judged against the sync level alone that looks like a carrier that went away,
+    // and a perfectly readable frame was being abandoned a quarter of the way in.
+    const payload = new TextEncoder().encode('a'.repeat(200));
+    const waveform = encodeFsk(payload, config).samples.slice();
+    for (let i = 0; i < waveform.length; i++) waveform[i] *= 10 ** (-15 * (i / waveform.length) / 20);
+    const receiver = new FskStreamDecoder(config);
+    const packets: ReturnType<FskStreamDecoder['push']> = [];
+    // Small chunks so the frame arrives gradually and the carrier-loss scan actually runs.
+    for (let i = 0; i < waveform.length; i += 512) packets.push(...receiver.push(waveform.subarray(i, i + 512)));
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual([new TextDecoder().decode(payload)]);
+    expect(receiver.drainProgress().some(event => event.type === 'crc-error')).toBe(false);
+  });
+
+  it('recovers a frame whose weakest symbol was misread, and reports the correction', () => {
+    const payload = new TextEncoder().encode('one weak symbol');
+    const spp = Math.round(config.sampleRate / config.symbolRate);
+    const clean = encodeFsk(payload, config).samples;
+    const symbol = 40;
+    const sent = new FskStreamDecoder(config);
+    sent.push(clean);
+    const trueTone = sent.drainFrames()[0].symbols[symbol];
+    // Add a competing tone just loud enough to win the window, leaving the tone actually sent as runner-up.
+    // Two tones of amplitude a and b split the window's energy as a² : b², so b ≈ 1.36a puts the margin near 0.3 —
+    // a near miss, which is what a real weak symbol looks like, rather than an obliterated one.
+    const damaged = clean.slice(), wrong = config.frequencies[(trueTone + 1) % config.frequencies.length];
+    for (let i = 0; i < spp; i++) {
+      damaged[symbol * spp + i] += 1.09 * Math.sin(2 * Math.PI * wrong * i / config.sampleRate);
+    }
+    const receiver = new FskStreamDecoder(config);
+    const packets = receiver.push(damaged);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual([new TextDecoder().decode(payload)]);
+    expect(packets[0].softCorrected).toBe(1);
+    const frame = receiver.drainFrames()[0];
+    expect(frame.crcOk).toBe(true);
+    expect(frame.softCorrected).toBe(1);
+  });
+
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {
     const payload = new TextEncoder().encode('length hit');
     const spp = Math.round(config.sampleRate / config.symbolRate);

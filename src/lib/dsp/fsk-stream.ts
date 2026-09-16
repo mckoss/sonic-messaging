@@ -3,6 +3,7 @@ import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAY
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import { SymbolTimingLoop } from './symbol-timing';
 import { cancelEcho, estimateEchoTaps } from './echo-canceller';
+import { softCandidates } from './soft-decode';
 import type { FskConfig } from './types';
 
 const SYNC = SYNC_BYTES;
@@ -36,12 +37,25 @@ const SYNC_VERIFY_MAX_MISMATCHES = 1;
 /** Consecutive collapsed-power symbol windows that abandon a mid-frame candidate. */
 const CARRIER_LOSS_ABORT_SYMBOLS = 4;
 /**
- * Power drop below the frame's own sync level that counts as a lost carrier.
+ * Power drop below the frame's *tracked* level that counts as a lost carrier.
  * Referenced to the received signal rather than an absolute squelch, so weak
  * signals stay decodable; at low SNR ambient noise keeps windows within the
  * drop and the CRC (bounded by the frame cap) remains the arbiter.
  */
 const CARRIER_LOSS_DROP_DB = 12;
+/**
+ * How fast the reference level follows the frame it is already receiving.
+ *
+ * A phone transmitting a multi-second tone does not hold its level: the speaker's
+ * protection limiter pulls the output down as the voice coil heats, and recordings
+ * show 13 dB of fade over the first 2.5 s of an 8 s frame. Referenced to the sync
+ * power alone, that ordinary fade looks exactly like the transmitter going away,
+ * and a perfectly readable frame gets abandoned a quarter of the way in. Tracking
+ * the level per symbol absorbs any fade gradual enough to still be a carrier,
+ * while a transmitter that actually stops drops tens of dB within one symbol and
+ * still trips the guard.
+ */
+const CARRIER_LEVEL_TRACK = 0.25;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
 function syncSymbolTemplate(bitsPerSymbol: number): number[] {
@@ -67,6 +81,8 @@ export interface FskStreamPacket {
   endPosition: number;
   /** The frame decoded only after its echoes were cancelled. */
   echoCancelled?: boolean;
+  /** The frame decoded only after this many weak symbols were flipped to their runner-up tone. */
+  softCorrected?: number;
 }
 
 /**
@@ -78,6 +94,8 @@ export interface FskStreamFrame {
   /** The CRC only passed after echo cancellation, with these fitted echo gains (strongest first delay first). */
   echoCancelled?: boolean;
   echoTaps?: number[];
+  /** The CRC only passed after this many weak symbols were flipped to their runner-up tone. */
+  softCorrected?: number;
   /** From the address bytes; unverified when the CRC failed. */
   sender: number;
   seq: number;
@@ -133,7 +151,8 @@ export class FskStreamDecoder {
   /** Carrier-loss scan state for the current candidate. */
   private candidateScannedSymbols = 0;
   private candidateSilentRun = 0;
-  private candidateSyncPowerDbfs = -Infinity;
+  /** Reference level for carrier loss: starts at the sync power and follows the frame's own level as it is read. */
+  private candidateLevelDbfs = -Infinity;
   /** Per-tone score vectors by absolute offset, shared across overlapping sync-search trials. */
   private readonly syncScanCache = new Map<number, Float32Array>();
   /** Expected tone index per sync symbol for the matched-filter search. */
@@ -309,7 +328,7 @@ export class FskStreamDecoder {
           syncPower += windowPowerDbfs(
             this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
         }
-        this.candidateSyncPowerDbfs = syncPower / this.syncTemplate.length;
+        this.candidateLevelDbfs = syncPower / this.syncTemplate.length;
         this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
         return true;
       }
@@ -409,14 +428,17 @@ export class FskStreamDecoder {
     if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) {
       // A corrupted length field can promise a frame lasting up to a minute. If the
       // carrier collapses mid-frame — several consecutive symbol windows far below
-      // this frame's own sync power — abandon it instead of decoding background noise.
+      // the level this frame has been arriving at — abandon it instead of decoding
+      // background noise. The level is tracked rather than fixed, so a transmitter
+      // that merely fades (see CARRIER_LEVEL_TRACK) keeps its frame.
       const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
-      const lossFloor = this.candidateSyncPowerDbfs - CARRIER_LOSS_DROP_DB;
       while (this.candidateScannedSymbols < availableSymbols) {
         const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
         const power = windowPowerDbfs(
           this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
-        this.candidateSilentRun = power < lossFloor ? this.candidateSilentRun + 1 : 0;
+        const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB;
+        this.candidateSilentRun = lost ? this.candidateSilentRun + 1 : 0;
+        if (!lost) this.candidateLevelDbfs += (power - this.candidateLevelDbfs) * CARRIER_LEVEL_TRACK;
         this.candidateScannedSymbols++;
         if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
           this.progress.push({ type: 'crc-error',
@@ -435,15 +457,18 @@ export class FskStreamDecoder {
     // A room echo carries an already-decoded symbol's tone into a later window; subtract it and decide again.
     const echo = parsed.payload ? undefined : this.cancelEcho(frameSymbols, frameBytes);
     if (echo) { parsed = echo.parsed; symbols = echo.symbols; scores = echo.scores; }
+    // Still failing: the loss is usually one weak symbol, so let the CRC test its runner-up tone.
+    const soft = parsed.payload ? undefined : this.softDecode(frameSymbols, frameBytes);
+    if (soft) { parsed = soft.parsed; symbols = soft.symbols; scores = soft.scores; }
     // Remember the room's echo from any frame long enough to fit it, for short frames that can't.
     if (frameSymbols >= 120) {
       const fitted = estimateEchoTaps(this.candidateToneScores.slice(0, frameSymbols), symbols);
       if (fitted.some(tap => tap > 0.02)) this.roomEcho = fitted;
     }
     const framePosition = this.frameBytePosition(start, frameBytes);
-    const address = readFrameAddress(echo?.bytes ?? decoded.bytes, ADDRESS_OFFSET);
+    const address = readFrameAddress(soft?.bytes ?? echo?.bytes ?? decoded.bytes, ADDRESS_OFFSET);
     this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested, payloadLength,
-      symbols, scores, echoCancelled: !!echo, echoTaps: echo?.taps,
+      symbols, scores, echoCancelled: !!echo, echoTaps: echo?.taps, softCorrected: soft?.corrected,
       confidence: decoded.confidence, startPosition: this.streamPosition + start, endPosition: framePosition,
       timingOffset: this.timing.offset });
     if (!parsed.payload) {
@@ -461,7 +486,7 @@ export class FskStreamDecoder {
     this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!,
-      confidence: decoded.confidence, startPosition, endPosition: framePosition, echoCancelled: !!echo };
+      confidence: decoded.confidence, startPosition, endPosition: framePosition, echoCancelled: !!echo, softCorrected: soft?.corrected };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {
@@ -489,6 +514,26 @@ export class FskStreamDecoder {
       bytes.set(SYNC, 0);
       const parsed = unframe(bytes);
       if (parsed.payload) return { parsed, bytes, taps, symbols: corrected.symbols, scores: corrected.scores };
+    }
+    return;
+  }
+
+  /**
+   * Re-checks a failed frame with its least-confident symbols flipped to their runner-up tone, accepting the first
+   * candidate whose CRC passes. Undefined when none does. Reports how many symbols the accepted guess changed.
+   */
+  private softDecode(frameSymbols: number, frameBytes: number) {
+    const scores = this.candidateToneScores.slice(0, frameSymbols);
+    if (scores.length < frameSymbols) return;
+    const decided = this.candidateSymbols.slice(0, frameSymbols);
+    for (const symbols of softCandidates(scores, decided)) {
+      const bytes = this.symbolsToBytes(symbols, frameBytes);
+      bytes.set(SYNC, 0);
+      const parsed = unframe(bytes);
+      if (!parsed.payload) continue;
+      return { parsed, bytes, symbols,
+        scores: symbols.map((tone, index) => scores[index][tone]),
+        corrected: symbols.reduce((count, tone, index) => count + (tone === decided[index] ? 0 : 1), 0) };
     }
     return;
   }

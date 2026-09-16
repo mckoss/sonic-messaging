@@ -94,6 +94,7 @@ export function unframe(input: Uint8Array): { payload?: Uint8Array; sender?: num
 }
 
 /** ACK frame payload: the confirmed frame's sender and sequence number. */
+export const ACK_PAYLOAD_BYTES = 4;
 export const encodeAck = (sender: number, seq: number) => Uint8Array.of(sender >>> 8, sender & 0xff, seq >>> 8, seq & 0xff);
 export function decodeAck(payload: Uint8Array): { sender: number; seq: number } | undefined {
   if (payload.length !== 4) return;
