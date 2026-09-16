@@ -1,7 +1,7 @@
 {
   "name": "sonic-messaging",
   "private": true,
-  "version": "5.2.0",
+  "version": "6.0.0",
   "type": "module",
   "engines": {
     "node": ">=24.20.0 <25"

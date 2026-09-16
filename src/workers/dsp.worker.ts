@@ -2,7 +2,7 @@
 import { hannWindow, magnitudesToDecibels, realFftMagnitude, reconstructFromMagnitudes } from '../lib/audio/fft';
 import { DETECTOR_HOP_SAMPLES } from '../lib/audio/waterfall';
 import type { DspWorkerRequest, DspWorkerResponse, SpectrumOptions } from '../lib/audio/contracts';
-import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskFrequencies,
+import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDsss, encodeFsk, fskToneSet,
   goldCodes, mSequence, simulateChannel, smallKasamiCodes, detectFskSymbol } from '../lib/dsp';
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
@@ -336,9 +336,8 @@ function buildModem(request: SimulationRequest): {
   const bytes = new TextEncoder().encode(request.payload), s = request.settings, sampleRate = 48_000;
   const address = { sender: request.sender ?? 0, type: FRAME_TYPE.message };
   if (request.mode === 'FSK') {
-    const tones = numeric(s.tones, 4), lowest = numeric(s.lowestFrequency, 3_800);
-    const frequencies = fskFrequencies(lowest, numeric(s.toneSpacing, 800), tones);
-    const config: FskConfig = { sampleRate, symbolRate: numeric(s.symbolRate, 100), frequencies, address };
+    const tones = numeric(s.tones, 4), lowest = numeric(s.lowestFrequency, 1_500), symbolRate = numeric(s.symbolRate, 25);
+    const config: FskConfig = { sampleRate, symbolRate, frequencies: fskToneSet(lowest, symbolRate, tones), address };
     return { waveform: encodeFsk(bytes, config), decode: samples => decodeFsk(samples, config) };
   }
   if (request.mode === 'CSS') {

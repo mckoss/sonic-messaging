@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { encodeFsk } from '../../src/lib/dsp/fsk';
 import { decodeRecording } from '../../src/lib/audio/recording';
+import { fskToneSet } from '../../src/lib/dsp/fsk-frequencies';
 
 const SAMPLE_RATE = 48_000;
 const PAYLOAD = 'HI!';
-const CONFIG = { sampleRate: SAMPLE_RATE, symbolRate: 100, frequencies: [500, 600, 700, 800] };
+const CONFIG = { sampleRate: SAMPLE_RATE, symbolRate: 100, frequencies: fskToneSet(1500, 100, 4) };
 
 function toWav(samples: Float32Array, sampleRate: number): Buffer {
   const data = Buffer.alloc(samples.length * 2);

@@ -7,7 +7,7 @@
   import ModeControls from './lib/components/ModeControls.svelte';
   import { AudioEngine } from './lib/audio';
   import { ModemLabWorker, type SimulationResult } from './lib/modem-lab';
-  import { fskFrequencies } from './lib/dsp';
+  import { fskToneSet } from './lib/dsp/fsk-frequencies';
   import { loadUserPreferences, saveUserPreferences, type Mode, type UserPreferences } from './lib/preferences';
   import { waterfallSamplesPerCssPixel } from './lib/audio/waterfall';
   import { replayPlaybackPosition, waterfallScrubSamples, waterfallView } from './lib/audio/scrub-store';
@@ -70,7 +70,7 @@
   let listening = false;
   let payload = 'SONIC TEST 001';
   let settings: Record<Mode, Record<string, number | string | boolean>> = {
-    FSK: { lowestFrequency: 500, toneSpacing: 100, tones: 4, symbolRate: 25 },
+    FSK: { lowestFrequency: 1500, tones: 4, symbolRate: 25 },
     CSS: { centerFrequency: 8000, bandwidth: 6000, spreadingFactor: 8, chirpDirection: 'Up', preambleSymbols: 8 },
     DSSS: { centerFrequency: 6000, bandwidth: 5000, codeFamily: 'Gold', codeLength: 127, codeIndex: 0, chipRate: 4000 }
   };
@@ -159,7 +159,7 @@
 
   function fskSettings() {
     const s = settings.FSK;
-    return { frequencies: fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
+    return { frequencies: fskToneSet(Number(s.lowestFrequency), Number(s.symbolRate), Number(s.tones)),
       symbolRate: Number(s.symbolRate) };
   }
   function resetReceiverDisplay() {
@@ -221,7 +221,7 @@
     if (!recording) return;
     const fsk = recording.metadata.fsk;
     mode = 'FSK'; settings = { ...settings, FSK: { lowestFrequency: fsk.frequencies[0],
-      toneSpacing: fsk.frequencies[1] - fsk.frequencies[0], tones: fsk.frequencies.length, symbolRate: fsk.symbolRate } };
+      tones: fsk.frequencies.length, symbolRate: fsk.symbolRate } };
   }
   async function decodeSavedRecording() {
     if (!recording) return;
@@ -242,8 +242,8 @@
   $: activeBand = (() => {
     const s = settings[mode];
     if (mode === 'FSK') {
-      const low = Number(s.lowestFrequency);
-      return { low, high: low + Number(s.toneSpacing) * (Number(s.tones) - 1) };
+      const tones = fskToneSet(Number(s.lowestFrequency), Number(s.symbolRate), Number(s.tones));
+      return { low: tones[0], high: tones[tones.length - 1] };
     }
     const center = Number(s.centerFrequency), half = Number(s.bandwidth) / 2;
     return { low: center - half, high: center + half };
@@ -284,7 +284,7 @@
     if (!audio || !listening || mode !== 'FSK') { audio?.disableDetector(); return; }
     const s = settings.FSK;
     audio.configureFskDetector(
-      fskFrequencies(Number(s.lowestFrequency), Number(s.toneSpacing), Number(s.tones)),
+      fskToneSet(Number(s.lowestFrequency), Number(s.symbolRate), Number(s.tones)),
       Number(s.symbolRate)
     );
   }
@@ -497,7 +497,7 @@
           samplePosition={symbolSamplePosition} {samplesPerCssPixel}
           sampleRate={receiverSampleRate}
           symbolRate={Number(settings.FSK.symbolRate)}
-          labels={fskFrequencies(Number(settings.FSK.lowestFrequency), Number(settings.FSK.toneSpacing), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
+          labels={fskToneSet(Number(settings.FSK.lowestFrequency), Number(settings.FSK.symbolRate), Number(settings.FSK.tones)).map((frequency, index) => `S${index} · ${frequency}Hz`)} />
       {/if}
       {/key}
       <div class="readouts"><div><span>{mode === 'FSK' && receiving ? 'Window power' : 'Peak'}</span><strong>{mode === 'FSK' && receiving ? symbolPower.toFixed(1) : spectrum.length ? Math.max(...spectrum).toFixed(1) : '—'} dBFS</strong></div><div><span>{mode === 'FSK' && receiving ? 'Symbol confidence' : 'Last confidence'}</span><strong>{mode === 'FSK' && receiving ? `${Math.round(symbolConfidence * 100)}%` : lastResult ? `${Math.round(lastResult.confidence * 100)}%` : '—'}</strong></div><div><span>Decoder</span><strong>{receiving ? mode === 'FSK' ? rawSymbol >= 0 ? `FSK · S${rawSymbol}` : 'FSK · noise' : mode : 'Standby'}</strong></div></div>

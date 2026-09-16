@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fskCenterFrequency, fskFrequencies, fskPlanWarnings, fskSuggestedPlan, fskToneSpan } from '../dsp/fsk-frequencies';
+  import { fskPlanWarnings, fskSuggestedPlan, fskToneSet } from '../dsp/fsk-frequencies';
   import { dsssCodeLengths, normalizeDsssCodeLength } from '../dsp/dsss-code-options';
 
   type Mode = 'FSK' | 'CSS' | 'DSSS';
@@ -7,28 +7,24 @@
   export let settings: Record<string, number | string | boolean>;
 
   $: centerFrequency = Number(settings.centerFrequency);
+  // Tones follow from the base frequency and baud: unequal gaps, all multiples of the symbol rate.
   $: fskTones = mode === 'FSK'
-    ? fskFrequencies(Number(settings.lowestFrequency), Number(settings.toneSpacing), Number(settings.tones))
+    ? fskToneSet(Number(settings.lowestFrequency), Number(settings.symbolRate), Number(settings.tones))
     : [];
-  $: toneSpacing = Number(settings.toneSpacing);
-  $: fskSpan = mode === 'FSK' ? fskToneSpan(toneSpacing, Number(settings.tones)) : 0;
-  $: fskCenter = mode === 'FSK'
-    ? fskCenterFrequency(Number(settings.lowestFrequency), toneSpacing, Number(settings.tones))
-    : 0;
-  $: spacingRatio = mode === 'FSK' ? toneSpacing / Number(settings.symbolRate) : 0;
+  $: fskSpan = fskTones.length ? fskTones[fskTones.length - 1] - fskTones[0] : 0;
+  $: fskGaps = fskTones.slice(1).map((tone, index) => tone - fskTones[index]);
+  $: fskCenter = fskTones.length ? (fskTones[0] + fskTones[fskTones.length - 1]) / 2 : 0;
   // Whole tone cycles integrated per symbol slot, for the lowest and highest tones.
   $: fskCyclesLow = fskTones.length ? fskTones[0] / Number(settings.symbolRate) : 0;
   $: fskCyclesHigh = fskTones.length ? fskTones[fskTones.length - 1] / Number(settings.symbolRate) : 0;
   $: fskBitsPerSecond = mode === 'FSK' ? Number(settings.symbolRate) * Math.log2(Number(settings.tones)) : 0;
-  $: fskWarnings = mode === 'FSK' ? fskPlanWarnings(fskTones, toneSpacing, Number(settings.symbolRate)) : [];
+  $: fskWarnings = mode === 'FSK' ? fskPlanWarnings(fskTones, Number(settings.symbolRate)) : [];
   $: fskSuggestion = mode === 'FSK' ? fskSuggestedPlan(Number(settings.symbolRate), Number(settings.tones)) : undefined;
-  $: fskSuggestionDiffers = !!fskSuggestion && fskWarnings.length > 0 &&
-    (Number(settings.lowestFrequency) !== fskSuggestion.lowestFrequency || toneSpacing !== fskSuggestion.toneSpacing);
+  $: fskSuggestionDiffers = !!fskSuggestion && fskWarnings.length > 0 && Number(settings.lowestFrequency) !== fskSuggestion.lowestFrequency;
 
   function applyFskSuggestion(event: MouseEvent) {
     if (!fskSuggestion) return;
     settings.lowestFrequency = fskSuggestion.lowestFrequency;
-    settings.toneSpacing = fskSuggestion.toneSpacing;
     // Bubble a change event so the host persists settings and reconfigures the detector.
     (event.currentTarget as HTMLElement).dispatchEvent(new Event('change', { bubbles: true }));
   }
@@ -53,17 +49,16 @@
 
   {#if mode === 'FSK'}
     <label><span>Lowest frequency</span><input type="number" min="100" max="23000" step="100" bind:value={settings.lowestFrequency} /><small>Hz</small></label>
-    <label><span>Tone spacing</span><input type="number" min="10" max="12000" step="10" bind:value={settings.toneSpacing} /><small>Hz</small></label>
     <label><span>Tones</span><select bind:value={settings.tones}><option value={2}>2-FSK</option><option value={4}>4-FSK</option><option value={8}>8-FSK</option><option value={16}>16-FSK</option></select></label>
     <label><span>Symbol rate</span><input type="number" min="5" max="2000" bind:value={settings.symbolRate} /><small>baud</small></label>
     <div class="frequency-plan" aria-live="polite">
       <strong>Generated tones</strong>
       <span>{fskTones.map(hz).join(' · ')}</span>
-      <span class="detail">Center {hz(fskCenter)} · span {hz(fskSpan)} · spacing/rate {spacingRatio.toLocaleString(undefined, { maximumFractionDigits: 2 })} · <span data-testid="fsk-bit-rate">{fskBitsPerSecond.toLocaleString(undefined, { maximumFractionDigits: 0 })} bps</span> · <span data-testid="fsk-cycles-per-symbol">{fskCyclesLow.toLocaleString(undefined, { maximumFractionDigits: 1 })}–{fskCyclesHigh.toLocaleString(undefined, { maximumFractionDigits: 1 })} cycles/symbol</span></span>
+      <span class="detail">Center {hz(fskCenter)} · span {hz(fskSpan)} · gaps {fskGaps.map(hz).join(' / ')} · <span data-testid="fsk-bit-rate">{fskBitsPerSecond.toLocaleString(undefined, { maximumFractionDigits: 0 })} bps</span> · <span data-testid="fsk-cycles-per-symbol">{fskCyclesLow.toLocaleString(undefined, { maximumFractionDigits: 1 })}–{fskCyclesHigh.toLocaleString(undefined, { maximumFractionDigits: 1 })} cycles/symbol</span></span>
       {#each fskWarnings as warning}<span class="warning">⚠ {warning}</span>{/each}
       {#if fskSuggestion && fskSuggestionDiffers}
         <button type="button" class="suggestion" on:click={applyFskSuggestion}>
-          Use suggested plan for {Number(settings.symbolRate).toLocaleString()} baud: lowest {fskSuggestion.lowestFrequency.toLocaleString()} Hz · spacing {fskSuggestion.toneSpacing.toLocaleString()} Hz
+          Use suggested base for {Number(settings.symbolRate).toLocaleString()} baud: {fskSuggestion.lowestFrequency.toLocaleString()} Hz
         </button>
       {/if}
     </div>

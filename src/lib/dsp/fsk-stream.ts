@@ -2,6 +2,7 @@ import { bitsToBytes } from './bits';
 import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import { SymbolTimingLoop } from './symbol-timing';
+import { cancelEcho, estimateEchoTaps } from './echo-canceller';
 import type { FskConfig } from './types';
 
 const SYNC = SYNC_BYTES;
@@ -64,6 +65,8 @@ export interface FskStreamPacket {
   confidence: number;
   startPosition: number;
   endPosition: number;
+  /** The frame decoded only after its echoes were cancelled. */
+  echoCancelled?: boolean;
 }
 
 /**
@@ -72,6 +75,9 @@ export interface FskStreamPacket {
  */
 export interface FskStreamFrame {
   crcOk: boolean;
+  /** The CRC only passed after echo cancellation, with these fitted echo gains (strongest first delay first). */
+  echoCancelled?: boolean;
+  echoTaps?: number[];
   /** From the address bytes; unverified when the CRC failed. */
   sender: number;
   seq: number;
@@ -118,6 +124,10 @@ export class FskStreamDecoder {
   private candidateSymbols: number[] = [];
   private candidateConfidences: number[] = [];
   private candidateScores: number[] = [];
+  /** Every tone's score per symbol, kept so a failed frame can be re-decided with echoes removed. */
+  private candidateToneScores: Float32Array[] = [];
+  /** Echo gains fitted on an earlier frame: the room doesn't change between frames, but short frames can't fit them. */
+  private roomEcho: number[] = [];
   /** Tracks symbol timing through the current candidate after sync acquisition. */
   private timing!: SymbolTimingLoop;
   /** Carrier-loss scan state for the current candidate. */
@@ -173,7 +183,7 @@ export class FskStreamDecoder {
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.frames = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.streamPosition = 0;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     this.syncScanCache.clear();
   }
@@ -290,7 +300,7 @@ export class FskStreamDecoder {
         this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false; this.reportedAddress = false;
-        this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
+        this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.resetTiming();
         this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         // Reference power for carrier-loss detection: what this frame's sync measured.
         let syncPower = 0;
@@ -420,11 +430,20 @@ export class FskStreamDecoder {
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
-    const parsed = unframe(decoded.bytes);
+    let parsed = unframe(decoded.bytes);
+    let symbols = this.candidateSymbols.slice(0, frameSymbols), scores = this.candidateScores.slice(0, frameSymbols);
+    // A room echo carries an already-decoded symbol's tone into a later window; subtract it and decide again.
+    const echo = parsed.payload ? undefined : this.cancelEcho(frameSymbols, frameBytes);
+    if (echo) { parsed = echo.parsed; symbols = echo.symbols; scores = echo.scores; }
+    // Remember the room's echo from any frame long enough to fit it, for short frames that can't.
+    if (frameSymbols >= 120) {
+      const fitted = estimateEchoTaps(this.candidateToneScores.slice(0, frameSymbols), symbols);
+      if (fitted.some(tap => tap > 0.02)) this.roomEcho = fitted;
+    }
     const framePosition = this.frameBytePosition(start, frameBytes);
-    const address = readFrameAddress(decoded.bytes, ADDRESS_OFFSET);
+    const address = readFrameAddress(echo?.bytes ?? decoded.bytes, ADDRESS_OFFSET);
     this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested, payloadLength,
-      symbols: this.candidateSymbols.slice(0, frameSymbols), scores: this.candidateScores.slice(0, frameSymbols),
+      symbols, scores, echoCancelled: !!echo, echoTaps: echo?.taps,
       confidence: decoded.confidence, startPosition: this.streamPosition + start, endPosition: framePosition,
       timingOffset: this.timing.offset });
     if (!parsed.payload) {
@@ -439,9 +458,10 @@ export class FskStreamDecoder {
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
-    return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!, confidence: decoded.confidence, startPosition, endPosition: framePosition };
+    return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!,
+      confidence: decoded.confidence, startPosition, endPosition: framePosition, echoCancelled: !!echo };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {
@@ -449,8 +469,35 @@ export class FskStreamDecoder {
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
+  }
+
+  /**
+   * Re-decides a failed frame with its own echoes removed: fits one gain per echo delay from the decisions just made,
+   * subtracts each decided symbol's tone from later windows, and re-checks the CRC. Undefined when it still fails.
+   */
+  private cancelEcho(frameSymbols: number, frameBytes: number) {
+    const scores = this.candidateToneScores.slice(0, frameSymbols);
+    if (scores.length < frameSymbols) return;
+    const fitted = estimateEchoTaps(scores, this.candidateSymbols.slice(0, frameSymbols));
+    // A short frame has too few symbols per delay to fit reliable gains; the room's own, fitted on a longer frame, serves.
+    for (const taps of [fitted, this.roomEcho]) {
+      if (!taps.some(tap => tap > 0.02)) continue;
+      const corrected = cancelEcho(scores, taps);
+      const bytes = this.symbolsToBytes(corrected.symbols, frameBytes);
+      bytes.set(SYNC, 0);
+      const parsed = unframe(bytes);
+      if (parsed.payload) return { parsed, bytes, taps, symbols: corrected.symbols, scores: corrected.scores };
+    }
+    return;
+  }
+
+  /** Packs decided symbols into the frame's first `count` bytes. */
+  private symbolsToBytes(symbols: readonly number[], count: number): Uint8Array {
+    const bits: number[] = [];
+    for (const symbol of symbols) for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) bits.push((symbol >>> bit) & 1);
+    return bitsToBytes(bits).slice(0, count);
   }
 
   /** Decodes the candidate's first `count` bytes, reusing symbols decoded on earlier calls. */
@@ -474,6 +521,7 @@ export class FskStreamDecoder {
       this.candidateSymbols.push(symbol);
       this.candidateConfidences.push(decision.confidence);
       this.candidateScores.push(decision.scores[symbol]);
+      this.candidateToneScores.push(Float32Array.from(decision.scores));
       this.timing.observe(buffered, start, symbol, at);
     }
     const bits: number[] = [];

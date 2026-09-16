@@ -2,8 +2,9 @@ import { expect, test } from '@playwright/test';
 import { encodeRecording } from '../../src/lib/audio/recording';
 import manifest from '../../package.json' with { type: 'json' };
 import { encodeFsk } from '../../src/lib/dsp/fsk';
+import { fskToneSet } from '../../src/lib/dsp/fsk-frequencies';
 
-const sampleRate = 44100, fsk = { frequencies: [1000, 1200, 1400, 1600], symbolRate: 100 };
+const sampleRate = 44100, fsk = { frequencies: fskToneSet(1000, 100, 4), symbolRate: 100 };
 const burst = encodeFsk(new TextEncoder().encode('REPLAY'), { sampleRate, ...fsk }).samples;
 const samples = new Float32Array(burst.length + 16000); samples.set(burst, 8000);
 const buffer = Buffer.from(encodeRecording({ samples, metadata: {

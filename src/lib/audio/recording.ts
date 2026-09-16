@@ -34,9 +34,8 @@ export function validateMetadata(value: unknown): RecordingMetadata {
       !m.fsk || !Array.isArray(m.fsk.frequencies) ||
       ![2, 4, 8, 16].includes(m.fsk.frequencies.length) ||
       !Number.isFinite(m.fsk.symbolRate) || m.fsk.symbolRate < 1 || m.fsk.symbolRate > 2000 ||
-      m.fsk.frequencies.some((f, i, a) => !Number.isFinite(f) || f <= 0 || f >= m.sampleRate / 2 ||
-        (i > 0 && Math.abs(f - a[0] - i * (a[1] - a[0])) > 0.001)) ||
-      m.fsk.frequencies[1] <= m.fsk.frequencies[0]) {
+      // Tone plans have unequal gaps, so only require increasing tones inside the band.
+      m.fsk.frequencies.some((f, i, a) => !Number.isFinite(f) || f <= 0 || f >= m.sampleRate / 2 || (i > 0 && f <= a[i - 1]))) {
     throw new Error('Unsupported or invalid Sonic Messaging recording settings');
   }
   if (m.cooperative) {

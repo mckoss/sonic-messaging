@@ -20,14 +20,14 @@ test('replays cooperative audio without microphone access and receives the test 
   await expect(page.locator('.brand-copy small')).toHaveText(`v${manifest.version}`);
   await page.getByLabel('Load experiment WAV').setInputFiles({name:'cooperative.wav',mimeType:'audio/wav',buffer:Buffer.from(wav)});
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
-  await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+  await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:120000});
   await expect(page.getByTestId('experiment-results')).toContainText('received');
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
-  await expect(page.getByTestId('experiment-log')).toContainText('<- 02CF#1 test_suite(1, 1000, 200, 4, 100, 16, 719) · trial 1 settings');
+  await expect(page.getByTestId('experiment-log')).toContainText('<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719) · trial 1 settings');
   await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await resultRows(page).allInnerTexts();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
-  await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+  await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:120000});
   await expect(resultRows(page)).toHaveText(original,{useInnerText:true});
   const pending=page.waitForEvent('download');
   await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();
@@ -36,10 +36,10 @@ test('replays cooperative audio without microphone access and receives the test 
 test('validates settings before requesting a microphone and estimates run length',async({page})=>{
   await page.goto('/sonic-messaging/#tests');
   await expect(page.getByRole('button',{name:'Run one trial'})).toHaveCount(0);
-  await expect(page.getByTestId('test-estimate')).toContainText('7 tests · ≈');
+  await expect(page.getByTestId('test-estimate')).toContainText('5 tests · ≈');
   await expect(page.getByTestId('test-estimate')).not.toContainText('over the 10-minute');
   await page.getByLabel('Repetitions per test').fill('9');
-  await expect(page.getByTestId('test-estimate')).toContainText('63 tests');
+  await expect(page.getByTestId('test-estimate')).toContainText('45 tests');
   await expect(page.getByTestId('test-estimate')).toContainText('over the 10-minute session limit');
   await page.getByLabel('Payload bytes').fill('200');
   await page.getByRole('button',{name:'Start Test',exact:true}).click();
@@ -56,10 +56,10 @@ const dir=join(tmpdir(),'sonic-cooperative-tests');mkdirSync(dir,{recursive:true
 test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path}`]}});
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
-    test.setTimeout(120000);await page.goto('/sonic-messaging/#tests');
+    test.setTimeout(240000);await page.goto('/sonic-messaging/#tests');
     await page.getByLabel('Payload bytes').fill('200'); // Partner settings are ignored, even when invalid.
     await page.getByRole('button',{name:'Listen as partner',exact:true}).click();
-    await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:25000});
+    await expect(page.getByTestId('experiment-status')).toContainText('Controller finished; still listening',{timeout:90000});
     await expect(page.locator('.experiment [role=alert]')).toHaveCount(0);
     // The packet is received and scored; a slow CI machine can glitch its own audio capture, so a failed CRC
     // (with every symbol still scored) counts as reception too. Only "lost" would mean the pipeline broke.
@@ -68,7 +68,7 @@ test.describe('live partner',()=>{
     await expect(page.getByTestId('experiment-results')).toContainText('/64');
     const log=page.getByTestId('experiment-log');
     // Received frames show <- with the controller's sender#seq; the partner's own transmissions show ->.
-    for(const line of ['<- 02CF#1 test_suite(1, 1000, 200, 4, 100, 16, 719)',' ACK 02CF#1',`<- 02CF#2 test packet `,
+    for(const line of ['<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719)',' ACK 02CF#1',`<- 02CF#2 test packet `,
       '<- 02CF#3 done(1) · run finished after 1 trials',' ACK 02CF#3'])await expect(log).toContainText(line);
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ ACK 02CF#1/);
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ result\(1, \d+, 64, \d+, 128,/);
@@ -78,7 +78,7 @@ test.describe('live partner',()=>{
     const saved=await (await pending).path();if(!saved)throw Error('Missing capture');
     await page.getByLabel('Load experiment WAV').setInputFiles(saved);
     await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
-    await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+    await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:120000});
     await expect(resultRows(page)).toHaveText(original,{useInnerText:true});
     // The live run was saved to browser storage while recording and survives a reload.
     await page.reload();
@@ -89,7 +89,7 @@ test.describe('live partner',()=>{
     const stored=page.waitForEvent('download');await recordings.getByRole('button',{name:'Save WAV'}).click();
     expect((await stored).suggestedFilename()).toMatch(/^sonic-partner-.*\.wav$/);
     await recordings.getByRole('button',{name:'Replay'}).click();
-    await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:20000});
+    await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:120000});
     await expect(resultRows(page)).toHaveText(original,{useInnerText:true});
     page.once('dialog',dialog=>dialog.accept());
     await recordings.getByRole('button',{name:'Clear all'}).click();

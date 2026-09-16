@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { MAX_REPETITIONS, estimateRunSeconds, searchValues, spacingForBaud, totalTests, withValue, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -13,9 +13,9 @@ export function fixture(p:Proposal=proposal,sampleRate=rate) {
 }
 /** Sample index where the fixture's test packet frame starts. */
 const packetStart=(sampleRate=rate)=>guardedWave(controlWave({kind:'test_suite',...proposal},sampleRate),sampleRate).length+sampleRate/2;
-function analyze(samples:Float32Array,options:AnalyzerOptions={}) {
+function analyze(samples:Float32Array,options:AnalyzerOptions={},sampleRate=rate) {
   const results:TrialMeasurement[]=[],lost:Proposal[]=[],lines:string[]=[];
-  const analyzer=new CooperativeAnalyzer(rate,{analyze:true,measurement:r=>results.push(r),lost:p=>lost.push(p),wire:l=>lines.push(l),...options});
+  const analyzer=new CooperativeAnalyzer(sampleRate,{analyze:true,measurement:r=>results.push(r),lost:p=>lost.push(p),wire:l=>lines.push(l),...options});
   for(let i=0;i<samples.length;i+=128)analyzer.push(samples.subarray(i,i+128));
   return {results,lost,lines};
 }
@@ -50,7 +50,8 @@ describe('cooperative acoustic measurement',()=>{
     for(let i=0;i<stretched.length;i++){const x=i/factor,lo=Math.floor(x),f=x-lo;stretched[i]=(clean[lo]??0)*(1-f)+(clean[lo+1]??0)*f;}
     const {results}=analyze(simulateChannel(stretched,{snrDb:20,seed:918}));
     expect(results).toHaveLength(1);expect(results[0].raw.crcOk).toBe(true);expect(results[0].raw.bitErrors).toBe(0);
-    expect(results[0].timingDriftMs).toBeGreaterThan(0.2);expect(results[0].timingDriftMs).toBeLessThan(1.2);
+    // 40 ms symbols at 25 baud drift further in milliseconds than the 10 ms symbols this once used.
+    expect(results[0].timingDriftMs).toBeGreaterThan(0.2);expect(results[0].timingDriftMs).toBeLessThan(5);
   });
   it('reports in-window S/N per symbol that falls with channel noise',()=>{
     const clean=analyze(fixture()).results[0],noisy=analyze(simulateChannel(fixture(),{snrDb:3,seed:44})).results[0];
@@ -61,7 +62,8 @@ describe('cooperative acoustic measurement',()=>{
   it('keeps absolute positions after a long quiet session',()=>{
     const quiet=rate*75,long=new Float32Array(quiet+fixture().length);long.set(fixture(),quiet);
     const late=analyze(long).results[0],early=analyze(fixture()).results[0];
-    expect(late.raw).toEqual(early.raw);expect(late.startPosition).toBe(early.startPosition+quiet);
+    const counts=(m:TrialMeasurement)=>({...m.raw,confidence:Math.round(m.raw.confidence*1000)});
+    expect(counts(late)).toEqual(counts(early));expect(late.startPosition).toBe(early.startPosition+quiet);
   });
   it('scores the packet as soon as its last symbol arrives, and ignores test packets nobody announced',()=>{
     const full=fixture(),cut=packetStart()+(PAYLOAD_OFFSET+config.trial.payloadBytes+1)*4*perSymbol,results:TrialMeasurement[]=[];
@@ -73,9 +75,12 @@ describe('cooperative acoustic measurement',()=>{
     expect(results).toHaveLength(1);expect(results[0].raw.symbolErrors).toBe(0);
     expect(analyze(guardedWave(trialWave(proposal,rate),rate)).results).toEqual([]);
   });
+  // Eight and sixteen tones spread past 4 kHz, so these run at a real device's sample rate.
   it.each([2,4,8,16])('measures %i tones with payload-only bit counts',tones=>{
-    const p={...proposal,settings:validateTrial({...proposal.settings,tones,lowestFrequency:800})};
-    const {results}=analyze(fixture(p));expect(results).toHaveLength(1);expect(results[0].raw.bits).toBe(128);expect(results[0].raw.bitErrors).toBe(0);
+    const sampleRate=48_000;
+    const p={...proposal,settings:validateTrial({...proposal.settings,tones,lowestFrequency:1500})};
+    const {results}=analyze(fixture(p,sampleRate),{},sampleRate);
+    expect(results).toHaveLength(1);expect(results[0].raw.bits).toBe(128);expect(results[0].raw.bitErrors).toBe(0);
   });
 });
 describe('control protocol and search',()=>{
@@ -86,7 +91,7 @@ describe('control protocol and search',()=>{
   it('sends human-readable method calls and rejects malformed text',()=>{
     const text=(s:string)=>new TextEncoder().encode(s);
     // The sender travels in the frame, never in the message text.
-    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1000, 200, 4, 100, 16, 719)');
+    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1500, 4, 25, 16, 719)');
     expect(controlText({kind:'result',sender:0x1a2b,trial:0,raw:{symbolErrors:2,symbols:64,bitErrors:3,bits:128,confidence:0.8234,snrMedianDb:-3.26,crcOk:false}})).toBe('result(1, 2, 64, 3, 128, 0.82, -3.3, 0)');
     expect(controlText({kind:'done',sender:0x1a2b,trial:8})).toBe('done(8)');
     expect(decodeControl(text('lost(4)'),0x1a2b)).toEqual({kind:'lost',sender:0x1a2b,trial:3});
@@ -178,8 +183,8 @@ describe('control protocol and search',()=>{
     p.receive({kind:'test_suite',sender:1,trial:0,settings:config.trial});
     p.receive({kind:'test_suite',sender:1,trial:1,settings:config.trial});
     // The same controller stopped mid-run and restarted at trial 1 with different settings; no done was heard.
-    p.receive({kind:'test_suite',sender:1,trial:0,settings:{...config.trial,spacing:300}});
-    p.lost({sender:1,trial:0,settings:{...config.trial,spacing:300}});
+    p.receive({kind:'test_suite',sender:1,trial:0,settings:{...config.trial,tones:8}});
+    p.lost({sender:1,trial:0,settings:{...config.trial,tones:8}});
     // A different controller device takes over; results for the old one are ignored.
     p.receive({kind:'test_suite',sender:2,trial:0,settings:config.trial});
     p.lost({sender:1,trial:0,settings:config.trial});
@@ -242,7 +247,7 @@ describe('control protocol and search',()=>{
     const acks:{from:number;target:{sender:number;seq:number}}[]=[];
     const {lines}=analyze(samples,{ack:(from,target)=>acks.push({from,target})});
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
-    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1000, 200, 4, 100, 16, 719) · trial 1 settings: Base=1000, Delta=200, Tones=4, Baud=100, Bytes=16, Seed=719');
+    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719 (1500/1700/2100/2900 Hz)');
     // This default test uses the control tones and baud, so the control listener also decodes the packet; it is logged once, scored.
     expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · drift [+−]\\d+\\.\\d ms$`));
     expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials','<- 02CF#10 ACK 002A#3']);
@@ -254,9 +259,10 @@ describe('control protocol and search',()=>{
     expect(hexBytes([0x1a,0xef,5])).toBe('[1A EF 05]');
   });
   it('estimates test duration so long runs can warn before hitting the session limit',()=>{
+    // 25-baud control messages are slow: a clean test runs well over half a minute.
     const seconds=estimateTestSeconds(validateTrial(config.trial));
-    expect(seconds).toBeGreaterThan(10);expect(seconds).toBeLessThan(25);
-    expect(estimateTestSeconds(validateTrial({...config.trial,payloadBytes:64,symbolRate:25}))).toBeGreaterThan(seconds+10);
+    expect(seconds).toBeGreaterThan(25);expect(seconds).toBeLessThan(60);
+    expect(estimateTestSeconds(validateTrial({...config.trial,payloadBytes:64}))).toBeGreaterThan(seconds+5);
     expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(0.8);
     expect(()=>validateSearch({...config,repetitions:MAX_REPETITIONS+1})).toThrow('repetitions');
     expect(()=>validateSearch({...config,step:1,repetitions:50})).toThrow('at most 200 test packets');
@@ -285,11 +291,11 @@ describe('control protocol and search',()=>{
     expect(searchValues(run)).toEqual([25,50,75,100]);
     const s=new ParameterSearch(run,()=>0),seen:[number,number][]=[];
     for(let i=0;i<4;i++){
-      const settings=s.next()!;seen.push([settings.symbolRate,settings.spacing]);
+      const settings=s.next()!;seen.push([settings.symbolRate,trialFskOf(settings).frequencies[1]-settings.lowestFrequency]);
       s.add({sender:1,trial:i,settings,raw:{symbolErrors:0,symbols:64,bits:128,bitErrors:0,confidence:1,snrMedianDb:20,crcOk:true}});
     }
-    expect(seen.sort((a,b)=>a[0]-b[0])).toEqual([[25,50],[50,100],[75,150],[100,200]]);
-    expect(spacingForBaud(100)).toBe(200); // the existing default gap
+    // Each baud gets its own tone plan, with gaps that are multiples of that baud.
+    expect(seen.sort((a,b)=>a[0]-b[0]).map(([baud,gap])=>[baud,gap%baud])).toEqual([[25,0],[50,0],[75,0],[100,0]]);
     // Slower tests take longer, so the run estimate adds each value's own air time.
     const slow=estimateTestSeconds(withValue(config.trial,'symbolRate',25));
     const fast=estimateTestSeconds(withValue(config.trial,'symbolRate',100));

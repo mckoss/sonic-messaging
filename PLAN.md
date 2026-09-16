@@ -50,6 +50,9 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Make the partner a settings-free passive listener that follows restarted controller runs and keeps listening until stopped; log each trial sent and the symbols received.
 - [x] Add frame sequence numbers and a generic ACK frame type with a packet manager (retry N times, confirm or fail); retire the `ready`, `query` and `ack` methods and the Golay-protected length.
 - [x] Receive test packets as ordinary frames on a second, temporary listener (received / CRC failed / lost); retire the `test` start marker, the guard setting and the internal acquisition replays.
+- [x] Cancel room echoes on a failed frame using its own decisions (least-squares taps, remembered between frames), recovering control messages that reverberation corrupts.
+- [x] Compute unequal, harmonic-free tone plans from base frequency and baud everywhere (Send Single, experiments, control link); retire tone spacing as a setting.
+- [x] Slow the control link to 25 baud on 1500-2900 Hz, longer than a small room's first reflections.
 - [x] Sweep test baud as a parameter, with each value's tone spacing set to twice its baud (the orthogonal minimum with margin).
 - [x] Cover every parameter value equally: one shuffled pass per repetition, with the planned test count and duration estimate shown before starting.
 - [x] Simplify the Test Suite: one **Start Test** run with a **Number of tests** (up to 100) and a duration estimate that warns past 10 minutes; test packets always play at amplitude 0.8.

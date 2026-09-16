@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { fskSuggestedPlan, fskToneSet } from '../../src/lib/dsp/fsk-frequencies';
 
 /** The scale follows the receiver's measured width, which settles a frame or more after the tab is shown. */
 async function settledWaterfallScale(page: Page): Promise<number> {
@@ -31,30 +32,38 @@ test('updates the symbol waterfall axis when tone settings change', async ({ pag
   await page.goto('/sonic-messaging/#receive');
   const labels = page.getByTestId('symbol-waterfall').locator('.labels span');
   await expect(labels).toHaveCount(4);
-  await expect(labels.first()).toHaveText('S3 · 800Hz');
-  await expect(labels.last()).toHaveText('S0 · 500Hz');
+  const defaultTones = fskToneSet(1500, 25, 4);
+  await expect(labels.first()).toHaveText(`S3 · ${defaultTones[3]}Hz`);
+  await expect(labels.last()).toHaveText(`S0 · ${defaultTones[0]}Hz`);
   await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Tones').selectOption('8');
   await page.locator('.composer').getByLabel('Lowest frequency').fill('1000');
   await page.locator('.composer').getByLabel('Lowest frequency').press('Tab');
   await page.getByRole('tab', { name: /Receive/ }).click();
   await expect(labels).toHaveCount(8);
-  await expect(labels.first()).toHaveText('S7 · 1700Hz');
-  await expect(labels.last()).toHaveText('S0 · 1000Hz');
+  const eight = fskToneSet(1000, 25, 8);
+  await expect(labels.first()).toHaveText(`S7 · ${eight[7]}Hz`);
+  await expect(labels.last()).toHaveText(`S0 · ${eight[0]}Hz`);
 });
 
 test('zooms the spectrogram to the tone band plus a 10% margin per side', async ({ page }) => {
   await page.goto('/sonic-messaging/#receive');
   const axis = page.getByTestId('spectrum-waterfall').locator('.axis span');
-  // Default 500-800 Hz band with 30 Hz margins: 830 Hz top, 470 Hz bottom.
-  await expect(axis.first()).toHaveText('0.8 kHz');
-  await expect(axis.last()).toHaveText('0.5 kHz');
+  // The tone plan's own band, plus a 10% margin on each side.
+  const kHz = (tones: number[], edge: 'low' | 'high') => {
+    const span = tones[tones.length - 1] - tones[0], margin = span * 0.1;
+    const hz = edge === 'low' ? tones[0] - margin : tones[tones.length - 1] + margin;
+    return `${(hz / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 })} kHz`;
+  };
+  const four = fskToneSet(1500, 25, 4);
+  await expect(axis.first()).toHaveText(kHz(four, 'high'));
+  await expect(axis.last()).toHaveText(kHz(four, 'low'));
   await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Tones').selectOption('16');
   await page.getByRole('tab', { name: /Receive/ }).click();
-  // 500-2,000 Hz band with 150 Hz margins: 2,150 Hz top, 350 Hz bottom.
-  await expect(axis.first()).toHaveText('2.2 kHz');
-  await expect(axis.last()).toHaveText('0.4 kHz');
+  const sixteen = fskToneSet(1500, 25, 16);
+  await expect(axis.first()).toHaveText(kHz(sixteen, 'high'));
+  await expect(axis.last()).toHaveText(kHz(sixteen, 'low'));
 });
 
 test('shows the raw bit rate for the configured symbol rate and tone count', async ({ page }) => {
@@ -70,30 +79,27 @@ test('shows the raw bit rate for the configured symbol rate and tone count', asy
 
 test('offers and applies a suggested frequency plan when the symbol rate invalidates it', async ({ page }) => {
   await page.goto('/sonic-messaging/');
-  const suggest = page.getByRole('button', { name: /Use suggested plan/ });
+  const suggest = page.getByRole('button', { name: /Use suggested base/ });
   await expect(suggest).toHaveCount(0);
   await page.getByLabel('Symbol rate').fill('400');
   await page.getByLabel('Symbol rate').press('Tab');
+  const suggested = String(fskSuggestedPlan(400, 4)!.lowestFrequency);
   await suggest.click();
-  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('2800');
-  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('800');
+  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue(suggested);
   await expect(suggest).toHaveCount(0);
   await page.reload();
-  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('2800');
-  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('800');
+  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue(suggested);
 });
 
 test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.goto('/sonic-messaging/');
-  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('500');
-  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('100');
+  await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('1500');
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('4');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('25');
   await page.getByRole('tab', { name: /Receive/ }).click();
   const slowScale = await settledWaterfallScale(page);
   await page.getByRole('tab', { name: /Send Single/ }).click();
   await page.locator('.composer').getByLabel('Lowest frequency').fill('4100');
-  await page.locator('.composer').getByLabel('Tone spacing').fill('900');
   await page.locator('.composer').getByLabel('Tones').selectOption('8');
   await page.getByLabel('Symbol rate').fill('125');
   await page.getByLabel(/Test payload/).fill('PERSIST ME');
@@ -101,7 +107,6 @@ test('restores user-defined modem settings after reload', async ({ page }) => {
   await page.reload();
   await expect(page.getByLabel(/Test payload/)).toHaveValue('PERSIST ME');
   await expect(page.locator('.composer').getByLabel('Lowest frequency')).toHaveValue('4100');
-  await expect(page.locator('.composer').getByLabel('Tone spacing')).toHaveValue('900');
   await expect(page.locator('.composer').getByLabel('Tones')).toHaveValue('8');
   await expect(page.getByLabel('Symbol rate')).toHaveValue('125');
   // The 5x symbol rate scrolls 5x faster (fewer samples per pixel), same on both lanes.

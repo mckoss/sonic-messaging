@@ -6,7 +6,7 @@
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateRunSeconds, spacingForBaud, totalTests, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
+  import { defaultSearch, estimateRunSeconds, trialFsk, totalTests, validateSearch, validateTrial, CONTROL_FSK, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -21,7 +21,7 @@
   let regime: string | undefined;
   const addRow=(row:Omit<Row,'at'|'regime'>)=>{rows=[...rows,{...row,regime,at:new Date()}];};
   const describeRegime=(run:SearchSettings)=>{
-    const label={lowestFrequency:'base frequency',spacing:'tone spacing',tones:'number of tones',symbolRate:'test baud'}[run.parameter];
+    const label={lowestFrequency:'base frequency',tones:'number of tones',symbolRate:'test baud'}[run.parameter];
     const range=run.parameter==='tones'?'2–16':`${run.minimum}–${run.maximum} step ${run.step}`;
     return `varying ${label} ${range} · ${totalTests(run)} test${totalTests(run)===1?'':'s'}, ${run.repetitions}× each`;
   };
@@ -190,14 +190,13 @@
     <div class="controls">
       <label>Test tones <select bind:value={config.trial.tones}>{#each [2,4,8,16] as n}<option value={n}>{n}</option>{/each}</select></label>
       <label>Base frequency <input type="number" bind:value={config.trial.lowestFrequency} /></label>
-      <label>Tone spacing <input type="number" bind:value={config.trial.spacing} disabled={config.parameter==='symbolRate'} /></label>
       <label>Test baud <input type="number" bind:value={config.trial.symbolRate} /></label>
       <label>Payload bytes <input type="number" min="4" max="64" bind:value={config.trial.payloadBytes} /></label>
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
     </div>
     <div class="controls">
-      <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="spacing">Tone spacing</option><option value="tones">Number of tones</option><option value="symbolRate">Test baud</option></select></label>
-      {#if config.parameter === 'symbolRate'}<p class="estimate">Tone spacing follows each baud: 2 × baud (e.g. {spacingForBaud(config.trial.symbolRate)} Hz at {config.trial.symbolRate} baud)</p>{/if}
+      <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="tones">Number of tones</option><option value="symbolRate">Test baud</option></select></label>
+      <p class="estimate">Tones are computed from the base frequency and baud with unequal gaps, so none is another's harmonic: {trialFsk(config.trial).frequencies.join(', ')} Hz</p>
       {#if config.parameter !== 'tones'}
         <label>Minimum <input type="number" bind:value={config.minimum} /></label>
         <label>Maximum <input type="number" bind:value={config.maximum} /></label>
@@ -218,10 +217,10 @@
     {#if rows.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,lostTrials,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
-  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / spacing</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
+  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / baud</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
     {#each runs as run}
       <tr class="run-divider"><th colspan="5">Run from {senderHex(run.sender)} · {run.started.toLocaleTimeString()} · {describeSettings(run.settings)}{run.regime ? ` · ${run.regime}` : ''}</th></tr>
-      {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.spacing}</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
+      {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.symbolRate}</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
     {/each}
   </tbody></table></div>
   <section class="library" aria-label="Saved recordings" data-testid="recordings">
@@ -237,7 +236,7 @@
       </tbody></table></div>
     {:else}<p>No saved recordings.</p>{/if}
   </section>
-  <p>Control: 4-FSK, 100 baud, 1000–1600 Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1000, 200, 4, 100, 16, 719)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> a sequence number and a CRC (no FEC). Frames that ask for an ACK are retried up to 3 times, 4 seconds apart; a test packet is never re-sent, and a trial the partner did not receive is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The partner receives each test packet as an ordinary frame on a second listener: received, CRC failed (symbols still scored), or lost if it isn't heard in time. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
+  <p>Control: 4-FSK, 25 baud, {CONTROL_FSK.frequencies.join('/')} Hz; control and test packets both play at amplitude 0.8; plain-text messages such as <code>test_suite(1, 1500, 4, 25, 16, 719)</code> in a frame carrying this device's sender ID <code>{senderHex(DEVICE_SENDER)}</code> a sequence number and a CRC (no FEC). Frames that ask for an ACK are retried up to 3 times, 4 seconds apart; a test packet is never re-sent, and a trial the partner did not receive is proposed again as a new trial. Sessions stop after 10 minutes; each run is saved to this browser's storage as it records. The partner receives each test packet as an ordinary frame on a second listener: received, CRC failed (symbols still scored), or lost if it isn't heard in time. S/N is in-window per symbol (winning tone vs. the rest of the window), not a calibrated acoustic measurement.</p>
 </section>
 <style>
 .experiment{border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px;background:var(--card);min-width:0}h2{font-size:18px;margin:0 0 10px}p{font-size:12px;line-height:1.5;color:var(--muted)}fieldset{border:0;padding:0;margin:0;min-width:0}.controls,.actions{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;align-items:end}label{display:grid;gap:6px;font-size:12px;color:var(--muted)}input,select,textarea{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:7px;color:var(--text);max-width:100%}input[type=number]{width:100px}button{padding:8px 12px;background:#172945;color:#cfe3ff;border:1px solid #29476d;border-radius:8px;cursor:pointer}button:disabled{opacity:.45}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}[role=alert]{color:#ff8da8}.run-divider th{padding-top:12px;color:var(--blue);font-weight:650;white-space:normal;border-bottom:1px solid var(--blue)}.library{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}.library-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}h3{font-size:15px;margin:0}.row-actions{display:flex;gap:6px}.row-actions button{padding:5px 9px}.estimate{margin:0;align-self:center}.estimate.over{color:#ffcf6e}.log{list-style:none;margin:12px 0;padding:10px;max-height:200px;overflow:auto;background:var(--field);border:1px solid var(--line);border-radius:8px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.log li{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:520px){.experiment{padding:14px}.actions{align-items:stretch;flex-direction:column}input[type=file]{width:100%}}
