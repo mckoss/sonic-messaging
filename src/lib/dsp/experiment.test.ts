@@ -96,6 +96,18 @@ describe('cooperative acoustic measurement',()=>{
     expect(tones[tones.length-1]/tones[0]).toBeLessThan(2);
     expect(fskPlanWarnings(tones,CONTROL_FSK.symbolRate)).toEqual([]);
   });
+  it('knows when it is waiting for a test packet, and when one is being received',()=>{
+    // A partner that transmits anything but the ACK it owes while waiting is deaf to the packet it waits for.
+    const samples=fixture(),controlEnd=guardedWave(controlWave({kind:'test_suite',...proposal},rate),rate).length;
+    const analyzer=new CooperativeAnalyzer(rate,{analyze:true});
+    const seen:{position:number;awaiting:boolean;receiving:boolean}[]=[];
+    for(let i=0;i<samples.length;i+=128){analyzer.push(samples.subarray(i,i+128));seen.push({position:i+128,awaiting:analyzer.awaitingTest,receiving:analyzer.receiving});}
+    const at=(position:number)=>seen.find(s=>s.position>=position)!;
+    expect(at(rate/4)).toMatchObject({awaiting:false});                       // nothing heard yet
+    expect(at(controlEnd+rate/8)).toMatchObject({awaiting:true,receiving:false}); // test_suite decoded, packet not yet
+    expect(at(packetStart()+rate*2)).toMatchObject({awaiting:false,receiving:true}); // packet sync heard, still arriving
+    expect(seen[seen.length-1]).toMatchObject({awaiting:false,receiving:false}); // packet scored, window closed
+  });
   it('reports the test packet as lost when its sync header is missed',()=>{
     const samples=fixture();samples.fill(0,packetStart(),packetStart()+16*perSymbol);
     const {results,lost,lines}=analyze(samples);
@@ -158,7 +170,7 @@ describe('control protocol and search',()=>{
     expect(decodeControl(encodeControl({kind:'result',sender:1,trial:0,raw:{symbolErrors:2,symbols:1,bitErrors:0,bits:8,confidence:1,snrMedianDb:20,crcOk:true}}),1)).toBeUndefined();
   });
   /** A controller and partner whose packet managers exchange frames instantly, with optional losses. */
-  function pair(repetitions=1,drop:(packet:OutgoingPacket,from:'controller'|'partner')=>boolean=()=>false){
+  function pair(repetitions=1,drop:(packet:OutgoingPacket,from:'controller'|'partner')=>boolean=()=>false,implicit=true){
     const events:{controller:CooperativeEvent[];partner:CooperativeEvent[]}={controller:[],partner:[]};
     const wire:{from:'controller'|'partner';packet:OutgoingPacket}[]=[];
     const managers={
@@ -167,7 +179,8 @@ describe('control protocol and search',()=>{
     };
     const sessions={
       controller:new CooperativeSession('controller',{...single,repetitions},719,(body,ack)=>managers.controller.send(body,ack),e=>events.controller.push(e)),
-      partner:new CooperativeSession('partner',undefined,42,(body,ack)=>managers.partner.send(body,ack),e=>events.partner.push(e))
+      // `implicit` lets a test show what happens without confirmation by protocol progress.
+      partner:new CooperativeSession('partner',undefined,42,(body,ack)=>managers.partner.send(body,ack),e=>events.partner.push(e),implicit?seq=>managers.partner.settle(seq):undefined)
     };
     let now=0;
     /** Delivers everything queued; each transmission takes 1 s. */
@@ -206,6 +219,24 @@ describe('control protocol and search',()=>{
     expect(events.controller.filter(e=>e.kind==='feedback')).toHaveLength(1);
     // The partner followed trial 1 once, although it heard test_suite twice.
     expect(events.partner.filter(e=>e.kind==='status'&&e.detail.startsWith('Listening for trial 1')).length).toBe(1);
+  });
+  it('takes the next test_suite as confirming the report the controller must already have',()=>{
+    // Every ACK the controller sends is lost. Field recording: one lost ACK of result(1) made the partner retry it —
+    // nine seconds on the air — over the trial-2 test packet it should have been listening for, though test_suite(2)
+    // had already told it the controller had result(1).
+    const run=(implicit:boolean)=>{
+      const {managers,sessions,events,wire,flush,tick}=pair(2,(packet,from)=>from==='controller'&&packet.body.kind==='ack',implicit);
+      sessions.partner.start(0);sessions.controller.start(0);
+      const attempts:number[]=[],push=wire.push.bind(wire);
+      wire.push=(...items)=>{for(const i of items)if(i.from==='partner'&&i.packet.body.kind==='control')attempts.push(i.packet.attempt);return push(...items);};
+      for(let round=0;round<6;round++){flush();tick(ACK_TIMEOUT_MS+1);}
+      return {attempts,waiting:managers.partner.waiting,complete:events.controller.some(e=>e.kind==='status'&&e.finished&&e.detail.startsWith('Search complete'))};
+    };
+    const with_=run(true),without=run(false);
+    expect(with_.attempts.every(a=>a===0)).toBe(true);   // never a retry: test_suite(2) settled result(1), done settled result(2)
+    expect(with_.waiting).toBe(0);
+    expect(with_.complete).toBe(true);
+    expect(without.attempts.some(a=>a>0)).toBe(true);    // the same run without implicit confirmation retries
   });
   it('stops after the retries when test_suite is never acknowledged',()=>{
     const {sessions,events,wire,flush,tick}=pair(1,(packet,from)=>from==='controller');
@@ -307,7 +338,7 @@ describe('control protocol and search',()=>{
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
     expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40, 0) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40%, Gap=0% (1500/1700/2100/2900 Hz)');
     // This default test uses the control tones and baud, so the control listener also decodes the packet; it is logged once, scored.
-    expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · drift [+−]\\d+\\.\\d ms$`));
+    expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · by tone 1500:-?\\d+ 1700:-?\\d+ 2100:-?\\d+ 2900:-?\\d+ dB · drift [+−]\\d+\\.\\d ms$`));
     expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials','<- 02CF#10 ACK 002A#3']);
     expect(acks).toEqual([{from:719,target:{sender:42,seq:3}}]);
     // The controller hears its own transmissions: dropped unlogged, before the session sees them.

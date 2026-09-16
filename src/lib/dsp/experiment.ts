@@ -34,7 +34,7 @@ export function scoreTestFrame(proposal:Proposal,received:FskStreamFrame,sampleR
   const header=PAYLOAD_OFFSET*8,payloadBits=t.payloadBytes*8;
   const confusion=Array.from({length:t.tones},()=>Array(t.tones).fill(0) as number[]);
   const raw={symbolErrors:0,symbols:0,bitErrors:0,bits:0,confidence:received.confidence,snrMedianDb:0,crcOk:received.crcOk};
-  const bits:number[]=[],snrDb:number[]=[];
+  const bits:number[]=[],snrDb:number[]=[],toneSum=Array(t.tones).fill(0) as number[],toneCount=Array(t.tones).fill(0) as number[];
   received.symbols.forEach((winner,s)=>{
     let target=0;
     for(let b=0;b<bps;b++){
@@ -42,12 +42,14 @@ export function scoreTestFrame(proposal:Proposal,received:FskStreamFrame,sampleR
       if(bit>=header&&bit<header+payloadBits){const heard=(winner>>>(bps-b-1))&1;bits.push(heard);raw.bits++;if(heard!==expected[bit])raw.bitErrors++;}
     }
     if(s*bps>=header&&(s+1)*bps<=header+payloadBits){
-      raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;snrDb.push(snrDbFromScore(received.scores[s]));
+      raw.symbols++;raw.symbolErrors+=winner===target?0:1;confusion[target][winner]++;
+      const snr=snrDbFromScore(received.scores[s]);snrDb.push(snr);toneSum[target]+=snr;toneCount[target]++;
     }
   });
   raw.snrMedianDb=median(snrDb);
   const bytes=Array.from({length:t.payloadBytes},(_,i)=>bits.slice(i*8,i*8+8).reduce((byte,b)=>(byte<<1)|b,0));
-  return {...proposal,seq:received.seq,received:bytes,snrDb,raw,sampleRate,startPosition:received.startPosition,
+  const snrByToneDb=toneSum.map((sum,k)=>toneCount[k]?sum/toneCount[k]:Number.NaN);
+  return {...proposal,seq:received.seq,received:bytes,snrDb,snrByToneDb,raw,sampleRate,startPosition:received.startPosition,
     timingDriftMs:received.timingOffset/sampleRate*1000,confusion};
 }
 
@@ -118,7 +120,12 @@ export class CooperativeAnalyzer {
    * is the right test — it is only 0.6 s into a frame that may run for nine seconds, and it has already been checked
    * symbol by symbol, so it does not fire on room noise.
    */
-  get receiving():boolean{return this.control.lockedSymbolAnchor()!==undefined;}
+  get receiving():boolean{return this.control.lockedSymbolAnchor()!==undefined||this.test?.decoder.lockedSymbolAnchor()!==undefined;}
+  /**
+   * True from test_suite until the test packet is heard or the window closes. A partner that transmits anything but
+   * the ACK it owes in that window is deaf to the packet it is waiting for: a retried result did exactly that.
+   */
+  get awaitingTest():boolean{return !!this.test&&!this.test.heard;}
   /**
    * Audio never reached the decoder, so the samples on either side of this point are not contiguous. Rebuild the
    * decoders past the gap rather than let them splice across it: a frame in flight is lost either way, but splicing

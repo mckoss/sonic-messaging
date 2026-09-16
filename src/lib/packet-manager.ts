@@ -62,6 +62,16 @@ export class PacketManager {
   /** An ACK frame arrived confirming `target#seq`. */
   acked(target: number, seq: number): void {
     if (target !== this.sender) return;
+    this.settle(seq);
+  }
+
+  /**
+   * Our frame `seq` is confirmed by something other than an ACK frame: the peer did what only receiving it would let
+   * it do. A partner whose result(1) was never acknowledged, but who then hears test_suite(2), knows the controller
+   * has result(1) — the controller proposes the next trial only after a result. Retrying anyway put nine seconds of
+   * a frame the other side already had onto the air, over the test packet the partner was supposed to be hearing.
+   */
+  settle(seq: number): void {
     const entry = this.pending.get(seq);
     if (!entry) return;
     this.pending.delete(seq);

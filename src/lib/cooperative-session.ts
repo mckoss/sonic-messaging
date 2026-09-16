@@ -21,11 +21,15 @@ export class CooperativeSession {
   private started?:number;
   /** The controller a partner is following. */
   private controller?:number;
+  /** Partner: the result or lost frame for the current trial, until acknowledged or implied. */
+  private reportSeq?:number;
   private search?:ParameterSearch;
   private nextId=0;
   private finished=false;
   constructor(readonly role:'controller'|'partner', config:SearchSettings|undefined, readonly sender:number,
-    private send:SendPacket, private event:(event:CooperativeEvent)=>void) {
+    private send:SendPacket, private event:(event:CooperativeEvent)=>void,
+    /** Confirms one of our frames on evidence other than its ACK; see PacketManager.settle. */
+    private settle:(seq:number)=>void=()=>{}) {
     if(role==='controller'){if(!config)throw new Error('Controller requires search settings');this.search=new ParameterSearch(config);}
   }
   private status(phase:string,detail:string,finished=false,log=false){this.phase=phase;this.finished=finished;this.event({kind:'status',phase,detail,finished,log});}
@@ -68,11 +72,17 @@ export class CooperativeSession {
     if(this.finished)return;
     if(this.role==='partner'){
       if(m.kind==='test_suite'){
+        // The controller proposes a later trial only after our report of the current one reached it: that report is
+        // confirmed, whether or not its ACK ever did.
+        if(m.sender===this.controller&&this.reportSeq!==undefined&&this.proposal&&m.trial>this.proposal.trial){this.settle(this.reportSeq);this.reportSeq=undefined;}
         // A new controller, or the same one counting trials back down (restarted): follow it.
         this.controller=m.sender;this.proposal={sender:m.sender,trial:m.trial,settings:m.settings};
         this.status('waiting-test',`Listening for trial ${m.trial+1} test packet.`);return;
       }
-      if(m.sender===this.controller&&m.kind==='done')this.status('listening','Controller finished; still listening for the next run.',false,true);
+      if(m.sender===this.controller&&m.kind==='done'){
+        if(this.reportSeq!==undefined){this.settle(this.reportSeq);this.reportSeq=undefined;}
+        this.status('listening','Controller finished; still listening for the next run.',false,true);
+      }
       return;
     }
     if(m.sender===this.sender||m.trial!==this.proposal?.trial||(this.phase!=='testing'&&this.phase!=='waiting-result'))return;
@@ -97,13 +107,13 @@ export class CooperativeSession {
   measured(m:TrialMeasurement){
     if(this.finished||this.role!=='partner'||m.sender!==this.controller||m.trial!==this.proposal?.trial)return;
     this.status('reporting',`Returning trial ${m.trial+1} result.`);
-    this.control({kind:'result',sender:this.sender,trial:m.trial,raw:m.raw});
+    this.reportSeq=this.control({kind:'result',sender:this.sender,trial:m.trial,raw:m.raw});
   }
   /** Partner: the test listener closed without receiving the packet. */
   lost(p:Proposal){
     if(this.finished||this.role!=='partner'||p.sender!==this.controller||p.trial!==this.proposal?.trial)return;
     this.status('reporting',`Trial ${p.trial+1} test packet not received; telling the controller.`,false,true);
-    this.control({kind:'lost',sender:this.sender,trial:p.trial});
+    this.reportSeq=this.control({kind:'lost',sender:this.sender,trial:p.trial});
   }
   tick(now:number){
     if(this.finished)return;

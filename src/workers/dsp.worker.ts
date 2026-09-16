@@ -53,7 +53,9 @@ let deferringSince: number | undefined;
 function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
   // Listen before talking: a device that starts mid-frame garbles the frame it is already receiving and its own.
-  if (cooperativeAnalyzer?.receiving) {
+  // And while a test packet is expected, only the ACK that invites it goes out — anything else deafens us to it.
+  const held = cooperativeAnalyzer?.receiving || (cooperativeAnalyzer?.awaitingTest && outgoing[0].body.kind !== 'ack');
+  if (held) {
     deferringSince ??= Date.now();
     if (Date.now() - deferringSince < MAX_DEFER_MS) return;
   }
@@ -458,7 +460,8 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
               cooperativeSession?.failed(seq, body);
             }
           });
-          cooperativeSession = new CooperativeSession(data.role, data.config, data.sender, (body, ack) => manager.send(body, ack), cooperativeEvent);
+          cooperativeSession = new CooperativeSession(data.role, data.config, data.sender, (body, ack) => manager.send(body, ack), cooperativeEvent,
+            seq => manager.settle(seq));
           cooperativeSession.start(performance.now());
           cooperativeTimer = setInterval(() => { const now = performance.now(); manager.tick(now); cooperativeSession?.tick(now); }, 250);
         }

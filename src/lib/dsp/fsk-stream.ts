@@ -74,6 +74,19 @@ const CARRIER_LOSS_DROP_DB = 12;
  * still trips the guard.
  */
 const CARRIER_LEVEL_TRACK = 0.25;
+/**
+ * A window whose best tone still holds this share of its energy is carrying a tone, however quiet. Two feet from a
+ * phone, one control tone arrived 20 dB below the others, and four of it in a row — the sync has exactly such a run —
+ * read as four silent windows and abandoned the frame. Silence has no dominant tone; a weak tone does.
+ */
+const CARRIER_TONE_SCORE = 0.4;
+/**
+ * Largest fraction of a tone's power that can plausibly persist into the next symbol. Even a one-second reverberation
+ * time leaves under 0.6 after a 40 ms symbol; a measured "tail" above this means the tone barely arrived and the
+ * next window's energy at its frequency is something else. Subtracting on that basis zeroed a tone that was
+ * genuinely sent twice in a row, and the wrong decision then steered the timing loop. Such a tone gets no tail.
+ */
+const MAX_TAIL = 0.5;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
 function syncSymbolTemplate(bitsPerSymbol: number): number[] {
@@ -404,8 +417,8 @@ export class FskStreamDecoder {
    * or an impulse replaced with another tone has no power at the tone it was supposed to carry, and the ratio out
    * of it is astronomical; one such window once saturated a tone's tail and the decoder subtracted every repeated
    * tone to nothing. The destination window is taken as it is — being misread is often exactly the tail at work.
-   * Each ratio is capped at one (a "tail" larger than the tone itself means the tone is not really arriving) and the
-   * tone's tail is the median, so a stray ratio cannot drag it. Tones with no usable transition get no tail. Empty
+   * The tone's tail is the median of its ratios, so a stray one cannot drag it, and a median above MAX_TAIL is
+   * discarded: that tone is not tailing, it is barely arriving. Tones with no usable transition get no tail. Empty
    * when every tail is negligible, so decoding near a device stays exactly as it was.
    */
   private fitSyncTails(offset: number): number[] {
@@ -430,7 +443,8 @@ export class FskStreamDecoder {
     const tails = ratios.map(values => {
       if (!values.length) return 0;
       const sorted = values.slice().sort((a, b) => a - b), middle = sorted.length >> 1;
-      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+      const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+      return median <= MAX_TAIL ? median : 0;
     });
     return tails.some(tail => tail >= TAIL_MIN) ? tails : [];
   }
@@ -514,9 +528,10 @@ export class FskStreamDecoder {
       const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
       while (this.candidateScannedSymbols < availableSymbols) {
         const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
-        const power = windowPowerDbfs(
-          this.samples.subarray(windowStart, windowStart + this.windowSamples));
-        const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB;
+        const window = this.samples.subarray(windowStart, windowStart + this.windowSamples);
+        const power = windowPowerDbfs(window);
+        const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB &&
+          Math.max(...detectFskSymbol(window, this.config.sampleRate, this.config.frequencies).scores) < CARRIER_TONE_SCORE;
         this.candidateSilentRun = lost ? this.candidateSilentRun + 1 : 0;
         if (!lost) this.candidateLevelDbfs += (power - this.candidateLevelDbfs) * CARRIER_LEVEL_TRACK;
         this.candidateScannedSymbols++;

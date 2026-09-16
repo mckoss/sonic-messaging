@@ -152,6 +152,12 @@ export interface TrialMeasurement extends Proposal {
   received: number[];
   /** In-window S/N per payload symbol, in dB. */
   snrDb: number[];
+  /**
+   * Mean in-window S/N of the payload symbols sent on each tone, in dB, in tone order; NaN for a tone the payload
+   * never used. A tone the room or speaker delivers 20 dB below the others hides inside a healthy median — this is
+   * where it shows.
+   */
+  snrByToneDb: number[];
   raw: RawResult; sampleRate: number;
   /** The test packet frame's sequence number. */
   seq: number;
@@ -294,7 +300,7 @@ export const describeWire = (m: ControlMessage, seq: number, bytes?: Uint8Array)
   `${frameId(m.sender, seq)} ${bytes ? String.fromCharCode(...bytes) : controlText(m)} · ${describeControl(m)}`;
 export const describeTestSent = (p: Proposal, seq: number) => `${frameId(p.sender, seq)} test packet ${hexBytes(trialPayload(p.settings))} · trial ${p.trial + 1}`;
 export const describeTestReceived = (m: TrialMeasurement) =>
-  `${frameId(m.sender, m.seq)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · drift ${signedMs(m.timingDriftMs)}`;
+  `${frameId(m.sender, m.seq)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · by tone ${trialFsk(m.settings).frequencies.map((f, k) => `${f}:${Number.isFinite(m.snrByToneDb[k]) ? Math.round(m.snrByToneDb[k]) : '—'}`).join(' ')} dB · drift ${signedMs(m.timingDriftMs)}`;
 const signedMs = (ms: number) => `${ms >= 0 ? '+' : '−'}${Math.abs(ms).toFixed(1)} ms`;
 
 /** Air time of one guarded FSK frame carrying `payloadBytes`, in seconds. */

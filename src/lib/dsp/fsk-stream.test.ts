@@ -371,6 +371,59 @@ describe('continuous FSK receiver', () => {
     expect(spaced[0].tails).toBeUndefined();
   });
 
+  it('does not mistake a run of one weak tone for a lost carrier', () => {
+    // Two feet from a phone, one control tone arrived 20 dB below the others. The sync has four of it in a row;
+    // judged by broadband power alone those were four silent windows, and a readable ACK was abandoned.
+    const payload = new TextEncoder().encode('one quiet tone');
+    const gain = [1, 1, 1, 0.1], n = Math.round(config.sampleRate / config.symbolRate);
+    const bits = [...frame(payload)].flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+    const symbols: number[] = [];
+    for (let i = 0; i + 2 <= bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+    const samples = new Float32Array(symbols.length * n + 3 * n);
+    let phase = 0;
+    for (let s = 0; s < symbols.length; s++) {
+      const step = 2 * Math.PI * config.frequencies[symbols[s]] / config.sampleRate;
+      for (let i = 0; i < n; i++) { samples[s * n + i] = 0.8 * gain[symbols[s]] * Math.sin(phase); phase += step; }
+    }
+    const receiver = new FskStreamDecoder(config);
+    const packets: ReturnType<FskStreamDecoder['push']> = [];
+    // Small chunks, so the frame arrives gradually and the carrier-loss scan actually runs.
+    for (let i = 0; i < samples.length; i += 256) packets.push(...receiver.push(samples.subarray(i, i + 256)));
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['one quiet tone']);
+    expect(receiver.drainProgress().some(event => event.type === 'crc-error')).toBe(false);
+  });
+
+  it('discards a measured tail too large to be a tail, instead of subtracting a tone away', () => {
+    // A tone the speaker barely delivers, at a frequency where something in the room rings at a fixed level after
+    // it: the ring can hold more energy at that frequency than the tone's own window did. Read as a tail of 100%,
+    // that made the decoder subtract the tone to nothing wherever it was sent twice running, and the wrong decision
+    // then steered the timing loop. It is not a tail; the tone gets none.
+    const payload = new TextEncoder().encode('ringing at one tone: 2222 twice');
+    const weak = 2, n = Math.round(config.sampleRate / config.symbolRate);
+    const bits = [...frame(payload)].flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+    const symbols: number[] = [];
+    for (let i = 0; i + 2 <= bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+    const samples = new Float32Array(symbols.length * n + 3 * n);
+    let phase = 0, ringPhase = 0;
+    for (let s = 0; s < symbols.length; s++) {
+      const tone = symbols[s], step = 2 * Math.PI * config.frequencies[tone] / config.sampleRate;
+      // The weak tone comes through at 0.06; the second of a pair weaker still (its own reflection cancels it).
+      const level = tone === weak ? (s > 0 && symbols[s - 1] === weak ? 0.03 : 0.06) : 0.8;
+      for (let i = 0; i < n; i++) { samples[s * n + i] = level * Math.sin(phase); phase += step; }
+      // After any weak-tone symbol, the room rings at that frequency for one symbol time, at a fixed 0.08.
+      if (s > 0 && symbols[s - 1] === weak) {
+        const ring = 2 * Math.PI * config.frequencies[weak] / config.sampleRate;
+        for (let i = 0; i < n; i++) { samples[s * n + i] += 0.08 * Math.sin(ringPhase); ringPhase += ring; }
+      }
+    }
+    const heard = simulateChannel(samples, { snrDb: 35, seed: 11 });
+    const receiver = new FskStreamDecoder(config);
+    const packets = receiver.push(heard);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['ringing at one tone: 2222 twice']);
+    // No tail was believed for the weak tone.
+    expect(packets[0].tails?.[weak] ?? 0).toBe(0);
+  });
+
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {
     const payload = new TextEncoder().encode('length hit');
     const spp = Math.round(config.sampleRate / config.symbolRate);
