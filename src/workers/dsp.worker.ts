@@ -7,6 +7,7 @@ import { decodeCss, decodeDsss, decodeFsk, detectDsssUsers, encodeCss, encodeDss
 import type { CssConfig, DecodeResult, DsssConfig, FskConfig, Waveform } from '../lib/dsp';
 import { FskStreamDecoder } from '../lib/dsp/fsk-stream';
 import { FRAME_TYPE, frameId } from '../lib/dsp/frame';
+import { missingCaptureSamples } from '../lib/audio/capture-sequence';
 import type { EncodeResult, SimulationRequest, SimulationResult } from '../lib/modem-lab';
 import type { FskSymbolDetection } from '../lib/dsp/fsk-detector';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave } from '../lib/dsp/experiment';
@@ -326,14 +327,9 @@ function backfillOnNewLock(sampleRate: number): void {
 
 /** `sequence` is the capture chunk's number; replay passes none, having no capture continuity to check. */
 function acceptSamples(samples: Float32Array, sampleRate: number, sequence?: number): void {
-  if (sequence !== undefined) {
-    if (nextCaptureSequence !== undefined && sequence !== nextCaptureSequence) {
-      // A higher number means chunks went missing; a lower one means capture restarted and renumbered from zero.
-      // Either way the stream is broken here, and only the first case has a measurable length.
-      handleCaptureGap(sequence > nextCaptureSequence ? (sequence - nextCaptureSequence) * samples.length : 0, sampleRate);
-    }
-    nextCaptureSequence = sequence + 1;
-  }
+  const gap = missingCaptureSamples(nextCaptureSequence, sequence, samples.length);
+  if (gap !== undefined) handleCaptureGap(gap, sampleRate);
+  if (sequence !== undefined) nextCaptureSequence = sequence + 1;
   cooperativeAnalyzer?.push(samples);
   // A frame held back because the air was busy goes out as soon as the air clears.
   if (outgoing.length) drainOutgoing();
