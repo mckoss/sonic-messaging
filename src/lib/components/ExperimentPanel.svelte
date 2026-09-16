@@ -7,7 +7,8 @@
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
-  import { defaultSearch, estimateRunSeconds, trialFsk, totalTests, validateSearch, validateTrial, CONTROL_FSK, TRANSMIT_AMPLITUDE, MIN_AMPLITUDE_PERCENT, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
+  import { loadExperimentPreferences, saveExperimentPreferences } from '../preferences';
+  import { defaultSearch, estimateRunSeconds, trialFsk, totalTests, validateSearch, validateTrial, CONTROL_FSK, TRANSMIT_AMPLITUDE, MIN_AMPLITUDE_PERCENT, SEARCH_PARAMETERS, searchParameterPlan, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
   export let unavailable = false;
   export let inputDeviceId = 'default';
@@ -22,7 +23,7 @@
   let regime: string | undefined;
   const addRow=(row:Omit<Row,'at'|'regime'>)=>{rows=[...rows,{...row,regime,at:new Date()}];};
   const describeRegime=(run:SearchSettings)=>{
-    const label={lowestFrequency:'base frequency',tones:'number of tones',symbolRate:'test baud',amplitudePercent:'amplitude %'}[run.parameter];
+    const label=searchParameterPlan(run.parameter).label.toLowerCase();
     const range=run.parameter==='tones'?'2–16':`${run.minimum}–${run.maximum} step ${run.step}`;
     return `varying ${label} ${range} · ${totalTests(run)} test${totalTests(run)===1?'':'s'}, ${run.repetitions}× each`;
   };
@@ -40,6 +41,14 @@
   let library: StoredRecording[] = [], storageUsage = '', finishing: Promise<void> = Promise.resolve();
   let status = 'Start the partner first, then run a trial or optimize on the controller.';
   let error = '', notes = '', seconds = 0, finalizing = false, cancelled = false;
+  /** Settings persist across visits, like the Send page's; saving waits until the stored ones have been restored. */
+  let settingsReady = false;
+  $: if (settingsReady) saveExperimentPreferences(window.localStorage, { config, notes });
+  /** A range in hertz is meaningless as a percentage, so each parameter brings its own when selected. */
+  function onParameterChange() {
+    const { minimum, maximum, step } = searchParameterPlan(config.parameter);
+    config = { ...config, minimum, maximum, step };
+  }
   let role: 'idle' | 'controller' | 'partner' | 'replay' = 'idle';
   let log: string[] = [], logBox: HTMLOListElement;
   function append(entry:string){log=[...log,entry].slice(-2000);void tick().then(()=>{if(logBox)logBox.scrollTop=logBox.scrollHeight;});}
@@ -154,6 +163,8 @@
     }catch(e){error=String(e);}finally{active=false;role='idle';}
   }
   onMount(()=>{
+    const restored=loadExperimentPreferences(window.localStorage,{config,notes});
+    config=restored.config;notes=restored.notes;settingsReady=true;
     engine=new AudioEngine();
     const off=engine.onCooperative(event=>{
       if(event.kind==='wire')append(event.line);
@@ -197,7 +208,7 @@
       <label>Amplitude % <input type="number" min={MIN_AMPLITUDE_PERCENT} max="100" bind:value={config.trial.amplitudePercent} /></label>
     </div>
     <div class="controls">
-      <label>Optimize parameter <select bind:value={config.parameter}><option value="lowestFrequency">Base frequency</option><option value="tones">Number of tones</option><option value="symbolRate">Test baud</option><option value="amplitudePercent">Amplitude %</option></select></label>
+      <label>Optimize parameter <select bind:value={config.parameter} on:change={onParameterChange}>{#each SEARCH_PARAMETERS as p}<option value={p.key}>{p.label}</option>{/each}</select></label>
       <p class="estimate">Tones are computed from the base frequency and baud with unequal gaps, so none is another's harmonic: {trialFsk(config.trial).frequencies.join(', ')} Hz</p>
       {#if config.parameter !== 'tones'}
         <label>Minimum <input type="number" bind:value={config.minimum} /></label>

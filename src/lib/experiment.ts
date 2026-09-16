@@ -10,7 +10,24 @@ export interface TrialSettings {
    */
   amplitudePercent: number;
 }
-export type SearchParameter = 'lowestFrequency' | 'tones' | 'symbolRate' | 'amplitudePercent';
+/**
+ * Every parameter a run can sweep, each with the range that suits it — a frequency sweep in hundreds of hertz means
+ * nothing as a percentage, and vice versa, so selecting a parameter resets the range to its own.
+ *
+ * The type is derived from this list rather than written alongside it. When the two were separate, amplitude was
+ * added to the type but not to validateSearch's runtime check, and every amplitude run was rejected as an invalid
+ * range — a mistake the compiler could not see, because the check was an array of plain strings.
+ */
+export const SEARCH_PARAMETERS = [
+  { key: 'lowestFrequency', label: 'Base frequency', minimum: 1000, maximum: 3000, step: 500 },
+  // The range is unused for tones, which always tests all four counts, but must stay valid.
+  { key: 'tones', label: 'Number of tones', minimum: 2, maximum: 16, step: 1 },
+  { key: 'symbolRate', label: 'Test baud', minimum: 25, maximum: 200, step: 25 },
+  { key: 'amplitudePercent', label: 'Amplitude %', minimum: 20, maximum: 100, step: 20 }
+] as const;
+export type SearchParameter = typeof SEARCH_PARAMETERS[number]['key'];
+export const searchParameterPlan = (parameter: SearchParameter) =>
+  SEARCH_PARAMETERS.find(p => p.key === parameter) ?? SEARCH_PARAMETERS[0];
 export interface SearchSettings {
   trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number;
   /** How many times each value of the parameter is tested. */
@@ -73,8 +90,9 @@ export function validateTrial(value: unknown): TrialSettings {
   return { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent };
 }
 export function defaultSearch(): SearchSettings {
+  const { key, minimum, maximum, step } = searchParameterPlan('lowestFrequency');
   return { trial: { tones: 4, lowestFrequency: 1500, symbolRate: 25, payloadBytes: 16, seed: 719, amplitudePercent: DEFAULT_AMPLITUDE_PERCENT },
-    parameter: 'lowestFrequency', minimum: 1000, maximum: 3000, step: 500, repetitions: 1 };
+    parameter: key, minimum, maximum, step, repetitions: 1 };
 }
 /** One trial's settings with the swept parameter set to `value`; tones follow the base frequency and baud. */
 export const withValue = (t: TrialSettings, parameter: SearchParameter, value: number): TrialSettings => ({ ...t, [parameter]: value });
@@ -89,7 +107,7 @@ export function searchValues(s: SearchSettings): number[] {
 export const totalTests = (s: SearchSettings) => searchValues(s).length * s.repetitions;
 export function validateSearch(value: SearchSettings): SearchSettings {
   const s = { ...value, trial: validateTrial(value.trial) };
-  if (!['lowestFrequency','tones','symbolRate'].includes(s.parameter) || !Number.isInteger(s.repetitions) || s.repetitions < 1 || s.repetitions > MAX_REPETITIONS ||
+  if (!SEARCH_PARAMETERS.some(p => p.key === s.parameter) || !Number.isInteger(s.repetitions) || s.repetitions < 1 || s.repetitions > MAX_REPETITIONS ||
       !Number.isInteger(s.minimum) || !Number.isInteger(s.maximum) || s.minimum >= s.maximum ||
       !Number.isInteger(s.step) || s.step < 1) throw new Error(`Invalid search range or repetitions (1–${MAX_REPETITIONS})`);
   const values = searchValues(s);

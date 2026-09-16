@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { loadUserPreferences, PREFERENCES_KEY, saveUserPreferences, type UserPreferences } from './preferences';
+import { loadExperimentPreferences, loadUserPreferences, PREFERENCES_KEY, saveExperimentPreferences, saveUserPreferences, type UserPreferences } from './preferences';
+import { defaultSearch, searchParameterPlan } from './experiment';
 
 const defaults: UserPreferences = {
   mode: 'FSK',
@@ -44,5 +45,41 @@ describe('user preferences', () => {
     expect(savedKey).toBe(PREFERENCES_KEY);
     expect(JSON.parse(savedValue)).toEqual(defaults);
     expect(saveUserPreferences({ setItem: () => { throw new Error('quota'); } }, defaults)).toBe(false);
+  });
+});
+
+describe('Test Suite settings', () => {
+  const defaults = { config: defaultSearch(), notes: '' };
+  const roundTrip = (value: unknown) =>
+    loadExperimentPreferences({ getItem: () => JSON.stringify(value) }, defaults);
+
+  it('restores saved settings and notes', () => {
+    const plan = searchParameterPlan('amplitudePercent');
+    const config = { ...defaults.config, parameter: plan.key, minimum: plan.minimum, maximum: plan.maximum, step: plan.step, repetitions: 3 };
+    let stored = '';
+    expect(saveExperimentPreferences({ setItem: (_k, v) => { stored = v; } }, { config, notes: 'two feet, kitchen' })).toBe(true);
+    const restored = loadExperimentPreferences({ getItem: () => stored }, defaults);
+    expect(restored.config).toEqual(config);
+    expect(restored.notes).toBe('two feet, kitchen');
+  });
+
+  it('falls back to defaults rather than restoring settings that would refuse to run', () => {
+    // A config saved by an older build may name a parameter or range that is no longer legal; loading it into the
+    // form would leave the page unable to start, with nothing to say why.
+    expect(roundTrip({ config: { ...defaults.config, parameter: 'retired' } }).config).toEqual(defaults.config);
+    expect(roundTrip({ config: { ...defaults.config, minimum: 3000, maximum: 1000 } }).config).toEqual(defaults.config);
+    expect(roundTrip({ config: 'nonsense' }).config).toEqual(defaults.config);
+    expect(loadExperimentPreferences({ getItem: () => '{bad' }, defaults)).toEqual(defaults);
+    expect(loadExperimentPreferences({ getItem: () => null }, defaults)).toEqual(defaults);
+  });
+
+  it('keeps notes even when the stored settings are discarded, and caps their length', () => {
+    expect(roundTrip({ config: 'nonsense', notes: 'kept' }).notes).toBe('kept');
+    expect(roundTrip({ notes: 'x'.repeat(5000) }).notes).toHaveLength(4000);
+    expect(roundTrip({ notes: 42 }).notes).toBe(defaults.notes);
+  });
+
+  it('reports a storage that refuses to save', () => {
+    expect(saveExperimentPreferences({ setItem: () => { throw new Error('full'); } }, defaults)).toBe(false);
   });
 });

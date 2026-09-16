@@ -1,3 +1,5 @@
+import { validateSearch, type SearchSettings } from './experiment';
+
 export type Mode = 'FSK' | 'CSS' | 'DSSS';
 export type ModemSettings = Record<Mode, Record<string, number | string | boolean>>;
 
@@ -55,6 +57,48 @@ export function loadUserPreferences(storage: Pick<Storage, 'getItem'>, defaults:
 export function saveUserPreferences(storage: Pick<Storage, 'setItem'>, preferences: UserPreferences): boolean {
   try {
     storage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Test Suite settings, kept separate from the Send page's preferences so that a corrupt or outdated value on one
+ * page cannot take out the other.
+ */
+export const EXPERIMENT_KEY = 'sonic-messaging:experiment:v1';
+export interface ExperimentPreferences { config: SearchSettings; notes: string }
+
+/**
+ * Restores saved Test Suite settings, falling back to the defaults for anything that no longer validates. Running the
+ * stored settings through the same validator the UI uses means a config saved by an older build — a parameter that no
+ * longer exists, a range that is no longer legal — is discarded rather than loaded into a form that then refuses to
+ * start.
+ */
+export function loadExperimentPreferences(
+  storage: Pick<Storage, 'getItem'>, defaults: ExperimentPreferences
+): ExperimentPreferences {
+  try {
+    const value: unknown = JSON.parse(storage.getItem(EXPERIMENT_KEY) ?? 'null');
+    if (!record(value)) return structuredClone(defaults);
+    // Match the notes editor's maxlength so storage can't overflow the UI limit.
+    const notes = typeof value.notes === 'string' ? value.notes.slice(0, 4000) : defaults.notes;
+    try {
+      return { config: validateSearch(value.config as SearchSettings), notes };
+    } catch {
+      return { config: structuredClone(defaults.config), notes };
+    }
+  } catch {
+    return structuredClone(defaults);
+  }
+}
+
+export function saveExperimentPreferences(
+  storage: Pick<Storage, 'setItem'>, preferences: ExperimentPreferences
+): boolean {
+  try {
+    storage.setItem(EXPERIMENT_KEY, JSON.stringify(preferences));
     return true;
   } catch {
     return false;

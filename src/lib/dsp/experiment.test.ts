@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { TRANSMIT_AMPLITUDE, CONTROL_FSK, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -281,6 +281,17 @@ describe('control protocol and search',()=>{
     expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(TRANSMIT_AMPLITUDE);
     expect(()=>validateSearch({...config,repetitions:MAX_REPETITIONS+1})).toThrow('repetitions');
     expect(()=>validateSearch({...config,step:1,repetitions:50})).toThrow('at most 200 test packets');
+  });
+  it('accepts a run on every parameter it offers, each with its own default range',()=>{
+    // The parameter list and the validator's check were once separate, and amplitude was added to one but not the
+    // other: every amplitude run failed as an invalid range. Walk the whole list so that cannot recur.
+    for(const p of SEARCH_PARAMETERS){
+      const run={...config,parameter:p.key,minimum:p.minimum,maximum:p.maximum,step:p.step};
+      expect(()=>validateSearch(run)).not.toThrow();
+      expect(searchValues(run).length).toBeGreaterThan(1);
+      expect(searchParameterPlan(p.key)).toBe(p);
+    }
+    expect(()=>validateSearch({...config,parameter:'nonsense' as never})).toThrow();
   });
   it('sweeps test amplitude, carries it on the wire, and still reads messages sent before it existed',()=>{
     expect(searchValues({...config,parameter:'amplitudePercent',minimum:20,maximum:80,step:20})).toEqual([20,40,60,80]);
