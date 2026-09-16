@@ -29,12 +29,6 @@ export interface SearchSettings {
 export const TRANSMIT_AMPLITUDE = 0.4;
 /** Below this a test packet is too quiet to tell a weak channel from a weak transmitter. */
 export const MIN_AMPLITUDE_PERCENT = 5;
-/**
- * Level assumed for trial settings that predate the field — saved recordings and control messages from builds before
- * amplitude was swept, all of which transmitted at 0.8. One release (6.2.0) transmitted at 0.4 without recording it,
- * so its trials read high by that much; only the label is affected, since a receiver never uses the sender's level.
- */
-export const LEGACY_AMPLITUDE_PERCENT = 80;
 /** Test packets start at the control link's level, so an unswept run measures the channel both links share. */
 export const DEFAULT_AMPLITUDE_PERCENT = Math.round(TRANSMIT_AMPLITUDE * 100);
 
@@ -67,9 +61,8 @@ export const MAX_REPETITIONS = 50;
  */
 export const trialFsk = (t: TrialSettings) => ({ frequencies: fskToneSet(t.lowestFrequency, t.symbolRate, t.tones), symbolRate: t.symbolRate, amplitude: t.amplitudePercent / 100 });
 export function validateTrial(value: unknown): TrialSettings {
-  const t = { ...(value as TrialSettings) };
-  t.amplitudePercent ??= LEGACY_AMPLITUDE_PERCENT;
-  if (!value || ![2,4,8,16].includes(t.tones) || !Number.isInteger(t.lowestFrequency) || t.lowestFrequency < 100 ||
+  const t = value as TrialSettings;
+  if (!t || ![2,4,8,16].includes(t.tones) || !Number.isInteger(t.lowestFrequency) || t.lowestFrequency < 100 ||
       fskToneSet(t.lowestFrequency, t.symbolRate, t.tones).slice(-1)[0] > 20000 ||
       !Number.isInteger(t.symbolRate) || t.symbolRate < 25 || t.symbolRate > 1000 ||
       !Number.isInteger(t.payloadBytes) || t.payloadBytes < 4 || t.payloadBytes > 64 ||
@@ -171,16 +164,13 @@ export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', '
 export const encodeControl = (m: ControlMessage): Uint8Array => new TextEncoder().encode(controlText(m));
 export const controlAddress = (m: ControlMessage, seq = 0, ackRequested = false): FrameAddress => ({ sender: m.sender, seq, type: FRAME_TYPE.control, ackRequested });
 const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 7, result: 8, done: 1, lost: 1 };
-/** test_suite carried no amplitude before it became a swept parameter; such messages still parse (see validateTrial). */
-const LEGACY_TEST_SUITE_ARGS = 6;
 /** Parses a control payload; `sender` comes from the frame it arrived in. */
 export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage | undefined {
   if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
   const match = /^([a-z_]+)\(([^()]*)\)$/.exec(String.fromCharCode(...bytes));
   if (!match || !(match[1] in ARG_COUNTS)) return;
   const kind = match[1] as ControlKind, fields = match[2].split(',').map(f => f.trim());
-  const legacy = kind === 'test_suite' && fields.length === LEGACY_TEST_SUITE_ARGS;
-  if ((fields.length !== ARG_COUNTS[kind] && !legacy) || !INT.test(fields[0]) || fields.slice(1).some(f => !SIGNED.test(f))) return;
+  if (fields.length !== ARG_COUNTS[kind] || !INT.test(fields[0]) || fields.slice(1).some(f => !SIGNED.test(f))) return;
   const count = Number(fields[0]), numbers = fields.slice(1).map(Number);
   if (kind === 'done') return { kind, sender, trial: count };
   const common = { sender, trial: count - 1 };

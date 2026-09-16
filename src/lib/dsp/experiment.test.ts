@@ -288,15 +288,13 @@ describe('control protocol and search',()=>{
     expect(trialFsk(withValue(config.trial,'amplitudePercent',100)).amplitude).toBeCloseTo(1);
     // Only test packets vary: sweeping the level must not make the control link itself unreliable.
     expect(CONTROL_FSK.amplitude).toBe(TRANSMIT_AMPLITUDE);
-    // Recordings made before test_suite carried amplitude still replay, at the level those builds transmitted.
-    const legacy=decodeControl(new TextEncoder().encode('test_suite(1, 1500, 4, 25, 16, 719)'),0x1a2b);
-    expect(legacy?.kind==='test_suite'&&legacy.settings.amplitudePercent).toBe(80);
+    // The amplitude is required, not optional: a test_suite without it is rejected rather than guessed at.
+    expect(decodeControl(new TextEncoder().encode('test_suite(1, 1500, 4, 25, 16, 719)'),0x1a2b)).toBeUndefined();
     expect(()=>validateTrial({...config.trial,amplitudePercent:0})).toThrow();
     expect(()=>validateTrial({...config.trial,amplitudePercent:101})).toThrow();
     expect(()=>validateTrial({...config.trial,amplitudePercent:42.5})).toThrow();
-    // Settings saved by a build without the field — a stored experiment recording — still load.
-    const {amplitudePercent:_omitted,...older}=config.trial;
-    expect(validateTrial(older).amplitudePercent).toBe(80);
+    const {amplitudePercent:_omitted,...missing}=config.trial;
+    expect(()=>validateTrial(missing)).toThrow();
     expect(()=>validateTrial(undefined)).toThrow();
   });
   it('covers every value equally in a shuffled order, and picks the best measured one',()=>{
