@@ -6,8 +6,8 @@ import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
 import { fskPlanWarnings } from './fsk-frequencies';
-/** 16 kHz: the control band's top tone (5425 Hz) does not fit under 8 kHz's Nyquist limit. */
-const rate=16000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
+/** The rate every device in the field has reported. A lower fixture rate once could not even carry the control band. */
+const rate=48000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 /** test_suite, then the test packet as an ordinary guarded frame, then enough quiet for the listener window to close. */
 export function fixture(p:Proposal=proposal,sampleRate=rate) {
   const a=guardedWave(controlWave({kind:'test_suite',...p},sampleRate),sampleRate),b=guardedWave(trialWave(p,sampleRate),sampleRate);
