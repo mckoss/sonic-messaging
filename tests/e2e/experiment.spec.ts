@@ -8,7 +8,7 @@ import { CONTROL_FSK, defaultSearch, hexBytes, trialPayload, validateSearch } fr
 import manifest from '../../package.json' with { type: 'json' };
 /** Result rows without the per-run divider, whose timestamp differs between runs. */
 const resultRows=(page:import('@playwright/test').Page)=>page.locator('[data-testid=experiment-results] tbody tr:not(.run-divider)');
-const sampleRate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
+const sampleRate=16000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 const packetHex=hexBytes(trialPayload(config.trial));
 const testLine=`<- 02CF#2 test packet ${packetHex} · trial 1: received, 64/64 symbols received, S/N dB [`;
 const a=guardedWave(controlWave({kind:'test_suite',...proposal},sampleRate,1,true),sampleRate),b=guardedWave(trialWave(proposal,sampleRate,2),sampleRate);

@@ -69,8 +69,9 @@ export interface AnalyzerOptions {
 }
 
 /** What it took to read a frame, when it took anything: worth seeing in the log, because it measures the margin left. */
-const recovery=(p:{echoCancelled?:boolean;softCorrected?:number})=>
-  [p.echoCancelled?'echo cancelled':'',p.softCorrected?`recovered ${p.softCorrected} weak symbol${p.softCorrected>1?'s':''}`:'']
+const recovery=(p:{echoCancelled?:boolean;softCorrected?:number;tails?:number[]})=>
+  [p.tails?`room carried ${p.tails.map(t=>`${Math.round(t*100)}%`).join('/')} of each tone into the next symbol`:'',
+    p.echoCancelled?'echo cancelled':'',p.softCorrected?`recovered ${p.softCorrected} weak symbol${p.softCorrected>1?'s':''}`:'']
     .filter(Boolean).map(note=>` · ${note}`).join('');
 
 /** Tracks the bytes of a frame in progress so a failed one can be logged with what was heard. */
@@ -81,6 +82,7 @@ class GarbleTracker {
   observe(progress:FskStreamProgress[]){
     for(const p of progress){
       if(p.type==='sync'||p.type==='crc-confirm'){this.bytes=[];this.length=undefined;}
+      else if(p.type==='sync-unreadable')this.wire(`X Frame sync heard but ${p.mismatches} of ${p.of} sync symbols misread; not decodable (reverberation, or tones this speaker can't deliver from here)`);
       else if(p.type==='length')this.length=p.length;
       else if(p.type==='byte')this.bytes.push(p.byte);
       else if(p.type==='crc-error'){
@@ -184,6 +186,8 @@ export class CooperativeAnalyzer {
     }
     // A sync whose header then failed: keep listening, but note it.
     if(progress.some(p=>p.type==='crc-error')&&!t.garbled){t.garbled=true;this.wire(`X Trial ${t.proposal.trial+1} test packet heard but its header was unreadable`);}
+    const unreadable=progress.find(p=>p.type==='sync-unreadable');
+    if(unreadable&&unreadable.type==='sync-unreadable'&&!t.garbled){t.garbled=true;this.wire(`X Trial ${t.proposal.trial+1} test packet sync heard but ${unreadable.mismatches} of ${unreadable.of} sync symbols misread; not decodable`);}
     // Keep listening while a frame is mid-decode, even past the window.
     if(this.position>=t.deadline&&t.decoder.lockedSymbolAnchor()===undefined){
       this.wire(`X Trial ${t.proposal.trial+1} test packet not received (listened ${testListenSeconds(t.proposal.settings).toFixed(1)} s)`);

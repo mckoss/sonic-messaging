@@ -5,7 +5,9 @@ import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
-const rate=8000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
+import { fskPlanWarnings } from './fsk-frequencies';
+/** 16 kHz: the control band's top tone (5425 Hz) does not fit under 8 kHz's Nyquist limit. */
+const rate=16000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 /** test_suite, then the test packet as an ordinary guarded frame, then enough quiet for the listener window to close. */
 export function fixture(p:Proposal=proposal,sampleRate=rate) {
   const a=guardedWave(controlWave({kind:'test_suite',...p},sampleRate),sampleRate),b=guardedWave(trialWave(p,sampleRate),sampleRate);
@@ -52,6 +54,28 @@ describe('cooperative acoustic measurement',()=>{
     expect(results[0].raw.crcOk).toBe(true);
     expect(Math.abs(results[0].startPosition-packetStart())).toBeLessThanOrEqual(2);
     expect(lines.some(l=>l.startsWith('X Capture gap'))).toBe(true);
+  });
+  it('reports a control sync it can hear but cannot read, instead of nothing',()=>{
+    // Six of the sixteen sync windows get a competing tone just loud enough to win: the matched filter still fires
+    // unmistakably, but too many symbols misread for the frame to be worth decoding. Before this, such a frame left
+    // no trace at all; a partner two feet from a phone on a desk saw an empty log.
+    const samples=fixture(),start=rate/2,spp=rate/25,F=CONTROL_FSK.frequencies;
+    const template=[0,1,2,2,3,0,3,3,3,3,3,0,0,1,3,1];
+    for(const index of [1,3,5,7,9,13]){
+      const wrong=(template[index]+1)%4;
+      for(let i=0;i<spp;i++)samples[start+index*spp+i]+=0.88*Math.sin(2*Math.PI*F[wrong]*i/rate);
+    }
+    const {results,lost,lines}=analyze(samples);
+    expect(results).toEqual([]);expect(lost).toEqual([]);
+    expect(lines.some(l=>l.startsWith('X Frame sync heard but 6 of 16 sync symbols misread'))).toBe(true);
+  });
+  it('keeps the control link above a phone speaker\'s far-field rolloff, harmonic-free, within an octave',()=>{
+    // Two feet from a phone on a desk, 2900 Hz arrived 14 dB louder than 1500 Hz and only the high tones decoded.
+    const tones=CONTROL_FSK.frequencies;
+    expect(tones[0]).toBeGreaterThanOrEqual(2800);
+    expect(tones[tones.length-1]).toBeLessThanOrEqual(6000);
+    expect(tones[tones.length-1]/tones[0]).toBeLessThan(2);
+    expect(fskPlanWarnings(tones,CONTROL_FSK.symbolRate)).toEqual([]);
   });
   it('reports the test packet as lost when its sync header is missed',()=>{
     const samples=fixture();samples.fill(0,packetStart(),packetStart()+16*perSymbol);

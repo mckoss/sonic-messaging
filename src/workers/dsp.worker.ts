@@ -348,6 +348,8 @@ function acceptSamples(samples: Float32Array, sampleRate: number, sequence?: num
   if (fskStreamDecoder) {
     const packets = fskStreamDecoder.push(samples);
     for (const progress of fskStreamDecoder.drainProgress()) {
+      // The Receive tab's reception stream has no place for an unreadable sync; the experiment log reports it.
+      if (progress.type === 'sync-unreadable') continue;
       send({ type: 'fsk-reception', token: progress.type, position: progress.position,
         ...('byte' in progress ? { byte: progress.byte } : {}),
         ...('length' in progress ? { length: progress.length } : {}),

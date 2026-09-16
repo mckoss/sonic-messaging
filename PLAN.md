@@ -53,6 +53,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Cancel room echoes on a failed frame using its own decisions (least-squares taps, remembered between frames), recovering control messages that reverberation corrupts.
 - [x] Compute unequal, harmonic-free tone plans from base frequency and baud everywhere (Send Single, experiments, control link); retire tone spacing as a setting.
 - [x] Slow the control link to 25 baud on 1500-2900 Hz, longer than a small room's first reflections.
+- [x] Move the control link to 2800–5425 Hz, above a phone speaker's far-field rolloff, after a two-foot recording showed 2900 Hz arriving 14 dB louder than 1500 Hz; accept a sync the matched filter hears unmistakably even when reverberation misreads several of its symbols, subtract each tone's sync-measured tail from the following symbol, and log a sync that is heard but unreadable instead of nothing.
 - [x] Sweep test baud as a parameter, with each value's tone spacing set to twice its baud (the orthogonal minimum with margin).
 - [x] Cover every parameter value equally: one shuffled pass per repetition, with the planned test count and duration estimate shown before starting.
 - [x] Simplify the Test Suite: one **Start Test** run with a **Number of tests** (up to 100) and a duration estimate that warns past 10 minutes; test packets always play at amplitude 0.8.

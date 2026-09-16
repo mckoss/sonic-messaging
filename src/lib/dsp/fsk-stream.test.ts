@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FRAME_TYPE, SYNC_BYTES } from './frame';
+import { frame, FRAME_TYPE, SYNC_BYTES } from './frame';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { simulateChannel } from './channel';
@@ -258,6 +258,59 @@ describe('continuous FSK receiver', () => {
     const frame = receiver.drainFrames()[0];
     expect(frame.crcOk).toBe(true);
     expect(frame.softCorrected).toBe(1);
+  });
+
+  it('acquires and decodes a frame through a reverberant, tilted channel that misreads several sync symbols', () => {
+    // Two effects from a two-foot field recording, synthesized: the speaker delivers the low tones far more weakly
+    // than the high ones, and the room carries a large fraction of each symbol's energy into the next symbol time.
+    // The loud tones' tails then out-shout the quiet tones' direct signal one symbol later, misreading three of the
+    // sixteen sync symbols and many payload symbols. The matched filter still fires unmistakably; the sync is
+    // accepted on that strength, the tails are measured on the known sync tones, and decision feedback takes each
+    // one back before the next decision.
+    const payload = new TextEncoder().encode('reverberant room, tilted speaker');
+    const gain = [0.4, 0.45, 0.8, 1.0], n = Math.round(config.sampleRate / config.symbolRate);
+    const bits = [...frame(payload)].flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+    const symbols: number[] = [];
+    for (let i = 0; i + 2 <= bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+    const direct = new Float32Array(symbols.length * n);
+    let phase = 0;
+    for (let s = 0; s < symbols.length; s++) {
+      const step = 2 * Math.PI * config.frequencies[symbols[s]] / config.sampleRate;
+      for (let i = 0; i < n; i++) { direct[s * n + i] = 0.8 * gain[symbols[s]] * Math.sin(phase); phase += step; }
+    }
+    // The room: half of what was heard one symbol ago is heard again, recursively, as reverberation is.
+    const heard = new Float32Array(direct.length + 3 * n);
+    heard.set(direct);
+    for (let i = 0; i + n < heard.length; i++) heard[i + n] += 0.5 * heard[i];
+    const receiver = new FskStreamDecoder(config);
+    const packets = receiver.push(heard);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual([new TextDecoder().decode(payload)]);
+    expect(receiver.drainProgress().some(event => event.type === 'sync')).toBe(true);
+    // The room's memory was measured on the sync and reported: about a quarter of each tone's power carried over.
+    expect(packets[0].tails).toBeDefined();
+    for (const tail of packets[0].tails!) { expect(tail).toBeGreaterThan(0.1); expect(tail).toBeLessThan(0.5); }
+  });
+
+  it('reports a sync it hears unmistakably but cannot read, then acquires the next frame', () => {
+    const spp = Math.round(config.sampleRate / config.symbolRate);
+    const first = encodeFsk(new TextEncoder().encode('unreadable'), config).samples.slice();
+    // Six sync windows get a competing tone just loud enough to win: too many misreads to decode, but no doubt a
+    // frame is there. That must be reported, not silently skipped, and must not stop the next frame being heard.
+    const template = [0, 1, 2, 2, 3, 0, 3, 3, 3, 3, 3, 0, 0, 1, 3, 1];
+    for (const index of [1, 3, 5, 7, 9, 13]) {
+      const wrong = config.frequencies[(template[index] + 1) % 4];
+      for (let i = 0; i < spp; i++) first[index * spp + i] += 0.88 * Math.sin(2 * Math.PI * wrong * i / config.sampleRate);
+    }
+    const second = encodeFsk(new TextEncoder().encode('next'), config).samples;
+    const gap = new Float32Array(40 * spp), samples = new Float32Array(first.length + gap.length + second.length);
+    samples.set(first); samples.set(second, first.length + gap.length);
+    const receiver = new FskStreamDecoder(config);
+    expect(receiver.push(samples).map(packet => new TextDecoder().decode(packet.payload))).toEqual(['next']);
+    const progress = receiver.drainProgress();
+    const unreadable = progress.filter(event => event.type === 'sync-unreadable');
+    expect(unreadable).toHaveLength(1);
+    expect(unreadable[0]).toMatchObject({ type: 'sync-unreadable', mismatches: 6, of: 16 });
+    expect(progress.filter(event => event.type === 'sync')).toHaveLength(1);
   });
 
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {

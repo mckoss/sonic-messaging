@@ -50,11 +50,19 @@ export const MIN_AMPLITUDE_PERCENT = 5;
 export const DEFAULT_AMPLITUDE_PERCENT = Math.round(TRANSMIT_AMPLITUDE * 100);
 
 /**
- * The control link runs slow and high: 25 baud makes a symbol (40 ms) longer than a small room's first reflections
+ * The control link runs slow and high. 25 baud makes a symbol (40 ms) longer than a small room's first reflections
  * (a 10-foot surface echoes at ~18 ms), which is what corrupted 100-baud control messages at two feet in field
- * recordings, and 1500 Hz upward sits where phone speakers are efficient.
+ * recordings.
+ *
+ * The band starts at 2800 Hz because of what a phone speaker actually delivers at a distance. Two feet from a phone
+ * lying on a desk, a recording measured 2900 Hz arriving 14 dB louder than 1500 Hz; the 2900 Hz symbols decoded 48
+ * of 48 and the 1700 Hz symbols 10 of 43, with the loud tones' reverberant tails winning the quiet tones' windows.
+ * Held near the laptop the tilt reversed and everything decoded, which is the cliff between "works on the desk" and
+ * "nothing at two feet". No receiver-side correction recovers a tone that isn't arriving, so every control tone now
+ * sits at or above the frequency that was arriving well. The plan stays inside an octave (no tone is another's
+ * harmonic) and its top, 5425 Hz, is well within what phones and laptop microphones reproduce.
  */
-export const CONTROL_FSK = { frequencies: fskToneSet(1500, 25, 4), symbolRate: 25, amplitude: TRANSMIT_AMPLITUDE };
+export const CONTROL_FSK = { frequencies: fskToneSet(2800, 25, 4), symbolRate: 25, amplitude: TRANSMIT_AMPLITUDE };
 /** Quiet lead-in and tail wrapped around every transmission, so a frame never starts in a speaker's turn-on click. */
 export const GUARD_SECONDS = 0.5;
 /**
