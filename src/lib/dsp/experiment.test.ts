@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { TRANSMIT_AMPLITUDE, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { TRANSMIT_AMPLITUDE, CONTROL_FSK, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -105,7 +105,7 @@ describe('control protocol and search',()=>{
   it('sends human-readable method calls and rejects malformed text',()=>{
     const text=(s:string)=>new TextEncoder().encode(s);
     // The sender travels in the frame, never in the message text.
-    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1500, 4, 25, 16, 719)');
+    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1500, 4, 25, 16, 719, 40)');
     expect(controlText({kind:'result',sender:0x1a2b,trial:0,raw:{symbolErrors:2,symbols:64,bitErrors:3,bits:128,confidence:0.8234,snrMedianDb:-3.26,crcOk:false}})).toBe('result(1, 2, 64, 3, 128, 0.82, -3.3, 0)');
     expect(controlText({kind:'done',sender:0x1a2b,trial:8})).toBe('done(8)');
     expect(decodeControl(text('lost(4)'),0x1a2b)).toEqual({kind:'lost',sender:0x1a2b,trial:3});
@@ -262,7 +262,7 @@ describe('control protocol and search',()=>{
     const acks:{from:number;target:{sender:number;seq:number}}[]=[];
     const {lines}=analyze(samples,{ack:(from,target)=>acks.push({from,target})});
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
-    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719 (1500/1700/2100/2900 Hz)');
+    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40% (1500/1700/2100/2900 Hz)');
     // This default test uses the control tones and baud, so the control listener also decodes the packet; it is logged once, scored.
     expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · drift [+−]\\d+\\.\\d ms$`));
     expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials','<- 02CF#10 ACK 002A#3']);
@@ -281,6 +281,23 @@ describe('control protocol and search',()=>{
     expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(TRANSMIT_AMPLITUDE);
     expect(()=>validateSearch({...config,repetitions:MAX_REPETITIONS+1})).toThrow('repetitions');
     expect(()=>validateSearch({...config,step:1,repetitions:50})).toThrow('at most 200 test packets');
+  });
+  it('sweeps test amplitude, carries it on the wire, and still reads messages sent before it existed',()=>{
+    expect(searchValues({...config,parameter:'amplitudePercent',minimum:20,maximum:80,step:20})).toEqual([20,40,60,80]);
+    expect(trialFsk(withValue(config.trial,'amplitudePercent',20)).amplitude).toBeCloseTo(0.2);
+    expect(trialFsk(withValue(config.trial,'amplitudePercent',100)).amplitude).toBeCloseTo(1);
+    // Only test packets vary: sweeping the level must not make the control link itself unreliable.
+    expect(CONTROL_FSK.amplitude).toBe(TRANSMIT_AMPLITUDE);
+    // Recordings made before test_suite carried amplitude still replay, at the level those builds transmitted.
+    const legacy=decodeControl(new TextEncoder().encode('test_suite(1, 1500, 4, 25, 16, 719)'),0x1a2b);
+    expect(legacy?.kind==='test_suite'&&legacy.settings.amplitudePercent).toBe(80);
+    expect(()=>validateTrial({...config.trial,amplitudePercent:0})).toThrow();
+    expect(()=>validateTrial({...config.trial,amplitudePercent:101})).toThrow();
+    expect(()=>validateTrial({...config.trial,amplitudePercent:42.5})).toThrow();
+    // Settings saved by a build without the field — a stored experiment recording — still load.
+    const {amplitudePercent:_omitted,...older}=config.trial;
+    expect(validateTrial(older).amplitudePercent).toBe(80);
+    expect(()=>validateTrial(undefined)).toThrow();
   });
   it('covers every value equally in a shuffled order, and picks the best measured one',()=>{
     // Deterministic shuffling keeps the test stable; the schedule still covers each value once per repetition.

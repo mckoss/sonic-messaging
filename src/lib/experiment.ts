@@ -4,8 +4,13 @@ import { fskToneSet } from './dsp/fsk-frequencies';
 export interface TrialSettings {
   tones: number; lowestFrequency: number; symbolRate: number;
   payloadBytes: number; seed: number;
+  /**
+   * Test-packet output level, as a percentage of full scale. A percentage rather than a fraction so that it sweeps
+   * like every other parameter — whole numbers with a whole-number step — and reads unambiguously on the wire.
+   */
+  amplitudePercent: number;
 }
-export type SearchParameter = 'lowestFrequency' | 'tones' | 'symbolRate';
+export type SearchParameter = 'lowestFrequency' | 'tones' | 'symbolRate' | 'amplitudePercent';
 export interface SearchSettings {
   trial: TrialSettings; parameter: SearchParameter; minimum: number; maximum: number; step: number;
   /** How many times each value of the parameter is tested. */
@@ -22,6 +27,16 @@ export interface SearchSettings {
  * recordings measured a median in-window S/N of 14.6 dB, and halving amplitude costs 6 dB of it.
  */
 export const TRANSMIT_AMPLITUDE = 0.4;
+/** Below this a test packet is too quiet to tell a weak channel from a weak transmitter. */
+export const MIN_AMPLITUDE_PERCENT = 5;
+/**
+ * Level assumed for trial settings that predate the field — saved recordings and control messages from builds before
+ * amplitude was swept, all of which transmitted at 0.8. One release (6.2.0) transmitted at 0.4 without recording it,
+ * so its trials read high by that much; only the label is affected, since a receiver never uses the sender's level.
+ */
+export const LEGACY_AMPLITUDE_PERCENT = 80;
+/** Test packets start at the control link's level, so an unswept run measures the channel both links share. */
+export const DEFAULT_AMPLITUDE_PERCENT = Math.round(TRANSMIT_AMPLITUDE * 100);
 
 /**
  * The control link runs slow and high: 25 baud makes a symbol (40 ms) longer than a small room's first reflections
@@ -44,25 +59,28 @@ export function controlAirtimeSeconds(payloadBytes: number): number {
   return symbols / CONTROL_FSK.symbolRate + 2 * GUARD_SECONDS;
 }
 export const MAX_SESSION_SECONDS = 600;
-/** Test packets play at the same level as control, so a trial measures the channel and not a level change. */
-export const TEST_AMPLITUDE = TRANSMIT_AMPLITUDE;
 export const MAX_TESTS = 200;
 export const MAX_REPETITIONS = 50;
-/** A trial's tones: unequal gaps computed from its base frequency and baud, so no tone is another's harmonic. */
-export const trialFsk = (t: TrialSettings) => ({ frequencies: fskToneSet(t.lowestFrequency, t.symbolRate, t.tones), symbolRate: t.symbolRate, amplitude: TEST_AMPLITUDE });
+/**
+ * A trial's tones: unequal gaps computed from its base frequency and baud, so no tone is another's harmonic.
+ * The level is the trial's own, so a run can sweep it; only test packets vary, never the control link.
+ */
+export const trialFsk = (t: TrialSettings) => ({ frequencies: fskToneSet(t.lowestFrequency, t.symbolRate, t.tones), symbolRate: t.symbolRate, amplitude: t.amplitudePercent / 100 });
 export function validateTrial(value: unknown): TrialSettings {
-  const t = value as TrialSettings;
-  if (!t || ![2,4,8,16].includes(t.tones) || !Number.isInteger(t.lowestFrequency) || t.lowestFrequency < 100 ||
+  const t = { ...(value as TrialSettings) };
+  t.amplitudePercent ??= LEGACY_AMPLITUDE_PERCENT;
+  if (!value || ![2,4,8,16].includes(t.tones) || !Number.isInteger(t.lowestFrequency) || t.lowestFrequency < 100 ||
       fskToneSet(t.lowestFrequency, t.symbolRate, t.tones).slice(-1)[0] > 20000 ||
       !Number.isInteger(t.symbolRate) || t.symbolRate < 25 || t.symbolRate > 1000 ||
       !Number.isInteger(t.payloadBytes) || t.payloadBytes < 4 || t.payloadBytes > 64 ||
       !Number.isInteger(t.seed) || t.seed < 0 || t.seed > 0xffffffff ||
+      !Number.isInteger(t.amplitudePercent) || t.amplitudePercent < MIN_AMPLITUDE_PERCENT || t.amplitudePercent > 100 ||
       (t.payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(t.tones) / t.symbolRate > 15) throw new Error('Invalid trial settings (packet duration at most 15 seconds)');
-  const { tones, lowestFrequency, symbolRate, payloadBytes, seed } = t;
-  return { tones, lowestFrequency, symbolRate, payloadBytes, seed };
+  const { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent } = t;
+  return { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent };
 }
 export function defaultSearch(): SearchSettings {
-  return { trial: { tones: 4, lowestFrequency: 1500, symbolRate: 25, payloadBytes: 16, seed: 719 },
+  return { trial: { tones: 4, lowestFrequency: 1500, symbolRate: 25, payloadBytes: 16, seed: 719, amplitudePercent: DEFAULT_AMPLITUDE_PERCENT },
     parameter: 'lowestFrequency', minimum: 1000, maximum: 3000, step: 500, repetitions: 1 };
 }
 /** One trial's settings with the swept parameter set to `value`; tones follow the base frequency and baud. */
@@ -142,7 +160,7 @@ function args(m: ControlMessage): (string | number)[] {
   switch (m.kind) {
     case 'test_suite': {
       const t = validateTrial(m.settings);
-      return [m.trial + 1, t.lowestFrequency, t.tones, t.symbolRate, t.payloadBytes, t.seed];
+      return [m.trial + 1, t.lowestFrequency, t.tones, t.symbolRate, t.payloadBytes, t.seed, t.amplitudePercent];
     }
     case 'result': return [m.trial + 1, m.raw.symbolErrors, m.raw.symbols, m.raw.bitErrors, m.raw.bits, decimal(m.raw.confidence, 2), decimal(m.raw.snrMedianDb, 1), m.raw.crcOk ? 1 : 0];
     case 'done': return [m.trial];
@@ -152,14 +170,17 @@ function args(m: ControlMessage): (string | number)[] {
 export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', ')})`;
 export const encodeControl = (m: ControlMessage): Uint8Array => new TextEncoder().encode(controlText(m));
 export const controlAddress = (m: ControlMessage, seq = 0, ackRequested = false): FrameAddress => ({ sender: m.sender, seq, type: FRAME_TYPE.control, ackRequested });
-const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 6, result: 8, done: 1, lost: 1 };
+const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 7, result: 8, done: 1, lost: 1 };
+/** test_suite carried no amplitude before it became a swept parameter; such messages still parse (see validateTrial). */
+const LEGACY_TEST_SUITE_ARGS = 6;
 /** Parses a control payload; `sender` comes from the frame it arrived in. */
 export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage | undefined {
   if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
   const match = /^([a-z_]+)\(([^()]*)\)$/.exec(String.fromCharCode(...bytes));
   if (!match || !(match[1] in ARG_COUNTS)) return;
   const kind = match[1] as ControlKind, fields = match[2].split(',').map(f => f.trim());
-  if (fields.length !== ARG_COUNTS[kind] || !INT.test(fields[0]) || fields.slice(1).some(f => !SIGNED.test(f))) return;
+  const legacy = kind === 'test_suite' && fields.length === LEGACY_TEST_SUITE_ARGS;
+  if ((fields.length !== ARG_COUNTS[kind] && !legacy) || !INT.test(fields[0]) || fields.slice(1).some(f => !SIGNED.test(f))) return;
   const count = Number(fields[0]), numbers = fields.slice(1).map(Number);
   if (kind === 'done') return { kind, sender, trial: count };
   const common = { sender, trial: count - 1 };
@@ -167,8 +188,8 @@ export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage
   try {
     switch (kind) {
       case 'test_suite': {
-        const [lowestFrequency, tones, symbolRate, payloadBytes, seed] = numbers;
-        return { kind, ...common, settings: validateTrial({ lowestFrequency, tones, symbolRate, payloadBytes, seed }) };
+        const [lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent] = numbers;
+        return { kind, ...common, settings: validateTrial({ lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent }) };
       }
       case 'result': {
         const [symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb, crc] = numbers;
@@ -229,7 +250,7 @@ export type CooperativeEvent =
 export const hexBytes = (bytes: ArrayLike<number>) => `[${Array.from(bytes, b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}]`;
 const symbolsReceived = (raw: { symbols: number; symbolErrors: number }) => `${raw.symbols - raw.symbolErrors}/${raw.symbols} symbols received`;
 export const describeSettings = (t: TrialSettings) =>
-  `Base=${t.lowestFrequency}, Tones=${t.tones}, Baud=${t.symbolRate}, Bytes=${t.payloadBytes}, Seed=${t.seed} (${trialFsk(t).frequencies.join('/')} Hz)`;
+  `Base=${t.lowestFrequency}, Tones=${t.tones}, Baud=${t.symbolRate}, Bytes=${t.payloadBytes}, Seed=${t.seed}, Amp=${t.amplitudePercent}% (${trialFsk(t).frequencies.join('/')} Hz)`;
 /** What a control message means, for the log. */
 export function describeControl(m: ControlMessage): string {
   const trial = `trial ${m.trial + 1}`;
