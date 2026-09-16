@@ -59,8 +59,11 @@ export type DspWorkerResponse =
   | { type: 'fsk-reception'; token: 'sync' | 'length' | 'address' | 'byte' | 'crc-confirm' | 'crc-error';
       position: number; byte?: number; length?: number; sender?: number; seq?: number; frameType?: number }
   | { type: 'capture-gap'; samples: number; sampleRate: number;
-      /** Omitted for zeroed-capture gaps the worker detects; 'backpressure' for chunks the engine dropped while the worker lagged. */
-      source?: 'backpressure' }
+      /**
+       * Omitted for zeroed-capture gaps the worker detects; 'backpressure' for chunks the engine dropped while the
+       * worker lagged; 'dropped' for the same loss seen from the worker's side, as a break in capture numbering.
+       */
+      source?: 'backpressure' | 'dropped' }
   | { type: 'audio-data'; requestId: string; samples: TransferableSamples; sampleRate: number }
   | { type: 'decode-result'; requestId: string; modem: string; result?: unknown; error?: string }
   | { type: 'worker-error'; message: string };

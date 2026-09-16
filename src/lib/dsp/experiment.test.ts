@@ -39,6 +39,20 @@ describe('cooperative acoustic measurement',()=>{
     expect(lost).toEqual([]);expect(results).toHaveLength(1);
     expect(results[0].raw.crcOk).toBe(false);expect(results[0].raw.symbolErrors).toBeGreaterThan(4);
   });
+  it('keeps positions true when captured audio never reaches the decoder',()=>{
+    // The main thread drops whole capture chunks when the worker lags. Splicing across that loss would put every
+    // later position out of step with the recording the operator is comparing against.
+    const samples=fixture(),cut=Math.round(rate*0.1),at=packetStart()-Math.round(rate*0.25);
+    const results:TrialMeasurement[]=[],lines:string[]=[];
+    const analyzer=new CooperativeAnalyzer(rate,{analyze:true,measurement:r=>results.push(r),wire:l=>lines.push(l)});
+    for(let i=0;i<at;i+=128)analyzer.push(samples.subarray(i,Math.min(at,i+128)));
+    analyzer.gap(cut);
+    for(let i=at+cut;i<samples.length;i+=128)analyzer.push(samples.subarray(i,i+128));
+    expect(results).toHaveLength(1);
+    expect(results[0].raw.crcOk).toBe(true);
+    expect(Math.abs(results[0].startPosition-packetStart())).toBeLessThanOrEqual(2);
+    expect(lines.some(l=>l.startsWith('X Capture gap'))).toBe(true);
+  });
   it('reports the test packet as lost when its sync header is missed',()=>{
     const samples=fixture();samples.fill(0,packetStart(),packetStart()+16*perSymbol);
     const {results,lost,lines}=analyze(samples);

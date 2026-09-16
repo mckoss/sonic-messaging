@@ -46,6 +46,8 @@ function cooperativeEvent(event: CooperativeEvent) { send({ type: 'cooperative-e
  * staying silent forever would be worse than risking one collision.
  */
 const MAX_DEFER_MS = 20_000;
+/** Frames heard while transmitting wait here; beyond this the peer is transmitting far more than this link allows. */
+const MAX_DEFERRED_FRAMES = 32;
 let deferringSince: number | undefined;
 function drainOutgoing() {
   if (activeToken || !outgoing.length) return;
@@ -68,7 +70,12 @@ function drainOutgoing() {
   send({ type: 'cooperative-audio', token: activeToken, samples, sampleRate: cooperativeRate }, [samples.buffer]);
 }
 function handleHeard(frame: HeardFrame) {
-  if (activeToken) { if (deferred.length < 32) deferred.push(frame); return; }
+  if (activeToken) {
+    if (deferred.length < MAX_DEFERRED_FRAMES) deferred.push(frame);
+    // Silently discarding a frame heard while transmitting would look like the peer never sent it.
+    else cooperativeEvent({ kind: 'wire', line: 'X Dropped a frame heard while transmitting: too many are already waiting' });
+    return;
+  }
   if (frame.kind === 'ack') { packetManager?.acked(frame.sender, frame.seq); return; }
   // Duplicates are ACKed again by the packet manager but delivered only once.
   if (!packetManager || packetManager.receive(frame.message.sender, frame.seq, frame.ackRequested)) cooperativeSession?.receive(frame.message);
@@ -262,6 +269,31 @@ function detectCaptureGaps(samples: Float32Array, sampleRate: number): void {
   }
 }
 
+/**
+ * Capture chunks are numbered by the AudioWorklet, and the main thread drops whole chunks — keeping their numbers —
+ * when the worker falls behind real time. A missing number therefore means the audio on either side of it is not
+ * contiguous. Concatenating it anyway corrupts whatever frame was in flight, in a way that looks exactly like an
+ * acoustic failure, and shifts every position reported afterwards by the length of the gap. So the decoders are
+ * rebuilt at the post-gap position instead, and the missing span is left as silence in the history ring.
+ */
+let nextCaptureSequence: number | undefined;
+
+function handleCaptureGap(gapSamples: number, sampleRate: number): void {
+  if (gapSamples > 0) {
+    // Beyond one ring length everything retained is already older than the gap, so one ring of silence is enough.
+    storeCapturedAudio(new Float32Array(Math.min(gapSamples, audioRing.length || gapSamples)), sampleRate);
+    captureSamples += gapSamples;
+    send({ type: 'capture-gap', samples: gapSamples, sampleRate, source: 'dropped' });
+  }
+  detectorWindow.fill(0); detectorFilled = 0; detectorSinceEmit = 0;
+  alignedDetection = undefined; alignedBoundary = -1; backfilledAnchor = -1;
+  if (detector && detectorSampleRate === sampleRate) {
+    fskStreamDecoder = new FskStreamDecoder(
+      { sampleRate, symbolRate: detector.symbolRate, frequencies: detector.frequencies }, captureSamples);
+  }
+  cooperativeAnalyzer?.gap(gapSamples);
+}
+
 /** Anchor of the lock most recently backfilled, so each lock repaints once. */
 let backfilledAnchor = -1;
 /** Safety cap: a lock is acquired just after the sync, so few slots ever need repainting. */
@@ -292,7 +324,16 @@ function backfillOnNewLock(sampleRate: number): void {
   if (slots.length) send({ type: 'symbol-backfill', samplesPerSymbol, slots });
 }
 
-function acceptSamples(samples: Float32Array, sampleRate: number, sequence: number): void {
+/** `sequence` is the capture chunk's number; replay passes none, having no capture continuity to check. */
+function acceptSamples(samples: Float32Array, sampleRate: number, sequence?: number): void {
+  if (sequence !== undefined) {
+    if (nextCaptureSequence !== undefined && sequence !== nextCaptureSequence) {
+      // A higher number means chunks went missing; a lower one means capture restarted and renumbered from zero.
+      // Either way the stream is broken here, and only the first case has a measurable length.
+      handleCaptureGap(sequence > nextCaptureSequence ? (sequence - nextCaptureSequence) * samples.length : 0, sampleRate);
+    }
+    nextCaptureSequence = sequence + 1;
+  }
   cooperativeAnalyzer?.push(samples);
   // A frame held back because the air was busy goes out as soon as the air clears.
   if (outgoing.length) drainOutgoing();
@@ -450,7 +491,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
       case 'replay-samples':
         // Match live AudioWorklet render quanta, including acquisition lookahead.
         for (let offset = 0; offset < data.samples.length; offset += 128) {
-          acceptSamples(data.samples.subarray(offset, offset + 128), data.sampleRate, data.sequence);
+          acceptSamples(data.samples.subarray(offset, offset + 128), data.sampleRate);
         }
         send({ type: 'replay-ack', sequence: data.sequence });
         break;

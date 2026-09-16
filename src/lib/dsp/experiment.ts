@@ -117,6 +117,18 @@ export class CooperativeAnalyzer {
    * symbol by symbol, so it does not fire on room noise.
    */
   get receiving():boolean{return this.control.lockedSymbolAnchor()!==undefined;}
+  /**
+   * Audio never reached the decoder, so the samples on either side of this point are not contiguous. Rebuild the
+   * decoders past the gap rather than let them splice across it: a frame in flight is lost either way, but splicing
+   * turns it into plausible-looking garbage and drags every later position out of step with the recording.
+   */
+  gap(samples:number){
+    this.position+=samples;
+    if(samples>0)this.wire(`X Capture gap · ${(samples/this.sampleRate*1000).toFixed(0)} ms of audio never reached the decoder`);
+    this.control=new FskStreamDecoder({...CONTROL_FSK,sampleRate:this.sampleRate},this.position);
+    this.controlGarble=new GarbleTracker(this.wire,()=>'message');
+    if(this.test)this.test.decoder=new FskStreamDecoder({...trialFsk(this.test.proposal.settings),sampleRate:this.sampleRate},this.position);
+  }
   push(chunk:Float32Array){
     for(const packet of this.control.push(chunk)){
       if(packet.sender===this.options.self)continue;
