@@ -99,7 +99,7 @@ Control frames (type `01`) carry plain ASCII method calls. Trial numbers are 1-b
 
 | Method | Sent by | Meaning |
 |---|---|---|
-| `test_suite(T, base, tones, baud, bytes, seed)` | controller | Settings for trial T; the partner opens a test listener on them, computing the tones from base and baud |
+| `test_suite(T, base, tones, baud, bytes, seed, amp, gap)` | controller | Settings for trial T; the partner opens a test listener on them, computing the tones from base and baud `amp` is the test packet level in percent of full scale and `gap` the silence at the end of each symbol period in percent of it. `baud` is symbols per second with the gap included, so a gapped trial takes exactly as long on the air; the tone occupies the rest of each period with raised-cosine edges (with no gap the waveform is plain continuous-phase FSK, unchanged), and the partner spaces the tones by the tone's own rate, baud / (1 − gap). |
 | `result(T, symbolErrors, symbols, bitErrors, bits, confidence, medianSnrDb, crcOk)` | partner | Scores for trial T; `crcOk` is 1 if the packet was received intact, 0 if heard but corrupted |
 | `lost(T)` | partner | The test packet wasn't received; the controller re-proposes the settings as a new trial |
 | `done(N)` | controller | Run finished after N trials |

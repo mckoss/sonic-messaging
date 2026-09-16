@@ -21,6 +21,13 @@ export interface FskConfig {
   symbolRate: number;
   frequencies: number[];
   amplitude?: number;
+  /**
+   * Silence at the end of every symbol period, as a percentage of the period (0 = tone throughout). The tone plays
+   * for the rest with raised-cosine edges, and the receiver's window covers only that part, so a reverberant room
+   * has the gap to decay in before the next symbol is judged. Tone spacing must then be multiples of the *window*
+   * rate, symbolRate / (1 − gap), not the symbol rate.
+   */
+  gapPercent?: number;
   /** Frame sender and type; defaults to sender 0000, type message. */
   address?: FrameAddress;
 }

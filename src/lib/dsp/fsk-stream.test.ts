@@ -3,6 +3,7 @@ import { frame, FRAME_TYPE, SYNC_BYTES } from './frame';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { simulateChannel } from './channel';
+import { fskToneSet } from './fsk-frequencies';
 
 const config = { sampleRate: 48_000, symbolRate: 400, frequencies: [2400, 3200, 4000, 4800] };
 
@@ -311,6 +312,63 @@ describe('continuous FSK receiver', () => {
     expect(unreadable).toHaveLength(1);
     expect(unreadable[0]).toMatchObject({ type: 'sync-unreadable', mismatches: 6, of: 16 });
     expect(progress.filter(event => event.type === 'sync')).toHaveLength(1);
+  });
+
+  it('with no gap, encodes exactly the continuous-phase FSK it always did — no edge shaping', () => {
+    // The silence gap must not change a single sample of the ungapped waveform: one running phase, one amplitude.
+    const payload = new TextEncoder().encode('phase continuous');
+    const actual = encodeFsk(payload, { ...config, gapPercent: 0 }).samples;
+    const reference = encodeFsk(payload, config).samples;
+    const bits = [...frame(payload)].flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+    const n = Math.round(config.sampleRate / config.symbolRate), expected = new Float32Array(actual.length);
+    let phase = 0;
+    for (let s = 0; s * 2 < bits.length; s++) {
+      const step = 2 * Math.PI * config.frequencies[(bits[2 * s] << 1) | bits[2 * s + 1]] / config.sampleRate;
+      for (let i = 0; i < n; i++) { expected[s * n + i] = 0.8 * Math.sin(phase); phase += step; }
+    }
+    expect(actual).toEqual(expected);
+    expect(reference).toEqual(expected);
+  });
+
+  it.each([25, 50, 75])('round-trips a frame whose symbols leave %i% of each period silent', gap => {
+    // The tone is shorter than the period, so orthogonal spacing follows the tone: plan from the window rate.
+    const gapped = { ...config, gapPercent: gap, frequencies: fskToneSet(2400, config.symbolRate / (1 - gap / 100), 4) };
+    const payload = new TextEncoder().encode(`silence ${gap}%`);
+    const waveform = encodeFsk(payload, gapped).samples;
+    // A gated tone must not click: no sample-to-sample jump larger than the sine's own slope allows.
+    const n = Math.round(config.sampleRate / config.symbolRate), top = gapped.frequencies[3];
+    const maxSlope = 0.8 * 2 * Math.PI * top / config.sampleRate * 1.05;
+    for (let i = 1; i < waveform.length; i++) expect(Math.abs(waveform[i] - waveform[i - 1])).toBeLessThanOrEqual(maxSlope);
+    // The gap really is silent.
+    const on = Math.round(n * (1 - gap / 100));
+    for (let s = 0; s < 8; s++) for (let i = on; i < n; i++) expect(Math.abs(waveform[s * n + i])).toBe(0);
+    // Baud is the final symbol rate, gap included: the gap shortens each tone, never the frame.
+    expect(waveform.length).toBe(encodeFsk(payload, config).samples.length);
+    const samples = new Float32Array(waveform.length + 3 * n); samples.set(waveform);
+    const packets = new FskStreamDecoder(gapped).push(samples);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual([new TextDecoder().decode(payload)]);
+  });
+
+  it('a silence gap lets the room decay before the next symbol is judged', () => {
+    // A reflection arriving six tenths of a period late. With the tone on for the whole period it lands well inside
+    // the next symbol; with half the period silent it lands mostly in the gap. The decoder measures how much of
+    // each tone carries into the next window on the sync: with the gap that carry-over falls below the point where
+    // decision feedback is even needed.
+    const n = Math.round(config.sampleRate / config.symbolRate), delay = Math.round(0.6 * n);
+    const room = (clean: Float32Array) => {
+      const heard = new Float32Array(clean.length + 3 * n); heard.set(clean);
+      for (let i = 0; i + delay < heard.length; i++) heard[i + delay] += 0.45 * clean[i];
+      return heard;
+    };
+    const payload = new TextEncoder().encode('gap versus tail');
+    const solid = new FskStreamDecoder(config).push(room(encodeFsk(payload, config).samples));
+    const gapped = { ...config, gapPercent: 50, frequencies: fskToneSet(2400, config.symbolRate * 2, 4) };
+    const spaced = new FskStreamDecoder(gapped).push(room(encodeFsk(payload, gapped).samples));
+    expect(solid.map(p => new TextDecoder().decode(p.payload))).toEqual(['gap versus tail']);
+    expect(spaced.map(p => new TextDecoder().decode(p.payload))).toEqual(['gap versus tail']);
+    expect(solid[0].tails).toBeDefined();
+    expect(Math.max(...solid[0].tails!)).toBeGreaterThanOrEqual(0.05);
+    expect(spaced[0].tails).toBeUndefined();
   });
 
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {

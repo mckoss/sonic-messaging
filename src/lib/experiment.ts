@@ -1,5 +1,6 @@
 import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, frameId, PAYLOAD_OFFSET, senderHex, type FrameAddress } from './dsp/frame';
 import { fskToneSet } from './dsp/fsk-frequencies';
+import { MAX_GAP_PERCENT } from './dsp/fsk';
 /** Cooperative experiments use an acoustic control link; no shared schedule is required. */
 export interface TrialSettings {
   tones: number; lowestFrequency: number; symbolRate: number;
@@ -9,6 +10,11 @@ export interface TrialSettings {
    * like every other parameter — whole numbers with a whole-number step — and reads unambiguously on the wire.
    */
   amplitudePercent: number;
+  /**
+   * Silence at the end of each symbol period, as a percentage of it. The room decays in the gap before the next
+   * symbol is judged; the receiver's window covers only the tone, so the tone plan is spaced by the window rate.
+   */
+  gapPercent: number;
 }
 /**
  * Every parameter a run can sweep, each with the range that suits it — a frequency sweep in hundreds of hertz means
@@ -23,7 +29,8 @@ export const SEARCH_PARAMETERS = [
   // The range is unused for tones, which always tests all four counts, but must stay valid.
   { key: 'tones', label: 'Number of tones', minimum: 2, maximum: 16, step: 1 },
   { key: 'symbolRate', label: 'Test baud', minimum: 25, maximum: 200, step: 25 },
-  { key: 'amplitudePercent', label: 'Amplitude %', minimum: 20, maximum: 100, step: 20 }
+  { key: 'amplitudePercent', label: 'Amplitude %', minimum: 20, maximum: 100, step: 20 },
+  { key: 'gapPercent', label: 'Silence gap %', minimum: 0, maximum: 60, step: 20 }
 ] as const;
 export type SearchParameter = typeof SEARCH_PARAMETERS[number]['key'];
 export const searchParameterPlan = (parameter: SearchParameter) =>
@@ -80,26 +87,31 @@ export function controlAirtimeSeconds(payloadBytes: number): number {
 export const MAX_SESSION_SECONDS = 600;
 export const MAX_TESTS = 200;
 export const MAX_REPETITIONS = 50;
+/** The rate the receiver's window sees: with a silence gap the tone is shorter than the period, and orthogonal tone spacing follows the tone. */
+export const windowRate = (t: TrialSettings) => t.symbolRate / (1 - t.gapPercent / 100);
 /**
- * A trial's tones: unequal gaps computed from its base frequency and baud, so no tone is another's harmonic.
- * The level is the trial's own, so a run can sweep it; only test packets vary, never the control link.
+ * A trial's tones: unequal gaps computed from its base frequency and the window rate, so no tone is another's
+ * harmonic. The level and silence gap are the trial's own, so a run can sweep them; only test packets vary, never
+ * the control link.
  */
-export const trialFsk = (t: TrialSettings) => ({ frequencies: fskToneSet(t.lowestFrequency, t.symbolRate, t.tones), symbolRate: t.symbolRate, amplitude: t.amplitudePercent / 100 });
+export const trialFsk = (t: TrialSettings) => ({ frequencies: fskToneSet(t.lowestFrequency, windowRate(t), t.tones), symbolRate: t.symbolRate,
+  amplitude: t.amplitudePercent / 100, gapPercent: t.gapPercent });
 export function validateTrial(value: unknown): TrialSettings {
   const t = value as TrialSettings;
   if (!t || ![2,4,8,16].includes(t.tones) || !Number.isInteger(t.lowestFrequency) || t.lowestFrequency < 100 ||
-      fskToneSet(t.lowestFrequency, t.symbolRate, t.tones).slice(-1)[0] > 20000 ||
+      !Number.isInteger(t.gapPercent) || t.gapPercent < 0 || t.gapPercent > MAX_GAP_PERCENT ||
+      fskToneSet(t.lowestFrequency, windowRate(t), t.tones).slice(-1)[0] > 20000 ||
       !Number.isInteger(t.symbolRate) || t.symbolRate < 25 || t.symbolRate > 1000 ||
       !Number.isInteger(t.payloadBytes) || t.payloadBytes < 4 || t.payloadBytes > 64 ||
       !Number.isInteger(t.seed) || t.seed < 0 || t.seed > 0xffffffff ||
       !Number.isInteger(t.amplitudePercent) || t.amplitudePercent < MIN_AMPLITUDE_PERCENT || t.amplitudePercent > 100 ||
       (t.payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(t.tones) / t.symbolRate > 15) throw new Error('Invalid trial settings (packet duration at most 15 seconds)');
-  const { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent } = t;
-  return { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent };
+  const { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent, gapPercent } = t;
+  return { tones, lowestFrequency, symbolRate, payloadBytes, seed, amplitudePercent, gapPercent };
 }
 export function defaultSearch(): SearchSettings {
   const { key, minimum, maximum, step } = searchParameterPlan('lowestFrequency');
-  return { trial: { tones: 4, lowestFrequency: 1500, symbolRate: 25, payloadBytes: 16, seed: 719, amplitudePercent: DEFAULT_AMPLITUDE_PERCENT },
+  return { trial: { tones: 4, lowestFrequency: 1500, symbolRate: 25, payloadBytes: 16, seed: 719, amplitudePercent: DEFAULT_AMPLITUDE_PERCENT, gapPercent: 0 },
     parameter: key, minimum, maximum, step, repetitions: 1 };
 }
 /** One trial's settings with the swept parameter set to `value`; tones follow the base frequency and baud. */
@@ -168,7 +180,7 @@ export function median(values: readonly number[]): number {
 
 /*
  * Control messages are plain ASCII method calls in a frame of type control, e.g.
- *   test_suite(1, 1500, 4, 25, 16, 719)
+ *   test_suite(1, 1500, 4, 25, 16, 719, 40, 0)
  * Who sent it travels in the frame's sender field, not the text. Trial numbers on the wire are 1-based. Each
  * method is parsed on its own, so one can change without versioning the rest. Test packets stay binary.
  */
@@ -179,7 +191,7 @@ function args(m: ControlMessage): (string | number)[] {
   switch (m.kind) {
     case 'test_suite': {
       const t = validateTrial(m.settings);
-      return [m.trial + 1, t.lowestFrequency, t.tones, t.symbolRate, t.payloadBytes, t.seed, t.amplitudePercent];
+      return [m.trial + 1, t.lowestFrequency, t.tones, t.symbolRate, t.payloadBytes, t.seed, t.amplitudePercent, t.gapPercent];
     }
     case 'result': return [m.trial + 1, m.raw.symbolErrors, m.raw.symbols, m.raw.bitErrors, m.raw.bits, decimal(m.raw.confidence, 2), decimal(m.raw.snrMedianDb, 1), m.raw.crcOk ? 1 : 0];
     case 'done': return [m.trial];
@@ -189,7 +201,7 @@ function args(m: ControlMessage): (string | number)[] {
 export const controlText = (m: ControlMessage) => `${m.kind}(${args(m).join(', ')})`;
 export const encodeControl = (m: ControlMessage): Uint8Array => new TextEncoder().encode(controlText(m));
 export const controlAddress = (m: ControlMessage, seq = 0, ackRequested = false): FrameAddress => ({ sender: m.sender, seq, type: FRAME_TYPE.control, ackRequested });
-const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 7, result: 8, done: 1, lost: 1 };
+const ARG_COUNTS: Record<ControlKind, number> = { test_suite: 8, result: 8, done: 1, lost: 1 };
 /** Parses a control payload; `sender` comes from the frame it arrived in. */
 export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage | undefined {
   if (bytes.length > MAX_CONTROL_BYTES || bytes.some(b => b < 0x20 || b > 0x7e)) return;
@@ -204,8 +216,8 @@ export function decodeControl(bytes: Uint8Array, sender: number): ControlMessage
   try {
     switch (kind) {
       case 'test_suite': {
-        const [lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent] = numbers;
-        return { kind, ...common, settings: validateTrial({ lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent }) };
+        const [lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent, gapPercent] = numbers;
+        return { kind, ...common, settings: validateTrial({ lowestFrequency, tones, symbolRate, payloadBytes, seed, amplitudePercent, gapPercent }) };
       }
       case 'result': {
         const [symbolErrors, symbols, bitErrors, bits, confidence, snrMedianDb, crc] = numbers;
@@ -266,7 +278,7 @@ export type CooperativeEvent =
 export const hexBytes = (bytes: ArrayLike<number>) => `[${Array.from(bytes, b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}]`;
 const symbolsReceived = (raw: { symbols: number; symbolErrors: number }) => `${raw.symbols - raw.symbolErrors}/${raw.symbols} symbols received`;
 export const describeSettings = (t: TrialSettings) =>
-  `Base=${t.lowestFrequency}, Tones=${t.tones}, Baud=${t.symbolRate}, Bytes=${t.payloadBytes}, Seed=${t.seed}, Amp=${t.amplitudePercent}% (${trialFsk(t).frequencies.join('/')} Hz)`;
+  `Base=${t.lowestFrequency}, Tones=${t.tones}, Baud=${t.symbolRate}, Bytes=${t.payloadBytes}, Seed=${t.seed}, Amp=${t.amplitudePercent}%, Gap=${t.gapPercent}% (${trialFsk(t).frequencies.join('/')} Hz)`;
 /** What a control message means, for the log. */
 export function describeControl(m: ControlMessage): string {
   const trial = `trial ${m.trial + 1}`;

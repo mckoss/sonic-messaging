@@ -3,6 +3,7 @@ import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAY
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import { SymbolTimingLoop } from './symbol-timing';
 import { cancelEcho, estimateEchoTaps } from './echo-canceller';
+import { fskToneSamples } from './fsk';
 import { softCandidates } from './soft-decode';
 import type { FskConfig } from './types';
 
@@ -152,6 +153,8 @@ export class FskStreamDecoder {
   private searchOffset = 0;
   private candidateOffset: number | undefined;
   private readonly samplesPerSymbol: number;
+  /** Samples of each period the tone occupies: every detection window is this long, stepped by samplesPerSymbol. */
+  private readonly windowSamples: number;
   private readonly bitsPerSymbol: number;
   private readonly phaseStep: number;
   private progress: FskStreamProgress[] = [];
@@ -195,13 +198,14 @@ export class FskStreamDecoder {
       throw new Error('FSK tone count must be a power of two');
     }
     this.samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
+    this.windowSamples = fskToneSamples(config);
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
     this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
     this.resetTiming();
   }
 
   private resetTiming(): void {
-    this.timing = new SymbolTimingLoop(this.samplesPerSymbol, this.config.sampleRate, this.config.frequencies);
+    this.timing = new SymbolTimingLoop(this.samplesPerSymbol, this.config.sampleRate, this.config.frequencies, this.windowSamples);
   }
 
   push(input: Float32Array): FskStreamPacket[] {
@@ -248,7 +252,7 @@ export class FskStreamDecoder {
     if (cached !== undefined) return cached;
     const offset = absolute - this.streamPosition;
     const decision = detectFskSymbol(
-      this.samples.subarray(offset, offset + this.samplesPerSymbol),
+      this.samples.subarray(offset, offset + this.windowSamples),
       this.config.sampleRate,
       this.config.frequencies
     );
@@ -302,7 +306,7 @@ export class FskStreamDecoder {
     for (let index = 0; index < this.syncTemplate.length; index++) {
       const start = offset + index * this.samplesPerSymbol;
       sum += toneScore(
-        this.samples.subarray(start, start + this.samplesPerSymbol),
+        this.samples.subarray(start, start + this.windowSamples),
         this.config.sampleRate,
         this.config.frequencies[this.syncTemplate[index]]
       );
@@ -364,7 +368,7 @@ export class FskStreamDecoder {
         for (let index = 0; index < this.syncTemplate.length; index++) {
           const windowStart = this.candidateOffset + index * this.samplesPerSymbol;
           syncPower += windowPowerDbfs(
-            this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
+            this.samples.subarray(windowStart, windowStart + this.windowSamples));
         }
         this.candidateLevelDbfs = syncPower / this.syncTemplate.length;
         this.progress.push({ type: 'sync', position: this.frameBytePosition(this.candidateOffset, SYNC.length) });
@@ -381,7 +385,7 @@ export class FskStreamDecoder {
     for (let index = 0; index < this.syncTemplate.length; index++) {
       const start = offset + index * this.samplesPerSymbol;
       const decision = detectFskSymbol(
-        this.samples.subarray(start, start + this.samplesPerSymbol),
+        this.samples.subarray(start, start + this.windowSamples),
         this.config.sampleRate, this.config.frequencies);
       let winner = 0;
       for (let tone = 1; tone < decision.scores.length; tone++) {
@@ -409,7 +413,7 @@ export class FskStreamDecoder {
     const powers: Float64Array[] = [], heard: number[] = [];
     for (let index = 0; index < this.syncTemplate.length; index++) {
       const start = offset + index * this.samplesPerSymbol;
-      const decision = detectFskSymbol(this.samples.subarray(start, start + this.samplesPerSymbol),
+      const decision = detectFskSymbol(this.samples.subarray(start, start + this.windowSamples),
         this.config.sampleRate, this.config.frequencies);
       const rmsSquared = Math.pow(10, decision.powerDbfs / 10);
       powers.push(Float64Array.from(decision.scores, score => score * rmsSquared));
@@ -511,7 +515,7 @@ export class FskStreamDecoder {
       while (this.candidateScannedSymbols < availableSymbols) {
         const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
         const power = windowPowerDbfs(
-          this.samples.subarray(windowStart, windowStart + this.samplesPerSymbol));
+          this.samples.subarray(windowStart, windowStart + this.windowSamples));
         const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB;
         this.candidateSilentRun = lost ? this.candidateSilentRun + 1 : 0;
         if (!lost) this.candidateLevelDbfs += (power - this.candidateLevelDbfs) * CARRIER_LEVEL_TRACK;
@@ -633,7 +637,7 @@ export class FskStreamDecoder {
       const offset = Math.max(0, Math.round(start + at));
       const decision = detectFskSymbol(
         // The final window may fall short of the buffer by the tail slack.
-        this.samples.subarray(offset, Math.min(offset + this.samplesPerSymbol, this.sampleCount)),
+        this.samples.subarray(offset, Math.min(offset + this.windowSamples, this.sampleCount)),
         this.config.sampleRate,
         this.config.frequencies
       );

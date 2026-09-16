@@ -1,11 +1,12 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan, windowRate, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
 import { fskPlanWarnings } from './fsk-frequencies';
+import { MAX_GAP_PERCENT } from './fsk';
 /** The rate every device in the field has reported. A lower fixture rate once could not even carry the control band. */
 const rate=48000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 /** test_suite, then the test packet as an ordinary guarded frame, then enough quiet for the listener window to close. */
@@ -69,6 +70,24 @@ describe('cooperative acoustic measurement',()=>{
     expect(results).toEqual([]);expect(lost).toEqual([]);
     expect(lines.some(l=>l.startsWith('X Frame sync heard but 6 of 16 sync symbols misread'))).toBe(true);
   });
+  it('spaces a gapped trial\'s tones by the tone rate, not the symbol rate, and bounds the gap',()=>{
+    // A tone that occupies half its period is half as long, so orthogonal spacing is twice as wide.
+    const full=trialFsk(config.trial),half=trialFsk({...config.trial,gapPercent:50});
+    expect(windowRate({...config.trial,gapPercent:50})).toBe(50);
+    expect(half.gapPercent).toBe(50);expect(full.gapPercent).toBe(0);
+    // Baud is symbols per second with the gap included, so a gapped test packet is exactly as long on the air.
+    expect(trialWave({...proposal,settings:{...config.trial,gapPercent:50}},rate).length).toBe(trialWave(proposal,rate).length);
+    const spacing=(f:number[])=>f[1]-f[0];
+    expect(spacing(half.frequencies)%50).toBe(0);
+    expect(spacing(half.frequencies)).toBeGreaterThanOrEqual(spacing(full.frequencies));
+    // On the wire, and back, unchanged.
+    const m:ControlMessage={kind:'test_suite',...proposal,settings:validateTrial({...config.trial,gapPercent:40})};
+    expect(controlText(m)).toBe('test_suite(1, 1500, 4, 25, 16, 719, 40, 40)');
+    expect(decodeControl(encodeControl(m),m.sender)).toEqual(m);
+    expect(()=>validateTrial({...config.trial,gapPercent:-1})).toThrow();
+    expect(()=>validateTrial({...config.trial,gapPercent:MAX_GAP_PERCENT+1})).toThrow();
+    expect(()=>validateTrial({...config.trial,gapPercent:12.5})).toThrow();
+  });
   it('keeps the control link above a phone speaker\'s far-field rolloff, harmonic-free, within an octave',()=>{
     // Two feet from a phone on a desk, 2900 Hz arrived 14 dB louder than 1500 Hz and only the high tones decoded.
     const tones=CONTROL_FSK.frequencies;
@@ -129,7 +148,7 @@ describe('control protocol and search',()=>{
   it('sends human-readable method calls and rejects malformed text',()=>{
     const text=(s:string)=>new TextEncoder().encode(s);
     // The sender travels in the frame, never in the message text.
-    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1500, 4, 25, 16, 719, 40)');
+    expect(controlText({kind:'test_suite',sender:0x1a2b,trial:0,settings:validateTrial(config.trial)})).toBe('test_suite(1, 1500, 4, 25, 16, 719, 40, 0)');
     expect(controlText({kind:'result',sender:0x1a2b,trial:0,raw:{symbolErrors:2,symbols:64,bitErrors:3,bits:128,confidence:0.8234,snrMedianDb:-3.26,crcOk:false}})).toBe('result(1, 2, 64, 3, 128, 0.82, -3.3, 0)');
     expect(controlText({kind:'done',sender:0x1a2b,trial:8})).toBe('done(8)');
     expect(decodeControl(text('lost(4)'),0x1a2b)).toEqual({kind:'lost',sender:0x1a2b,trial:3});
@@ -286,7 +305,7 @@ describe('control protocol and search',()=>{
     const acks:{from:number;target:{sender:number;seq:number}}[]=[];
     const {lines}=analyze(samples,{ack:(from,target)=>acks.push({from,target})});
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
-    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40% (1500/1700/2100/2900 Hz)');
+    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40, 0) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40%, Gap=0% (1500/1700/2100/2900 Hz)');
     // This default test uses the control tones and baud, so the control listener also decodes the packet; it is logged once, scored.
     expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · drift [+−]\\d+\\.\\d ms$`));
     expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials','<- 02CF#10 ACK 002A#3']);
@@ -323,8 +342,9 @@ describe('control protocol and search',()=>{
     expect(trialFsk(withValue(config.trial,'amplitudePercent',100)).amplitude).toBeCloseTo(1);
     // Only test packets vary: sweeping the level must not make the control link itself unreliable.
     expect(CONTROL_FSK.amplitude).toBe(TRANSMIT_AMPLITUDE);
-    // The amplitude is required, not optional: a test_suite without it is rejected rather than guessed at.
+    // Every argument is required, not optional: a test_suite missing one is rejected rather than guessed at.
     expect(decodeControl(new TextEncoder().encode('test_suite(1, 1500, 4, 25, 16, 719)'),0x1a2b)).toBeUndefined();
+    expect(decodeControl(new TextEncoder().encode('test_suite(1, 1500, 4, 25, 16, 719, 40)'),0x1a2b)).toBeUndefined();
     expect(()=>validateTrial({...config.trial,amplitudePercent:0})).toThrow();
     expect(()=>validateTrial({...config.trial,amplitudePercent:101})).toThrow();
     expect(()=>validateTrial({...config.trial,amplitudePercent:42.5})).toThrow();

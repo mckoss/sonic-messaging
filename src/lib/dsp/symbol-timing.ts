@@ -24,7 +24,9 @@ export class SymbolTimingLoop {
   private previous?: { symbol: number; at: number };
   private beforePrevious?: number;
 
-  constructor(readonly samplesPerSymbol: number, readonly sampleRate: number, readonly frequencies: readonly number[]) {
+  /** `windowSamples` is how much of each period the tone occupies; the probes measure over that, not the gap. */
+  constructor(readonly samplesPerSymbol: number, readonly sampleRate: number, readonly frequencies: readonly number[],
+    readonly windowSamples = samplesPerSymbol) {
     this.probe = Math.max(1, Math.round(samplesPerSymbol / 8));
   }
 
@@ -37,7 +39,7 @@ export class SymbolTimingLoop {
   observe(samples: Float32Array, frameStart: number, symbol: number, at: number): void {
     const middle = this.previous;
     if (middle && this.beforePrevious !== undefined && this.beforePrevious !== middle.symbol && middle.symbol !== symbol) {
-      const n = this.samplesPerSymbol, frequency = this.frequencies[middle.symbol];
+      const n = this.windowSamples, frequency = this.frequencies[middle.symbol];
       const score = (shift: number) => {
         const from = Math.round(frameStart + middle.at + shift);
         return from < 0 || from + n > samples.length ? NaN : toneScore(samples.subarray(from, from + n), this.sampleRate, frequency);

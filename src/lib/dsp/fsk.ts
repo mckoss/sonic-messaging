@@ -10,29 +10,52 @@ function validate(config: FskConfig) {
   return { bits, n };
 }
 
+/** Longest silence gap: below a quarter of the period on, a symbol carries too little energy to judge. */
+export const MAX_GAP_PERCENT = 75;
+/** Raised-cosine edge on a gated tone; a hard gate to silence clicks across the whole band. */
+const RAMP_SECONDS = 0.002;
+
+/** Samples of each symbol period the tone actually occupies. */
+export function fskToneSamples(config: FskConfig): number {
+  const n = Math.round(config.sampleRate / config.symbolRate);
+  const gap = Math.min(MAX_GAP_PERCENT, Math.max(0, config.gapPercent ?? 0));
+  return gap ? Math.max(4, Math.round(n * (1 - gap / 100))) : n;
+}
+
+/** Amplitude envelope of a gated tone at sample `i` of its period: raised-cosine in and out, silence after `on`. */
+function envelope(i: number, on: number, ramp: number): number {
+  if (i >= on) return 0;
+  if (!ramp) return 1;
+  if (i < ramp) return 0.5 * (1 - Math.cos(Math.PI * i / ramp));
+  if (i >= on - ramp) return 0.5 * (1 - Math.cos(Math.PI * (on - i) / ramp));
+  return 1;
+}
+
 export function encodeFsk(payload: Uint8Array, config: FskConfig): Waveform {
   const { bits: bitsPerSymbol, n } = validate(config);
   const bits = bytesToBits(frame(payload, config.address));
   while (bits.length % bitsPerSymbol) bits.push(0);
   const samples = new Float32Array((bits.length / bitsPerSymbol) * n);
   const amplitude = config.amplitude ?? 0.8;
+  // Without a gap this is plain continuous-phase FSK, sample for sample: the envelope is one throughout.
+  const on = fskToneSamples(config), ramp = on < n ? Math.min(Math.round(RAMP_SECONDS * config.sampleRate), Math.floor(on / 5)) : 0;
   let phase = 0;
   for (let s = 0; s < bits.length / bitsPerSymbol; s++) {
     let value = 0;
     for (let b = 0; b < bitsPerSymbol; b++) value = (value << 1) | bits[s * bitsPerSymbol + b];
     const step = 2 * Math.PI * config.frequencies[value] / config.sampleRate;
-    for (let i = 0; i < n; i++) { samples[s * n + i] = amplitude * Math.sin(phase); phase += step; }
+    for (let i = 0; i < n; i++) { samples[s * n + i] = amplitude * envelope(i, on, ramp) * Math.sin(phase); phase += step; }
   }
   return { samples, sampleRate: config.sampleRate };
 }
 
 export function decodeFsk(samples: Float32Array, config: FskConfig): DecodeResult {
   const { bits: bitsPerSymbol, n } = validate(config);
-  const bits: number[] = []; let confidence = 0; const symbols = Math.floor(samples.length / n);
+  const bits: number[] = []; let confidence = 0; const symbols = Math.floor(samples.length / n), on = fskToneSamples(config);
   for (let s = 0; s < symbols; s++) {
     const energies = config.frequencies.map(f => {
       let re = 0, im = 0;
-      for (let i = 0; i < n; i++) { const p = 2 * Math.PI * f * i / config.sampleRate; const x = samples[s * n + i]; re += x * Math.cos(p); im -= x * Math.sin(p); }
+      for (let i = 0; i < on; i++) { const p = 2 * Math.PI * f * i / config.sampleRate; const x = samples[s * n + i]; re += x * Math.cos(p); im -= x * Math.sin(p); }
       return re * re + im * im;
     });
     let best = 0, second = 0;

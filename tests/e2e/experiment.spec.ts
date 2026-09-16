@@ -23,7 +23,7 @@ test('replays cooperative audio without microphone access and receives the test 
   await expect(page.getByTestId('experiment-status')).toContainText('Replay complete.',{timeout:120000});
   await expect(page.getByTestId('experiment-results')).toContainText('received');
   await expect(page.getByTestId('experiment-results')).toContainText('0/64');
-  await expect(page.getByTestId('experiment-log')).toContainText('<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719, 40) · trial 1 settings');
+  await expect(page.getByTestId('experiment-log')).toContainText('<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719, 40, 0) · trial 1 settings');
   await expect(page.getByTestId('experiment-log')).toContainText(testLine);
   const original=await resultRows(page).allInnerTexts();
   await page.getByRole('button',{name:'Replay experiment',exact:true}).click();
@@ -68,7 +68,7 @@ test.describe('live partner',()=>{
     await expect(page.getByTestId('experiment-results')).toContainText('/64');
     const log=page.getByTestId('experiment-log');
     // Received frames show <- with the controller's sender#seq; the partner's own transmissions show ->.
-    for(const line of ['<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719, 40)',' ACK 02CF#1',`<- 02CF#2 test packet `,
+    for(const line of ['<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719, 40, 0)',' ACK 02CF#1',`<- 02CF#2 test packet `,
       '<- 02CF#3 done(1) · run finished after 1 trials',' ACK 02CF#3'])await expect(log).toContainText(line);
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ ACK 02CF#1/);
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ result\(1, \d+, 64, \d+, 128,/);

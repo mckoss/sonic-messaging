@@ -3,6 +3,7 @@
   import { AudioEngine } from '../audio';
   import { DEVICE_SENDER } from '../sender';
   import { senderHex } from '../dsp/frame';
+  import { MAX_GAP_PERCENT } from '../dsp/fsk';
   import { ACK_TIMEOUT_MS, DEFAULT_RETRIES } from '../packet-manager';
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
@@ -206,10 +207,11 @@
       <label>Payload bytes <input type="number" min="4" max="64" bind:value={config.trial.payloadBytes} /></label>
       <label>Data seed <input type="number" bind:value={config.trial.seed} /></label>
       <label>Amplitude % <input type="number" min={MIN_AMPLITUDE_PERCENT} max="100" bind:value={config.trial.amplitudePercent} /></label>
+      <label>Silence gap % <input type="number" min="0" max={MAX_GAP_PERCENT} bind:value={config.trial.gapPercent} /></label>
     </div>
     <div class="controls">
       <label>Optimize parameter <select bind:value={config.parameter} on:change={onParameterChange}>{#each SEARCH_PARAMETERS as p}<option value={p.key}>{p.label}</option>{/each}</select></label>
-      <p class="estimate">Tones are computed from the base frequency and baud with unequal gaps, so none is another's harmonic: {trialFsk(config.trial).frequencies.join(', ')} Hz</p>
+      <p class="estimate">Tones are computed from the base frequency and the tone rate with unequal gaps, so none is another's harmonic: {trialFsk(config.trial).frequencies.join(', ')} Hz. Test baud counts symbols per second with the silence gap included{#if config.trial.gapPercent > 0}: each tone lasts {(1000 / config.trial.symbolRate * (1 - config.trial.gapPercent / 100)).toFixed(0)} ms of its {(1000 / config.trial.symbolRate).toFixed(0)} ms period{/if}.</p>
       {#if config.parameter !== 'tones'}
         <label>Minimum <input type="number" bind:value={config.minimum} /></label>
         <label>Maximum <input type="number" bind:value={config.maximum} /></label>
@@ -230,10 +232,10 @@
     {#if rows.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,lostTrials,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
   {#if best}<p>Best measured {config.parameter}: {best.value} · {best.errors}/{best.symbols} symbol errors. Finite samples do not establish a global optimum.</p>{/if}
-  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / baud / amp</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
+  <div class="scroll"><table data-testid="experiment-results"><thead><tr><th>Trial</th><th>Tones / base / baud / amp / gap</th><th>Reception</th><th>Symbol errors</th><th>Median S/N</th></tr></thead><tbody>
     {#each runs as run}
       <tr class="run-divider"><th colspan="5">Run from {senderHex(run.sender)} · {run.started.toLocaleTimeString()} · {describeSettings(run.settings)}{run.regime ? ` · ${run.regime}` : ''}</th></tr>
-      {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.symbolRate} / {row.settings.amplitudePercent}%</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
+      {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.symbolRate} / {row.settings.amplitudePercent}% / {row.settings.gapPercent}%</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
     {/each}
   </tbody></table></div>
   <section class="library" aria-label="Saved recordings" data-testid="recordings">
