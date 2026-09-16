@@ -12,12 +12,23 @@ export interface SearchSettings {
   repetitions: number;
 }
 /**
+ * Output level for every transmission, control and test alike.
+ *
+ * Lowered from 0.8 after field recordings showed a phone fading its own output 8.8 dB across a single frame while a
+ * laptop on the same run faded 2.1 dB: that is a speaker-protection limiter reacting to a sustained loud tone, and it
+ * is triggered by level, not by content. The fade is worse than the level it buys, because a frame that starts loud
+ * and ends quiet spends its last symbols near the decision boundary. Nothing was clipping at 0.8 — the recordings
+ * show no flat-topped samples — so this is about the limiter, not headroom. There is margin to spend: the same
+ * recordings measured a median in-window S/N of 14.6 dB, and halving amplitude costs 6 dB of it.
+ */
+export const TRANSMIT_AMPLITUDE = 0.4;
+
+/**
  * The control link runs slow and high: 25 baud makes a symbol (40 ms) longer than a small room's first reflections
  * (a 10-foot surface echoes at ~18 ms), which is what corrupted 100-baud control messages at two feet in field
- * recordings, and 1500 Hz upward sits where phone speakers are efficient. Amplitude 0.8 leaves headroom so output
- * resampling and device processing don't clip the tones.
+ * recordings, and 1500 Hz upward sits where phone speakers are efficient.
  */
-export const CONTROL_FSK = { frequencies: fskToneSet(1500, 25, 4), symbolRate: 25, amplitude: 0.8 };
+export const CONTROL_FSK = { frequencies: fskToneSet(1500, 25, 4), symbolRate: 25, amplitude: TRANSMIT_AMPLITUDE };
 /** Quiet lead-in and tail wrapped around every transmission, so a frame never starts in a speaker's turn-on click. */
 export const GUARD_SECONDS = 0.5;
 /**
@@ -33,8 +44,8 @@ export function controlAirtimeSeconds(payloadBytes: number): number {
   return symbols / CONTROL_FSK.symbolRate + 2 * GUARD_SECONDS;
 }
 export const MAX_SESSION_SECONDS = 600;
-/** Test packets always play at the control amplitude, which leaves headroom below clipping. */
-export const TEST_AMPLITUDE = 0.8;
+/** Test packets play at the same level as control, so a trial measures the channel and not a level change. */
+export const TEST_AMPLITUDE = TRANSMIT_AMPLITUDE;
 export const MAX_TESTS = 200;
 export const MAX_REPETITIONS = 50;
 /** A trial's tones: unequal gaps computed from its base frequency and baud, so no tone is another's harmonic. */

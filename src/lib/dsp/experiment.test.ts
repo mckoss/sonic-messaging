@@ -1,7 +1,7 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { TRANSMIT_AMPLITUDE, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
@@ -34,7 +34,7 @@ describe('cooperative acoustic measurement',()=>{
     const samples=fixture(),from=packetStart()+(PAYLOAD_OFFSET*4+8)*perSymbol;
     // Interference replaces 12 payload symbols with a steady wrong tone, so the carrier stays up but the CRC fails.
     const wrong=trialFsk(config.trial).frequencies[3];
-    for(let i=from;i<from+12*perSymbol;i++)samples[i]=0.8*Math.sin(2*Math.PI*wrong*i/rate);
+    for(let i=from;i<from+12*perSymbol;i++)samples[i]=2*TRANSMIT_AMPLITUDE*Math.sin(2*Math.PI*wrong*i/rate);
     const {results,lost}=analyze(samples);
     expect(lost).toEqual([]);expect(results).toHaveLength(1);
     expect(results[0].raw.crcOk).toBe(false);expect(results[0].raw.symbolErrors).toBeGreaterThan(4);
@@ -278,7 +278,7 @@ describe('control protocol and search',()=>{
     const seconds=estimateTestSeconds(validateTrial(config.trial));
     expect(seconds).toBeGreaterThan(25);expect(seconds).toBeLessThan(60);
     expect(estimateTestSeconds(validateTrial({...config.trial,payloadBytes:64}))).toBeGreaterThan(seconds+5);
-    expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(0.8);
+    expect(trialFsk(validateTrial(config.trial)).amplitude).toBe(TRANSMIT_AMPLITUDE);
     expect(()=>validateSearch({...config,repetitions:MAX_REPETITIONS+1})).toThrow('repetitions');
     expect(()=>validateSearch({...config,step:1,repetitions:50})).toThrow('at most 200 test packets');
   });
