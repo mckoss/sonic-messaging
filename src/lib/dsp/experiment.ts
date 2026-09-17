@@ -71,8 +71,9 @@ export interface AnalyzerOptions {
 }
 
 /** What it took to read a frame, when it took anything: worth seeing in the log, because it measures the margin left. */
-const recovery=(p:{echoCancelled?:boolean;softCorrected?:number;tails?:number[]})=>
-  [p.tails?`room carried ${p.tails.map(t=>`${Math.round(t*100)}%`).join('/')} of each tone into the next symbol`:'',
+const recovery=(p:{echoCancelled?:boolean;softCorrected?:number;tails?:number[];levelsDb?:number[]})=>
+  [p.levelsDb&&p.levelsDb.some(l=>l<=-6)?`tone levels ${p.levelsDb.map(l=>Number.isFinite(l)?`${Math.round(l)}`:'?').join('/')} dB`:'',
+    p.tails?`room carried ${p.tails.map(t=>`${Math.round(t*100)}%`).join('/')} of each tone into the next symbol`:'',
     p.echoCancelled?'echo cancelled':'',p.softCorrected?`recovered ${p.softCorrected} weak symbol${p.softCorrected>1?'s':''}`:'']
     .filter(Boolean).map(note=>` · ${note}`).join('');
 

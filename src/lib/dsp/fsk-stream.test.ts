@@ -424,6 +424,33 @@ describe('continuous FSK receiver', () => {
     expect(packets[0].tails?.[weak] ?? 0).toBe(0);
   });
 
+  it('judges a tone that arrives weakly against its own level, not the loud tones\' tails', () => {
+    // Two feet from a phone, one control tone arrived 12–20 dB below the others and lost its own windows to the
+    // small reverberant tails of louder tones; every error in those frames was on that tone. The tail here is too
+    // small for decision feedback to engage (below TAIL_MIN), so this stands or falls on calibration alone.
+    const payload = new TextEncoder().encode('one tone arrives 15 dB down');
+    const gain = [1, 1, 1, 0.18], n = Math.round(config.sampleRate / config.symbolRate);
+    const bits = [...frame(payload)].flatMap(byte => Array.from({ length: 8 }, (_, i) => (byte >>> (7 - i)) & 1));
+    const symbols: number[] = [];
+    for (let i = 0; i + 2 <= bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+    const direct = new Float32Array(symbols.length * n);
+    let phase = 0;
+    for (let s = 0; s < symbols.length; s++) {
+      const step = 2 * Math.PI * config.frequencies[symbols[s]] / config.sampleRate;
+      for (let i = 0; i < n; i++) { direct[s * n + i] = 0.8 * gain[symbols[s]] * Math.sin(phase); phase += step; }
+    }
+    const heard = new Float32Array(direct.length + 3 * n);
+    heard.set(direct);
+    for (let i = 0; i + n < heard.length; i++) heard[i + n] += 0.2 * heard[i];
+    const packets = new FskStreamDecoder(config).push(heard);
+    expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['one tone arrives 15 dB down']);
+    // The imbalance is measured and reported: the weak tone about 15 dB below the strongest, the others level.
+    const levels = packets[0].levelsDb!;
+    expect(levels[3]).toBeLessThan(-11); expect(levels[3]).toBeGreaterThan(-19);
+    for (const tone of [0, 1, 2]) expect(Math.abs(levels[tone])).toBeLessThan(2);
+    expect(packets[0].tails).toBeUndefined();
+  });
+
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {
     const payload = new TextEncoder().encode('length hit');
     const spp = Math.round(config.sampleRate / config.symbolRate);

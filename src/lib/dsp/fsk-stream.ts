@@ -87,6 +87,19 @@ const CARRIER_TONE_SCORE = 0.4;
  * genuinely sent twice in a row, and the wrong decision then steered the timing loop. Such a tone gets no tail.
  */
 const MAX_TAIL = 0.5;
+/**
+ * Per-tone likelihood calibration. A tone's raw energy is not its likelihood: two feet from a phone one control tone
+ * arrived 12–20 dB below the others, and in its own windows it lost to the small tails of louder tones — every error
+ * in those frames was on that tone. Its level when sent is known from the sync, so each tone's power is judged
+ * against that level. Only tones clearly below the strongest are boosted (the dead band keeps small, noisy estimates
+ * from moving decisions on a clean frame, which they did), by at most this much, and the level estimate keeps
+ * learning from the frame's own confident decisions, which soon outnumber the sync's two-to-seven samples per tone.
+ */
+const EQUALIZE_DEADBAND_DB = 3;
+const EQUALIZE_MAX_DB = 20;
+const LEVEL_TRACK = 0.1;
+/** A decision this far ahead of the runner-up (in power) is trusted to refine its tone's level. */
+const LEVEL_CONFIDENT_RATIO = 2;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
 function syncSymbolTemplate(bitsPerSymbol: number): number[] {
@@ -116,6 +129,8 @@ export interface FskStreamPacket {
   softCorrected?: number;
   /** Per-tone fraction of a symbol's power the room carried into the next symbol, measured on the sync; absent when negligible. */
   tails?: number[];
+  /** Each tone's measured level when sent, in dB relative to the strongest (NaN if never measured); absent when nothing was measured. */
+  levelsDb?: number[];
 }
 
 /**
@@ -131,6 +146,8 @@ export interface FskStreamFrame {
   softCorrected?: number;
   /** Per-tone fraction of a symbol's power the room carried into the next symbol, measured on the sync; absent when negligible. */
   tails?: number[];
+  /** Each tone's measured level when sent, in dB relative to the strongest (NaN if never measured); absent when nothing was measured. */
+  levelsDb?: number[];
   /** From the address bytes; unverified when the CRC failed. */
   sender: number;
   seq: number;
@@ -189,6 +206,8 @@ export class FskStreamDecoder {
   private candidateTails: number[] = [];
   /** Raw absolute per-tone power of every decoded window, the reference the tail subtraction scales from. */
   private candidatePowers: Float64Array[] = [];
+  /** Each tone's absolute power when sent, from the sync and then the frame's confident decisions; 0 = unmeasured. */
+  private candidateLevels: number[] = [];
   /** Tracks symbol timing through the current candidate after sync acquisition. */
   private timing!: SymbolTimingLoop;
   /** Carrier-loss scan state for the current candidate. */
@@ -246,7 +265,7 @@ export class FskStreamDecoder {
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.progress = []; this.frames = []; this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
     this.streamPosition = 0;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     this.syncScanCache.clear();
   }
@@ -372,10 +391,11 @@ export class FskStreamDecoder {
         this.candidateOffset = refined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false; this.reportedAddress = false;
-        this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidatePowers = []; this.resetTiming();
+        this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
         this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
         // Measured after the candidate state is cleared, so it survives into the frame's decoding.
-        this.candidateTails = this.fitSyncTails(refined);
+        const measured = this.measureSync(refined);
+        this.candidateTails = measured.tails; this.candidateLevels = measured.levels;
         // Reference power for carrier-loss detection: what this frame's sync measured.
         let syncPower = 0;
         for (let index = 0; index < this.syncTemplate.length; index++) {
@@ -410,18 +430,17 @@ export class FskStreamDecoder {
   }
 
   /**
-   * How much of each tone carries into the window after it, measured on the sync, whose tones are known: for every
-   * transition away from tone k, the ratio of k's absolute power in the next window to its power in its own.
+   * What the sync, whose tones are known, says about the channel: each tone's level when sent, and how much of it
+   * carries into the window after it.
    *
-   * Only a window actually heard as its template tone can be the source of a measurement. A sync symbol the room
-   * or an impulse replaced with another tone has no power at the tone it was supposed to carry, and the ratio out
-   * of it is astronomical; one such window once saturated a tone's tail and the decoder subtracted every repeated
-   * tone to nothing. The destination window is taken as it is — being misread is often exactly the tail at work.
-   * The tone's tail is the median of its ratios, so a stray one cannot drag it, and a median above MAX_TAIL is
-   * discarded: that tone is not tailing, it is barely arriving. Tones with no usable transition get no tail. Empty
-   * when every tail is negligible, so decoding near a device stays exactly as it was.
+   * Only a window actually heard as its template tone counts. A sync symbol the room or an impulse replaced with
+   * another tone has no power at the tone it was supposed to carry; one such window once produced an astronomical
+   * tail that made the decoder subtract every repeated tone to nothing. The tail's destination window is taken as
+   * it is — being misread is often exactly the tail at work. A tone's tail is the median of its ratios, and a median
+   * above MAX_TAIL is discarded: that tone is not tailing, it is barely arriving. Tails come back empty when every
+   * one is negligible, so decoding near a device stays exactly as it was; levels are 0 for a tone never heard as sent.
    */
-  private fitSyncTails(offset: number): number[] {
+  private measureSync(offset: number): { tails: number[]; levels: number[] } {
     const tones = this.config.frequencies.length;
     const powers: Float64Array[] = [], heard: number[] = [];
     for (let index = 0; index < this.syncTemplate.length; index++) {
@@ -434,6 +453,12 @@ export class FskStreamDecoder {
       for (let tone = 1; tone < decision.scores.length; tone++) if (decision.scores[tone] > decision.scores[winner]) winner = tone;
       heard.push(winner);
     }
+    const levelSum = new Array<number>(tones).fill(0), levelCount = new Array<number>(tones).fill(0);
+    for (let index = 0; index < this.syncTemplate.length; index++) {
+      const tone = this.syncTemplate[index];
+      if (heard[index] === tone) { levelSum[tone] += powers[index][tone]; levelCount[tone]++; }
+    }
+    const levels = levelSum.map((sum, tone) => levelCount[tone] ? sum / levelCount[tone] : 0);
     const ratios: number[][] = Array.from({ length: tones }, () => []);
     for (let index = 1; index < this.syncTemplate.length; index++) {
       const previous = this.syncTemplate[index - 1];
@@ -446,7 +471,24 @@ export class FskStreamDecoder {
       const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
       return median <= MAX_TAIL ? median : 0;
     });
-    return tails.some(tail => tail >= TAIL_MIN) ? tails : [];
+    return { tails: tails.some(tail => tail >= TAIL_MIN) ? tails : [], levels };
+  }
+
+  /** Gain per tone that judges its power against its own level when sent: 1 unless the tone is clearly weak. */
+  private equalizerGains(): number[] | undefined {
+    const measured = this.candidateLevels.filter(level => level > 0);
+    if (!measured.length) return;
+    const strongest = Math.max(...measured), deadband = Math.pow(10, EQUALIZE_DEADBAND_DB / 10), cap = Math.pow(10, EQUALIZE_MAX_DB / 10);
+    const gains = this.candidateLevels.map(level => level > 0 && level * deadband < strongest ? Math.min(cap, strongest / level) : 1);
+    return gains.some(gain => gain !== 1) ? gains : undefined;
+  }
+
+  /** The measured tone levels in dB relative to the strongest, for reports; undefined when nothing was measured. */
+  private levelsDb(): number[] | undefined {
+    const measured = this.candidateLevels.filter(level => level > 0);
+    if (!measured.length) return;
+    const strongest = Math.max(...measured);
+    return this.candidateLevels.map(level => level > 0 ? 10 * Math.log10(level / strongest) : NaN);
   }
 
   /** Locks sync timing to the sample by maximizing the matched-filter alignment score. */
@@ -547,8 +589,8 @@ export class FskStreamDecoder {
 
     const decoded = this.decodeCandidateBytes(frameBytes);
     decoded.bytes.set(SYNC, 0);
-    // Read now: the candidate state, tails included, is cleared before a valid packet is returned.
-    const tails = this.candidateTails.length ? this.candidateTails : undefined;
+    // Read now: the candidate state, tails and levels included, is cleared before a valid packet is returned.
+    const tails = this.candidateTails.length ? this.candidateTails : undefined, levelsDb = this.levelsDb();
     let parsed = unframe(decoded.bytes);
     let symbols = this.candidateSymbols.slice(0, frameSymbols), scores = this.candidateScores.slice(0, frameSymbols);
     // A room echo carries an already-decoded symbol's tone into a later window; subtract it and decide again.
@@ -565,7 +607,7 @@ export class FskStreamDecoder {
     const framePosition = this.frameBytePosition(start, frameBytes);
     const address = readFrameAddress(soft?.bytes ?? echo?.bytes ?? decoded.bytes, ADDRESS_OFFSET);
     this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested, payloadLength,
-      symbols, scores, echoCancelled: !!echo, echoTaps: echo?.taps, softCorrected: soft?.corrected, tails,
+      symbols, scores, echoCancelled: !!echo, echoTaps: echo?.taps, softCorrected: soft?.corrected, tails, levelsDb,
       confidence: decoded.confidence, startPosition: this.streamPosition + start, endPosition: framePosition,
       timingOffset: this.timing.offset });
     if (!parsed.payload) {
@@ -580,10 +622,10 @@ export class FskStreamDecoder {
     this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
     this.searchOffset = 0; this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
     return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!,
-      confidence: decoded.confidence, startPosition, endPosition: framePosition, echoCancelled: !!echo, softCorrected: soft?.corrected, tails };
+      confidence: decoded.confidence, startPosition, endPosition: framePosition, echoCancelled: !!echo, softCorrected: soft?.corrected, tails, levelsDb };
   }
 
   private rejectCandidate(skip = this.phaseStep): void {
@@ -591,7 +633,7 @@ export class FskStreamDecoder {
     this.candidateOffset = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false; this.reportedAddress = false;
-    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.resetTiming();
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
     this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
   }
 
@@ -667,12 +709,25 @@ export class FskStreamDecoder {
         const previous = this.candidateSymbols[index - 1];
         power[previous] = Math.max(0, power[previous] - this.candidateTails[previous] * this.candidatePowers[index - 1][previous]);
       }
+      // Judge each tone against its own level when sent: the likelihood of a tone that arrives weakly is not its raw
+      // energy. Without a measured imbalance the powers pass through unchanged.
+      const gains = this.equalizerGains();
+      const judged = gains ? Float64Array.from(power, (value, tone) => value * gains[tone]) : power;
       let symbol = 0, runnerUp = 0;
-      for (let tone = 1; tone < power.length; tone++) {
-        if (power[tone] > power[symbol]) { runnerUp = symbol; symbol = tone; }
-        else if (power[tone] > power[runnerUp] || runnerUp === symbol) runnerUp = tone;
+      for (let tone = 1; tone < judged.length; tone++) {
+        if (judged[tone] > judged[symbol]) { runnerUp = symbol; symbol = tone; }
+        else if (judged[tone] > judged[runnerUp] || runnerUp === symbol) runnerUp = tone;
       }
-      const scores = rmsSquared > 0 ? Float32Array.from(power, value => value / rmsSquared) : Float32Array.from(decision.scores);
+      // Shares of the window, on the detector's scale, so margins and S/N read as before; a boosted window is
+      // renormalised so its shares still sum to at most one.
+      let judgedTotal = 0; for (let tone = 0; tone < judged.length; tone++) judgedTotal += judged[tone];
+      const scale = Math.max(rmsSquared, judgedTotal);
+      const scores = scale > 0 ? Float32Array.from(judged, value => value / scale) : Float32Array.from(decision.scores);
+      // A confident decision refines its tone's level, so the sync's few samples stop being the whole estimate.
+      if (this.candidateLevels.length && judged.length > 1 && judged[symbol] >= LEVEL_CONFIDENT_RATIO * judged[runnerUp]) {
+        const level = this.candidateLevels[symbol];
+        this.candidateLevels[symbol] = level > 0 ? level + LEVEL_TRACK * (raw[symbol] - level) : raw[symbol];
+      }
       this.candidateSymbols.push(symbol);
       this.candidateConfidences.push(Math.max(0, scores[symbol] - (power.length > 1 ? scores[runnerUp] : 0)));
       this.candidateScores.push(scores[symbol]);
