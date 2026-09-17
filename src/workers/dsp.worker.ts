@@ -449,6 +449,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
           testHeard: proposal => cooperativeSession?.testHeard(proposal),
           lost: proposal => { cooperativeEvent({ kind: 'lost', proposal }); cooperativeSession?.lost(proposal); },
           wire: line => cooperativeEvent({ kind: 'wire', line }),
+          frame: frame => cooperativeEvent({ kind: 'frame', frame }),
           analyze: data.role !== 'controller',
           self: data.sender
         });
@@ -472,6 +473,7 @@ scope.onmessage = ({ data }: MessageEvent<DspWorkerRequest>) => {
         if (playing) {
           const { packet, line } = playing, now = performance.now();
           cooperativeEvent({ kind: 'wire', line });
+          cooperativeEvent({ kind: 'sent', sent: { seq: packet.seq, kind: packet.body.kind, attempt: packet.attempt, line } });
           if (packet.ackRequested) packetManager?.sent(packet.seq, now);
           if (packet.body.kind === 'trial') cooperativeSession?.trialSent(now);
           playing = undefined;

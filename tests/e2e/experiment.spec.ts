@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -75,6 +75,19 @@ test.describe('live partner',()=>{
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ ACK 02CF#1/,{timeout:20000});
     await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ result\(1, \d+, 64, \d+, 128,/,{timeout:20000});
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
+    // The run's results file: written to browser storage, listed with the device and its role, downloadable as JSON
+    // carrying the trial's per-symbol S/N, every control frame's FEC corrections and levels, and every transmission.
+    const resultsRow=page.locator('[data-testid=results] tbody tr');
+    await expect(resultsRow).toHaveCount(1,{timeout:15000});
+    await expect(resultsRow.first()).toContainText('partner');
+    const pendingJson=page.waitForEvent('download');await page.getByRole('button',{name:'Save results JSON',exact:true}).click();
+    const jsonPath=await (await pendingJson).path();if(!jsonPath)throw Error('Missing results file');
+    const results=JSON.parse(readFileSync(jsonPath,'utf8'));
+    expect(results.format).toBe('sonic-experiment');expect(results.device.role).toBe('partner');expect(results.device.sender).toMatch(/^[0-9A-F]{4}$/);
+    expect(results.trials).toHaveLength(1);expect(results.trials[0].snrDb).toHaveLength(64);expect(results.trials[0].snrByToneDb).toHaveLength(4);
+    expect(results.frames.some((f:{fec:boolean;fecCorrected:number;text?:string})=>f.fec&&typeof f.fecCorrected==='number'&&f.text?.startsWith('test_suite('))).toBe(true);
+    expect(results.sent.some((f:{kind:string})=>f.kind==='ack')).toBe(true);
+    expect(results.log.length).toBeGreaterThan(3);expect(results.finishedAt).toBeTruthy();
     const original=await resultRows(page).allInnerTexts();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();
     const saved=await (await pending).path();if(!saved)throw Error('Missing capture');

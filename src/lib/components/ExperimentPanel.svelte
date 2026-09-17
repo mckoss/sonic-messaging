@@ -8,6 +8,8 @@
   import { describeSettings } from '../experiment';
   import { encodeRecording, decodeRecording, MAX_RECORDING_BYTES, type Recording, type RecordingMetadata } from '../audio/recording';
   import { RecordingWriter, listRecordings, deleteRecording, clearRecordings, loadStoredRecording, storedRecordingBlob, type StoredRecording } from '../audio/recording-store';
+  import { ResultsRecorder, resultsFileName, resultsJson } from '../experiment-results';
+  import { listResults, putResults, deleteResults, clearResults, loadResults, type StoredResults } from '../results-store';
   import { loadExperimentPreferences, saveExperimentPreferences } from '../preferences';
   import { defaultSearch, estimateRunSeconds, trialFsk, totalTests, validateSearch, validateTrial, CONTROL_FSK, TRANSMIT_AMPLITUDE, MIN_AMPLITUDE_PERCENT, SEARCH_PARAMETERS, searchParameterPlan, MAX_SESSION_SECONDS, MAX_REPETITIONS, type TrialMeasurement, type SearchObservation, type Proposal, type RawResult, type SearchSettings } from '../experiment';
   export let active = false;
@@ -40,6 +42,36 @@
   // `recording` is an in-memory run (a loaded file, or a stored run loaded for replay); `currentId` names the latest stored run.
   let recording: Recording | undefined, writer: RecordingWriter | undefined, currentId: string | undefined;
   let library: StoredRecording[] = [], storageUsage = '', finishing: Promise<void> = Promise.resolve();
+  /** The run's results document, built from every event as it happens and rewritten to storage as trials complete. */
+  let recorder: ResultsRecorder | undefined, resultsList: StoredResults[] = [], resultsNote = '';
+  async function refreshResults() {
+    try { resultsList = await listResults(); resultsNote = ''; }
+    catch (e) { resultsNote = `Saved results unavailable: ${e instanceof Error ? e.message : String(e)}`; }
+  }
+  async function persistResults() {
+    if (!recorder) return;
+    recorder.setNotes(notes);
+    try { await putResults(recorder.results); await refreshResults(); }
+    catch (e) { resultsNote = `Results could not be saved: ${e instanceof Error ? e.message : String(e)}`; }
+  }
+  function saveCurrentResults() {
+    if (!recorder) return;
+    recorder.setNotes(notes);
+    download(resultsFileName(recorder.results), resultsJson(recorder.results), 'application/json');
+  }
+  async function saveStoredResults(entry: StoredResults) {
+    try { const results = await loadResults(entry.id); download(resultsFileName(results), resultsJson(results), 'application/json'); }
+    catch (e) { resultsNote = String(e); }
+  }
+  async function deleteStoredResults(entry: StoredResults) {
+    try { await deleteResults(entry.id); } catch (e) { resultsNote = String(e); }
+    await refreshResults();
+  }
+  async function clearStoredResults() {
+    if (!confirm(`Delete all ${resultsList.length} saved results files from this browser?`)) return;
+    try { await clearResults(); } catch (e) { resultsNote = String(e); }
+    await refreshResults();
+  }
   let status = 'Start the partner first, then run a trial or optimize on the controller.';
   let error = '', notes = '', seconds = 0, finalizing = false, cancelled = false;
   /** Settings persist across visits, like the Send page's; saving waits until the stored ones have been restored. */
@@ -120,6 +152,7 @@
       const w=writer,trials=measurements.length||feedback.length;writer=undefined;
       finishing=w.finish(trials,measurements).catch(e=>{error=`Recording could not be saved: ${e instanceof Error?e.message:String(e)}`;}).then(refreshLibrary);
     }
+    if(recorder){recorder.finish();void persistResults();}
     active=false;role='idle';finalizing=false;status='Stopped; partial recordings and completed measurements are retained.';
   }
   async function start(selected:'controller'|'partner') {
@@ -139,6 +172,7 @@
       } catch(e){append(`Recording unavailable (${e instanceof Error?e.message:String(e)}); measurements continue without a saved recording.`);}
       if(cancelled)return;
       regime=run?describeRegime(run):undefined;
+      recorder=new ResultsRecorder({appVersion:__APP_VERSION__,sender:DEVICE_SENDER,role:selected,userAgent:navigator.userAgent,control:{...CONTROL_FSK,fec:true},config:run,notes});
       engine.configureCooperative(selected,run,DEVICE_SENDER);
     } catch(e){error=String(e);stop();}
   }
@@ -157,6 +191,8 @@
     active=true;role='replay';cancelled=false;measurements=[];feedback=[];lostTrials=[];rows=[];best=undefined;log=[];error='';
     try {
       const recording=await currentRecording();if(!recording)return;
+      recorder=new ResultsRecorder({appVersion:__APP_VERSION__,sender:DEVICE_SENDER,role:'replay',userAgent:navigator.userAgent,control:{...CONTROL_FSK,fec:true},
+        config:recording.metadata.cooperative?.config,notes:`Replay of a ${recording.metadata.cooperative?.role??'unknown'} recording from ${recording.metadata.createdAt}. ${notes}`.trim()});
       await beforeStart();status='Replaying recorded control messages and test packets…';
       await engine.replayRecording(recording,CONTROL_FSK,p=>seconds=p);
       recording.metadata.cooperative!.measurements=measurements;
@@ -168,6 +204,8 @@
     config=restored.config;notes=restored.notes;settingsReady=true;
     engine=new AudioEngine();
     const off=engine.onCooperative(event=>{
+      recorder?.event(event);
+      if(event.kind==='measurement'||event.kind==='feedback'||event.kind==='lost'||(event.kind==='status'&&event.finished))void persistResults();
       if(event.kind==='wire')append(event.line);
       else if(event.kind==='measurement'){
         measurements=[...measurements,event.measurement];
@@ -179,13 +217,13 @@
         if(role==='controller')addRow({...event.observation,outcome:event.observation.raw.crcOk?'received':'CRC failed',raw:event.observation.raw});
       }
       else if(event.kind==='lost'){lostTrials=[...lostTrials,event.proposal];addRow({...event.proposal,outcome:'lost'});}
-      else if(!finalizing && role!=='idle'){
+      else if(event.kind==='status'&&!finalizing&&role!=='idle'){
         status=event.detail;
         if(event.finished||event.log)append(event.detail);
         if(event.finished&&role!=='replay'){const detail=status;stop();status=detail;}
       }
     });
-    void refreshLibrary();
+    void refreshLibrary();void refreshResults();
     const offCapture=engine.onCapture(event=>{
       if(!writer||writer.failed)return;
       try {const full=writer.append(event.samples,event.sampleRate,event.sequence);seconds=writer.seconds;if(full)stop();}
@@ -228,6 +266,7 @@
   {#if error}<p role="alert">{error}</p>{/if}
   {#if log.length}<ol class="log" data-testid="experiment-log" aria-label="Experiment log" bind:this={logBox}>{#each log as entry}<li>{entry}</li>{/each}</ol>{/if}
   <div class="actions">
+    {#if recorder}<button disabled={active} on:click={saveCurrentResults}>Save results JSON</button>{/if}
     {#if recording || currentId}<button disabled={active || unavailable} on:click={saveCurrent}>Save experiment WAV</button><button disabled={active || unavailable} on:click={replay}>Replay experiment</button>{/if}
     {#if rows.length}<button disabled={active} on:click={()=>download('sonic-cooperative-results.json',JSON.stringify({config,measurements,feedback,lostTrials,best,appVersion:__APP_VERSION__},null,2),'application/json')}>Save experiment results</button>{/if}
   </div>
@@ -238,6 +277,19 @@
       {#each run.rows as row}<tr><td>{row.trial+1}</td><td>{row.settings.tones} / {row.settings.lowestFrequency} / {row.settings.symbolRate} / {row.settings.amplitudePercent}% / {row.settings.gapPercent}%</td><td>{row.outcome}</td><td>{row.raw?`${row.raw.symbolErrors}/${row.raw.symbols}`:'—'}</td><td>{row.raw?`${row.raw.snrMedianDb.toFixed(1)} dB`:'—'}</td></tr>{/each}
     {/each}
   </tbody></table></div>
+  <section class="library" aria-label="Saved results" data-testid="results">
+    <div class="library-head"><h3>Saved results</h3><button disabled={active || !resultsList.length} on:click={clearStoredResults}>Clear all</button></div>
+    <p>Each run's measurements, every control frame heard (tone levels, room tails, FEC corrections), every transmission and the log, as a JSON file for analysis; written to this browser as the run goes. The file names the device that wrote it and its role. {resultsNote}</p>
+    {#if resultsList.length}
+      <div class="scroll"><table><thead><tr><th>Recorded</th><th>Role</th><th>Device</th><th>Trials</th><th>Frames heard</th><th>Size</th><th></th></tr></thead><tbody>
+        {#each resultsList as entry (entry.id)}<tr>
+          <td>{new Date(entry.createdAt).toLocaleString()}{entry.finished ? '' : ' (in progress)'}</td><td>{entry.role}</td><td>{entry.sender}</td>
+          <td>{entry.trials}</td><td>{entry.frames}</td><td>{(entry.bytes / 1024).toFixed(0)} KB</td>
+          <td class="row-actions"><button on:click={()=>saveStoredResults(entry)}>Save JSON</button><button disabled={active && recorder?.results.createdAt === entry.createdAt} on:click={()=>deleteStoredResults(entry)}>Delete</button></td>
+        </tr>{/each}
+      </tbody></table></div>
+    {:else}<p>No saved results yet.</p>{/if}
+  </section>
   <section class="library" aria-label="Saved recordings" data-testid="recordings">
     <div class="library-head"><h3>Saved recordings</h3><button disabled={active || !library.length} on:click={clearStored}>Clear all</button></div>
     <p>Each run is saved in this browser while it records, up to 10 minutes. {storageUsage}</p>

@@ -11,5 +11,10 @@ export default defineConfig(({ mode }) => ({
   server: { host: true },
   plugins: mode === 'development' ? [svelte(), basicSsl()] : [svelte()],
   worker: { format: 'es' as const },
-  test: { include: ['src/**/*.test.ts'], environment: 'node' }
+  test: {
+    include: ['src/**/*.test.ts'], environment: 'node',
+    // The DSP tests synthesize whole conversations at the production sample rate and decode them — coded control
+    // frames by soft Viterbi — and a CI runner is several times slower than a laptop: 6.6 s there against the 5 s default.
+    testTimeout: 30_000
+  }
 }));

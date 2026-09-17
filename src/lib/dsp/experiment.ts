@@ -1,9 +1,9 @@
-import { CONTROL_FSK, controlAddress, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore,
-  testListenSeconds, trialFsk, trialPayload, type ControlMessage, type Proposal, type TrialMeasurement } from '../experiment';
+import { CONTROL_FSK, controlAddress, controlText, decodeControl, describeTestReceived, describeWire, encodeControl, hexBytes, median, snrDbFromScore,
+  testListenSeconds, trialFsk, trialPayload, type ControlMessage, type Proposal, type ReceivedFrame, type TrialMeasurement } from '../experiment';
 import { encodeFsk } from './fsk';
 import { FskStreamDecoder, type FskStreamFrame, type FskStreamProgress } from './fsk-stream';
 import { bytesToBits } from './bits';
-import { decodeAck, encodeAck, FRAME_TYPE, FRAME_TYPE_NAMES, frame, frameId, PAYLOAD_OFFSET } from './frame';
+import { decodeAck, encodeAck, FRAME_TYPE, FRAME_TYPE_NAMES, frame, frameId, PAYLOAD_OFFSET, senderHex } from './frame';
 
 /** Control frames are convolutionally coded: the negotiation has to get through where the test packets it sets up need not. */
 export function controlWave(message:ControlMessage,sampleRate:number,seq=0,ackRequested=false):Float32Array {
@@ -65,6 +65,8 @@ export interface AnalyzerOptions {
   /** No test packet was heard before the listening window closed. */
   lost?:(proposal:Proposal)=>void;
   wire?:(line:string)=>void;
+  /** Every control-band frame heard from another device, decoded or not: the structured record behind the log. */
+  frame?:(frame:ReceivedFrame)=>void;
   /** Listen for test packets after each test_suite (partner and replay). */
   analyze?:boolean;
   /** This device's sender ID; its own frames heard back are dropped unlogged. */
@@ -142,7 +144,8 @@ export class CooperativeAnalyzer {
     if(this.test)this.test.decoder=new FskStreamDecoder({...trialFsk(this.test.proposal.settings),sampleRate:this.sampleRate},this.position);
   }
   push(chunk:Float32Array){
-    for(const packet of this.control.push(chunk)){
+    const packets=this.control.push(chunk);
+    for(const packet of packets){
       if(packet.sender===this.options.self)continue;
       const id=frameId(packet.sender,packet.seq);
       if(packet.frameType===FRAME_TYPE.ack){
@@ -166,7 +169,17 @@ export class CooperativeAnalyzer {
     // While a test listener shares control's tones, its failures are reported there instead.
     const progress=this.control.drainProgress();
     if(!this.test)this.controlGarble.observe(progress);
-    this.control.drainFrames();
+    for(const f of this.control.drainFrames()){
+      if(f.sender===this.options.self||!this.options.frame)continue;
+      const packet=packets.find(p=>p.startPosition===f.startPosition);
+      let text:string|undefined;
+      if(packet?.frameType===FRAME_TYPE.ack){const target=decodeAck(packet.payload);text=target?`ACK ${frameId(target.sender,target.seq)}`:undefined;}
+      else if(packet?.frameType===FRAME_TYPE.control){const m=decodeControl(packet.payload,packet.sender);text=m?controlText(m):undefined;}
+      this.options.frame({sender:senderHex(f.sender),seq:f.seq,frameType:f.frameType,typeName:FRAME_TYPE_NAMES[f.frameType]??`type ${f.frameType}`,
+        crcOk:f.crcOk,payloadLength:f.payloadLength,fec:!!f.fec,fecCorrected:f.fecCorrected,fecSymbols:f.fecSymbols,softCorrected:f.softCorrected,
+        echoCancelled:f.echoCancelled,tails:f.tails,levelsDb:f.levelsDb,confidence:f.confidence,timingDriftMs:f.timingOffset/this.sampleRate*1000,
+        startPosition:f.startPosition,endPosition:f.endPosition,text});
+    }
     this.position+=chunk.length;
     if(this.test)this.pushTest(chunk);
   }

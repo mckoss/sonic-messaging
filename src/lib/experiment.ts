@@ -271,8 +271,21 @@ export class ParameterSearch {
     return validateTrial(withValue(c.trial,c.parameter,this.schedule[n]));
   }
 }
+/** A control-band frame another device sent, decoded or not, with everything the receiver learned reading it. */
+export interface ReceivedFrame {
+  sender: string; seq: number; frameType: number; typeName: string; crcOk: boolean; payloadLength: number;
+  fec: boolean; fecCorrected?: number; fecSymbols?: number; softCorrected?: number; echoCancelled?: boolean;
+  tails?: number[]; levelsDb?: number[]; confidence: number; timingDriftMs: number; startPosition: number; endPosition: number;
+  /** What it meant, when it parsed: the control text, or the frame an ACK confirms. */
+  text?: string;
+}
+/** A frame this device put on the air, as logged when its playback ended. */
+export interface SentFrame { seq: number; kind: 'control' | 'trial' | 'ack'; attempt: number; line: string }
 export type CooperativeEvent =
   | { kind:'status'; phase:string; detail:string; finished?:boolean; log?:boolean }
+  /** Structured counterparts of the wire log, for results files: a frame heard, a frame sent. */
+  | { kind:'frame'; frame:ReceivedFrame }
+  | { kind:'sent'; sent:SentFrame }
   /** One line of what went over the air: `->` sent from this device, `<-` received, `X` heard but garbled. */
   | { kind:'wire'; line:string }
   | { kind:'measurement'; measurement:TrialMeasurement }
