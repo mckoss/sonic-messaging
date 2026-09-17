@@ -5,12 +5,13 @@ import { FskStreamDecoder, type FskStreamFrame, type FskStreamProgress } from '.
 import { bytesToBits } from './bits';
 import { decodeAck, encodeAck, FRAME_TYPE, FRAME_TYPE_NAMES, frame, frameId, PAYLOAD_OFFSET } from './frame';
 
+/** Control frames are convolutionally coded: the negotiation has to get through where the test packets it sets up need not. */
 export function controlWave(message:ControlMessage,sampleRate:number,seq=0,ackRequested=false):Float32Array {
-  return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,address:controlAddress(message,seq,ackRequested)}).samples;
+  return encodeFsk(encodeControl(message),{...CONTROL_FSK,sampleRate,fec:true,address:controlAddress(message,seq,ackRequested)}).samples;
 }
-/** An ACK frame from `sender` confirming `target#targetSeq`, on the control settings. */
+/** An ACK frame from `sender` confirming `target#targetSeq`, on the control settings, coded like every control frame. */
 export function ackWave(sender:number,seq:number,target:number,targetSeq:number,sampleRate:number):Float32Array {
-  return encodeFsk(encodeAck(target,targetSeq),{...CONTROL_FSK,sampleRate,address:{sender,seq,type:FRAME_TYPE.ack}}).samples;
+  return encodeFsk(encodeAck(target,targetSeq),{...CONTROL_FSK,sampleRate,fec:true,address:{sender,seq,type:FRAME_TYPE.ack}}).samples;
 }
 /** A trial's test packet is an ordinary frame of type test on the trial's settings; nothing else marks it. */
 export function trialWave(proposal:Proposal,sampleRate:number,seq=0):Float32Array {
@@ -71,8 +72,9 @@ export interface AnalyzerOptions {
 }
 
 /** What it took to read a frame, when it took anything: worth seeing in the log, because it measures the margin left. */
-const recovery=(p:{echoCancelled?:boolean;softCorrected?:number;tails?:number[];levelsDb?:number[]})=>
-  [p.levelsDb&&p.levelsDb.some(l=>l<=-6)?`tone levels ${p.levelsDb.map(l=>Number.isFinite(l)?`${Math.round(l)}`:'?').join('/')} dB`:'',
+const recovery=(p:{echoCancelled?:boolean;softCorrected?:number;tails?:number[];levelsDb?:number[];fec?:boolean;fecCorrected?:number;fecSymbols?:number})=>
+  [p.fec?`FEC corrected ${p.fecCorrected??0} of ${p.fecSymbols??0} symbols`:'',
+    p.levelsDb&&p.levelsDb.some(l=>l<=-6)?`tone levels ${p.levelsDb.map(l=>Number.isFinite(l)?`${Math.round(l)}`:'?').join('/')} dB`:'',
     p.tails?`room carried ${p.tails.map(t=>`${Math.round(t*100)}%`).join('/')} of each tone into the next symbol`:'',
     p.echoCancelled?'echo cancelled':'',p.softCorrected?`recovered ${p.softCorrected} weak symbol${p.softCorrected>1?'s':''}`:'']
     .filter(Boolean).map(note=>` · ${note}`).join('');

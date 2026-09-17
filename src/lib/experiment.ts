@@ -1,6 +1,6 @@
 import { FRAME_OVERHEAD_BYTES, FRAME_TYPE, frameId, PAYLOAD_OFFSET, senderHex, type FrameAddress } from './dsp/frame';
 import { fskToneSet } from './dsp/fsk-frequencies';
-import { MAX_GAP_PERCENT } from './dsp/fsk';
+import { fskFrameSymbols, MAX_GAP_PERCENT } from './dsp/fsk';
 /** Cooperative experiments use an acoustic control link; no shared schedule is required. */
 export interface TrialSettings {
   tones: number; lowestFrequency: number; symbolRate: number;
@@ -81,8 +81,8 @@ export const GUARD_SECONDS = 0.5;
  * that are still being played.
  */
 export function controlAirtimeSeconds(payloadBytes: number): number {
-  const symbols = Math.ceil((payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(CONTROL_FSK.frequencies.length));
-  return symbols / CONTROL_FSK.symbolRate + 2 * GUARD_SECONDS;
+  // Control frames are convolutionally coded (rate ½), which roughly doubles their symbols.
+  return fskFrameSymbols(payloadBytes, Math.log2(CONTROL_FSK.frequencies.length), true) / CONTROL_FSK.symbolRate + 2 * GUARD_SECONDS;
 }
 export const MAX_SESSION_SECONDS = 600;
 export const MAX_TESTS = 200;
@@ -303,13 +303,13 @@ export const describeTestReceived = (m: TrialMeasurement) =>
   `${frameId(m.sender, m.seq)} test packet ${hexBytes(m.received)} · trial ${m.trial + 1}: ${m.raw.crcOk ? 'received' : 'CRC failed'}, ${symbolsReceived(m.raw)}, S/N dB [${m.snrDb.map(v => Math.round(v)).join(' ')}] median ${m.raw.snrMedianDb.toFixed(1)} · by tone ${trialFsk(m.settings).frequencies.map((f, k) => `${f}:${Number.isFinite(m.snrByToneDb[k]) ? Math.round(m.snrByToneDb[k]) : '—'}`).join(' ')} dB · drift ${signedMs(m.timingDriftMs)}`;
 const signedMs = (ms: number) => `${ms >= 0 ? '+' : '−'}${Math.abs(ms).toFixed(1)} ms`;
 
-/** Air time of one guarded FSK frame carrying `payloadBytes`, in seconds. */
-function frameSeconds(payloadBytes: number, tones: number, symbolRate: number, guardSeconds = 1): number {
-  return Math.ceil((payloadBytes + FRAME_OVERHEAD_BYTES) * 8 / Math.log2(tones)) / symbolRate + guardSeconds;
+/** Air time of one guarded FSK frame carrying `payloadBytes`, in seconds; control frames are coded, test packets are not. */
+function frameSeconds(payloadBytes: number, tones: number, symbolRate: number, fec = false, guardSeconds = 1): number {
+  return fskFrameSymbols(payloadBytes, Math.log2(tones), fec) / symbolRate + guardSeconds;
 }
-const controlSeconds = (m: ControlMessage) => frameSeconds(encodeControl(m).length, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate);
+const controlSeconds = (m: ControlMessage) => frameSeconds(encodeControl(m).length, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate, true);
 /** An ACK frame's payload is the confirmed frame's sender and sequence number. */
-const ackSeconds = () => frameSeconds(4, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate);
+const ackSeconds = () => frameSeconds(4, CONTROL_FSK.frequencies.length, CONTROL_FSK.symbolRate, true);
 const testPacketSeconds = (t: TrialSettings) => frameSeconds(t.payloadBytes, t.tones, t.symbolRate);
 /**
  * Rough duration of one clean test (no retries): test_suite, its ACK, test packet, result, its ACK, each with 0.5 s quiet

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { frame, FRAME_TYPE, SYNC_BYTES } from './frame';
-import { encodeFsk } from './fsk';
+import { encodeFsk, fskFrameBits, fskFrameSymbols } from './fsk';
 import { FskStreamDecoder } from './fsk-stream';
 import { simulateChannel } from './channel';
 import { fskToneSet } from './fsk-frequencies';
@@ -449,6 +449,71 @@ describe('continuous FSK receiver', () => {
     expect(levels[3]).toBeLessThan(-11); expect(levels[3]).toBeGreaterThan(-19);
     for (const tone of [0, 1, 2]) expect(Math.abs(levels[tone])).toBeLessThan(2);
     expect(packets[0].tails).toBeUndefined();
+  });
+
+  describe('coded frames', () => {
+    const coded = { ...config, fec: true };
+    /** A tilted, reverberant room: the last tone weak and half of each symbol's power carried into the next. */
+    const room = (payload: Uint8Array, cfg: typeof coded | typeof config, weak: number) => {
+      const n = Math.round(cfg.sampleRate / cfg.symbolRate);
+      const bits = fskFrameBits(frame(payload), !!(cfg as { fec?: boolean }).fec);
+      const symbols: number[] = [];
+      for (let i = 0; i + 2 <= bits.length; i += 2) symbols.push((bits[i] << 1) | bits[i + 1]);
+      const direct = new Float32Array(symbols.length * n);
+      let phase = 0;
+      for (let s = 0; s < symbols.length; s++) {
+        const step = 2 * Math.PI * cfg.frequencies[symbols[s]] / cfg.sampleRate, level = symbols[s] === 3 ? weak : 1;
+        for (let i = 0; i < n; i++) { direct[s * n + i] = 0.8 * level * Math.sin(phase); phase += step; }
+      }
+      const heard = new Float32Array(direct.length + 3 * n);
+      heard.set(direct);
+      for (let i = 0; i + n < heard.length; i++) heard[i + n] += 0.5 * heard[i];
+      return heard;
+    };
+
+    it('round-trips a coded frame and reports that nothing needed correcting', () => {
+      const payload = new TextEncoder().encode('coded, rate one half');
+      const waveform = encodeFsk(payload, coded).samples;
+      // A coded frame is about twice as long on the air as the same payload uncoded.
+      expect(waveform.length).toBeGreaterThan(1.8 * encodeFsk(payload, config).samples.length);
+      const samples = new Float32Array(waveform.length + 400); samples.set(waveform);
+      const receiver = new FskStreamDecoder(config), packets = receiver.push(samples);
+      expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['coded, rate one half']);
+      expect(packets[0]).toMatchObject({ fec: true, fecCorrected: 0 });
+      expect(packets[0].fecSymbols).toBe(fskFrameSymbols(payload.length, 2, true) - 16);
+      const progress = receiver.drainProgress();
+      expect(progress.some(event => event.type === 'sync')).toBe(true);
+      expect(progress.find(event => event.type === 'length')).toMatchObject({ length: payload.length });
+      expect(progress.filter(event => event.type === 'byte').map(event => 'byte' in event ? event.byte : -1)).toEqual([...payload]);
+    });
+
+    it('decodes coded and plain frames back to back, telling them apart by their sync', () => {
+      const first = encodeFsk(new TextEncoder().encode('coded'), coded).samples;
+      const second = encodeFsk(new TextEncoder().encode('plain'), config).samples;
+      const third = encodeFsk(new TextEncoder().encode('coded again'), coded).samples;
+      const samples = new Float32Array(first.length + second.length + third.length + 400);
+      samples.set(first); samples.set(second, first.length); samples.set(third, first.length + second.length);
+      const packets = new FskStreamDecoder(config).push(samples);
+      expect(packets.map(packet => [new TextDecoder().decode(packet.payload), !!packet.fec])).toEqual([['coded', true], ['plain', false], ['coded again', true]]);
+    });
+
+    it('survives noise that defeats the plain frame, and says how many symbols the code corrected', () => {
+      // At −8 dB broadband the plain frame loses more symbols than the CRC-guided search can repair on most runs;
+      // the coded one is decoded whole from the tone likelihoods, and the number of raw decisions the path
+      // overrode is the health figure the log shows.
+      const payload = new TextEncoder().encode('noise defeats the plain frame');
+      const pad = (w: Float32Array) => { const s = new Float32Array(w.length + 800); s.set(w, 400); return s; };
+      let plainDecoded = 0;
+      for (let seed = 1; seed <= 6; seed++) {
+        if (new FskStreamDecoder(config).push(simulateChannel(pad(encodeFsk(payload, config).samples), { snrDb: -8, seed })).length) plainDecoded++;
+        const packets = new FskStreamDecoder(config).push(simulateChannel(pad(encodeFsk(payload, coded).samples), { snrDb: -8, seed }));
+        expect(packets.map(packet => new TextDecoder().decode(packet.payload))).toEqual(['noise defeats the plain frame']);
+        expect(packets[0].fec).toBe(true);
+        expect(packets[0].fecCorrected!).toBeGreaterThan(0);
+        expect(packets[0].fecCorrected!).toBeLessThan(packets[0].fecSymbols! / 10);
+      }
+      expect(plainDecoded).toBeLessThanOrEqual(2);
+    });
   });
 
   it('loses a frame whose length symbol is corrupted, then decodes the next frame', () => {

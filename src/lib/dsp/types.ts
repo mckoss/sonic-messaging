@@ -28,6 +28,11 @@ export interface FskConfig {
    * rate, symbolRate / (1 − gap), not the symbol rate.
    */
   gapPercent?: number;
+  /**
+   * Convolutionally code the frame (rate ½, K=7, soft Viterbi at the receiver). The sync marker changes so a
+   * receiver knows; header and body are coded as separate terminated blocks. Needs exactly 2 bits per symbol.
+   */
+  fec?: boolean;
   /** Frame sender and type; defaults to sender 0000, type message. */
   address?: FrameAddress;
 }

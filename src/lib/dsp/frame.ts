@@ -6,6 +6,14 @@
 export const SYNC_BYTES = Object.freeze([0x1a, 0xcf, 0xfc, 0x1d]) as readonly number[];
 
 const SYNC = new Uint8Array(SYNC_BYTES);
+/**
+ * Sync marker of a frame whose header and body are convolutionally coded: the bitwise complement of the plain
+ * marker. Complementing every bit keeps the word's autocorrelation and puts a different tone in every sync symbol,
+ * so the receiver reads the framing off the sync itself and the two can never be confused for each other.
+ */
+export const FEC_SYNC_BYTES = Object.freeze(SYNC_BYTES.map(byte => byte ^ 0xff)) as readonly number[];
+/** The coded frame's first block: length and address together, so a corrupted length is a corrected length. */
+export const FEC_HEADER_BYTES = 7;
 
 export function crc16(data: Uint8Array): number {
   let crc = 0xffff;

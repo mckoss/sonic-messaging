@@ -1,12 +1,13 @@
 import { simulateChannel } from './channel';
 import { describe, expect, it } from 'vitest';
 import { ackWave, CooperativeAnalyzer, controlWave, guardedWave, trialWave, type AnalyzerOptions } from './experiment';
-import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan, windowRate, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
+import { TRANSMIT_AMPLITUDE, CONTROL_FSK, SEARCH_PARAMETERS, searchParameterPlan, windowRate, controlAirtimeSeconds, MAX_REPETITIONS, estimateRunSeconds, searchValues, totalTests, withValue, trialFsk as trialFskOf, controlText, describeTestSent, describeWire, estimateTestSeconds, testListenSeconds, testSymbolCount, trialFsk, defaultSearch, describeControl, hexBytes, trialPayload, validateSearch, validateTrial, encodeControl, decodeControl, ParameterSearch, type Proposal, type TrialMeasurement, type ControlMessage, type CooperativeEvent } from '../experiment';
 import { CooperativeSession } from '../cooperative-session';
 import { ACK_TIMEOUT_MS, DEFAULT_RETRIES, PacketManager, type OutgoingPacket } from '../packet-manager';
 import { PAYLOAD_OFFSET } from './frame';
+import { FskStreamDecoder } from './fsk-stream';
 import { fskPlanWarnings } from './fsk-frequencies';
-import { MAX_GAP_PERCENT } from './fsk';
+import { fskFrameSymbols, MAX_GAP_PERCENT } from './fsk';
 /** The rate every device in the field has reported. A lower fixture rate once could not even carry the control band. */
 const rate=48000,config=validateSearch(defaultSearch()),proposal={sender:719,trial:0,settings:config.trial};
 /** test_suite, then the test packet as an ordinary guarded frame, then enough quiet for the listener window to close. */
@@ -23,6 +24,8 @@ function analyze(samples:Float32Array,options:AnalyzerOptions={},sampleRate=rate
   return {results,lost,lines};
 }
 const perSymbol=rate/config.trial.symbolRate;
+/** Every received control frame is coded, and its log line ends with how many symbols the code had to correct. */
+const fecNote=(payloadBytes:number)=>` · FEC corrected 0 of ${fskFrameSymbols(payloadBytes,2,true)-16} symbols`;
 /** One value in the sweep, so `repetitions` alone sets how many tests a run sends. */
 const single={...config,minimum:1000,maximum:1001,step:400};
 describe('cooperative acoustic measurement',()=>{
@@ -61,7 +64,8 @@ describe('cooperative acoustic measurement',()=>{
     // unmistakably, but too many symbols misread for the frame to be worth decoding. Before this, such a frame left
     // no trace at all; a partner two feet from a phone on a desk saw an empty log.
     const samples=fixture(),start=rate/2,spp=rate/25,F=CONTROL_FSK.frequencies;
-    const template=[0,1,2,2,3,0,3,3,3,3,3,0,0,1,3,1];
+    // Control frames are coded and carry the complementary sync: every tone is 3 minus the plain template's.
+    const template=[0,1,2,2,3,0,3,3,3,3,3,0,0,1,3,1].map(t=>3-t);
     for(const index of [1,3,5,7,9,13]){
       const wrong=(template[index]+1)%4;
       for(let i=0;i<spp;i++)samples[start+index*spp+i]+=0.88*Math.sin(2*Math.PI*F[wrong]*i/rate);
@@ -87,6 +91,16 @@ describe('cooperative acoustic measurement',()=>{
     expect(()=>validateTrial({...config.trial,gapPercent:-1})).toThrow();
     expect(()=>validateTrial({...config.trial,gapPercent:MAX_GAP_PERCENT+1})).toThrow();
     expect(()=>validateTrial({...config.trial,gapPercent:12.5})).toThrow();
+  });
+  it('codes every control frame and ACK, and prices their air time accordingly',()=>{
+    // Rate ½ roughly doubles a control frame: an ACK's 4 bytes become 16 sync + 62 header + 54 body symbols.
+    expect(controlAirtimeSeconds(4)).toBeCloseTo((16+62+54)/25+1,2);
+    const ack=ackWave(1,2,3,4,rate),suite=controlWave({kind:'test_suite',...proposal},rate);
+    const heard=(samples:Float32Array)=>{const padded=new Float32Array(samples.length+rate);padded.set(samples);return new FskStreamDecoder({...CONTROL_FSK,sampleRate:rate}).push(padded)[0];};
+    expect(heard(ack)).toMatchObject({fec:true,fecCorrected:0});
+    expect(heard(suite)).toMatchObject({fec:true,fecCorrected:0});
+    // A test packet is not coded: it measures the raw channel.
+    expect(new FskStreamDecoder({...trialFsk(config.trial),sampleRate:rate}).push(guardedWave(trialWave(proposal,rate),rate))[0].fec).toBeUndefined();
   });
   it('keeps the control link above a phone speaker\'s far-field rolloff, harmonic-free, within an octave',()=>{
     // Two feet from a phone on a desk, 2900 Hz arrived 14 dB louder than 1500 Hz and only the high tones decoded.
@@ -316,13 +330,16 @@ describe('control protocol and search',()=>{
     // What each sender's worker logs as it transmits (the same helpers, with the arrow reversed).
     const sent=[`-> ${describeWire(suite,5)}`,'-> 002A#8 ACK 02CF#5',`-> ${describeTestSent(proposal,6)}`,`-> ${describeWire(result,9)}`];
     const received=analyze(samples).lines;
-    expect(received[0]).toBe(sent[0].replace('->','<-'));
-    expect(received[1]).toBe(sent[1].replace('->','<-'));
+    // The receiver appends what it took to read the frame; a sent line has nothing to add.
+    expect(received[0]).toBe(sent[0].replace('->','<-')+fecNote(encodeControl(suite).length));
+    expect(received[1]).toBe(sent[1].replace('->','<-')+fecNote(4));
     expect(received[2].startsWith(sent[2].replace('->','<-'))).toBe(true);
-    expect(received[3]).toBe(sent[3].replace('->','<-'));
+    expect(received[3]).toBe(sent[3].replace('->','<-')+fecNote(encodeControl(result).length));
   });
   it('reports corrupted control messages',()=>{
-    const bad=guardedWave(controlWave({kind:'lost',sender:42,trial:0},rate,7,true),rate);const tail=Math.round(bad.length*0.55);bad.fill(0,tail,tail+Math.round(rate*0.08));
+    // A third of the frame replaced by a steady wrong tone: far more than the code can correct, so the CRC fails.
+    const bad=guardedWave(controlWave({kind:'lost',sender:42,trial:0},rate,7,true),rate);const from=Math.round(bad.length*0.55),to=Math.round(bad.length*0.85);
+    for(let i=from;i<to;i++)bad[i]=0.4*Math.sin(2*Math.PI*CONTROL_FSK.frequencies[2]*i/rate);
     const samples=new Float32Array(bad.length+fixture().length);samples.set(bad);samples.set(fixture(),bad.length);
     const {lines,results}=analyze(samples);
     const errors=lines.filter(l=>l.startsWith('X'));
@@ -336,10 +353,10 @@ describe('control protocol and search',()=>{
     const acks:{from:number;target:{sender:number;seq:number}}[]=[];
     const {lines}=analyze(samples,{ack:(from,target)=>acks.push({from,target})});
     const payload=hexBytes(trialPayload(validateTrial(config.trial)));
-    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40, 0) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40%, Gap=0% (1500/1700/2100/2900 Hz)');
+    expect(lines[0]).toBe('<- 02CF#0 test_suite(1, 1500, 4, 25, 16, 719, 40, 0) · trial 1 settings: Base=1500, Tones=4, Baud=25, Bytes=16, Seed=719, Amp=40%, Gap=0% (1500/1700/2100/2900 Hz)'+fecNote(42));
     // This default test uses the control tones and baud, so the control listener also decodes the packet; it is logged once, scored.
     expect(lines[1]).toMatch(new RegExp(`^<- 02CF#0 test packet ${payload.replace(/[[\]]/g,'\\$&')} · trial 1: received, 64/64 symbols received, S/N dB \\[(-?\\d+ ){63}-?\\d+\\] median \\d+\\.\\d · by tone 1500:-?\\d+ 1700:-?\\d+ 2100:-?\\d+ 2900:-?\\d+ dB · drift [+−]\\d+\\.\\d ms$`));
-    expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials','<- 02CF#10 ACK 002A#3']);
+    expect(lines.slice(2)).toEqual(['<- 02CF#9 done(1) · run finished after 1 trials'+fecNote(7),'<- 02CF#10 ACK 002A#3'+fecNote(4)]);
     expect(acks).toEqual([{from:719,target:{sender:42,seq:3}}]);
     // The controller hears its own transmissions: dropped unlogged, before the session sees them.
     const heard:ControlMessage[]=[],controller=analyze(samples,{analyze:false,control:m=>heard.push(m),self:719});

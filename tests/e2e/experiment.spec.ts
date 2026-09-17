@@ -47,13 +47,14 @@ test('validates settings before requesting a microphone and estimates run length
 });
 
 const liveRate=48000;
+// Chrome's fake microphone loops the file unless told not to (%noloop above); played once, the conversation ends when it ends.
 const pieces=[new Float32Array(liveRate*2),guardedWave(controlWave({kind:'test_suite',...proposal},liveRate,1,true),liveRate),new Float32Array(liveRate*3),guardedWave(trialWave(proposal,liveRate,2),liveRate),new Float32Array(liveRate*3),guardedWave(controlWave({kind:'done',sender:719,trial:1},liveRate,3,true),liveRate)];
 const liveSamples=new Float32Array(pieces.reduce((n,p)=>n+p.length,0));let position=0;for(const piece of pieces){liveSamples.set(piece,position);position+=piece.length;}
 const header=Buffer.alloc(44),data=Buffer.alloc(liveSamples.length*2);
 header.write('RIFF');header.writeUInt32LE(36+data.length,4);header.write('WAVE',8);header.write('fmt ',12);header.writeUInt32LE(16,16);header.writeUInt16LE(1,20);header.writeUInt16LE(1,22);header.writeUInt32LE(liveRate,24);header.writeUInt32LE(liveRate*2,28);header.writeUInt16LE(2,32);header.writeUInt16LE(16,34);header.write('data',36);header.writeUInt32LE(data.length,40);
 for(let i=0;i<liveSamples.length;i++)data.writeInt16LE(Math.round(liveSamples[i]*32767),i*2);
 const dir=join(tmpdir(),'sonic-cooperative-tests');mkdirSync(dir,{recursive:true});const path=join(dir,'conversation.wav');writeFileSync(path,Buffer.concat([header,data]));
-test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path}`]}});
+test.use({launchOptions:{args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream',`--use-file-for-fake-audio-capture=${path}%noloop`]}});
 test.describe('live partner',()=>{
   test('captures negotiated test data and saves a replayable recording',async({page})=>{
     test.setTimeout(240000);await page.goto('/sonic-messaging/#tests');
@@ -69,9 +70,10 @@ test.describe('live partner',()=>{
     const log=page.getByTestId('experiment-log');
     // Received frames show <- with the controller's sender#seq; the partner's own transmissions show ->.
     for(const line of ['<- 02CF#1 test_suite(1, 1500, 4, 25, 16, 719, 40, 0)',' ACK 02CF#1',`<- 02CF#2 test packet `,
-      '<- 02CF#3 done(1) · run finished after 1 trials',' ACK 02CF#3'])await expect(log).toContainText(line);
-    await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ ACK 02CF#1/);
-    await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ result\(1, \d+, 64, \d+, 128,/);
+      '<- 02CF#3 done(1) · run finished after 1 trials',' ACK 02CF#3'])await expect(log).toContainText(line,{timeout:20000});
+    // A sent frame is logged when its playback ends, and a coded ACK is 6.3 s on the air.
+    await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ ACK 02CF#1/,{timeout:20000});
+    await expect(log).toContainText(/-> [0-9A-F]{4}#\d+ result\(1, \d+, 64, \d+, 128,/,{timeout:20000});
     await page.getByRole('button',{name:'Stop experiment',exact:true}).click();
     const original=await resultRows(page).allInnerTexts();
     const pending=page.waitForEvent('download');await page.getByRole('button',{name:'Save experiment WAV',exact:true}).click();

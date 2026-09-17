@@ -1,5 +1,6 @@
-import { bitsToBytes } from './bits';
-import { ADDRESS_OFFSET, decodeFrameLength, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
+import { bitsToBytes, bytesToBits } from './bits';
+import { ADDRESS_OFFSET, decodeFrameLength, FEC_HEADER_BYTES, FEC_SYNC_BYTES, LENGTH_BYTES, LENGTH_OFFSET, MAX_PAYLOAD_BYTES, PAYLOAD_OFFSET, readFrameAddress, SYNC_BYTES, unframe } from './frame';
+import { codedSteps, convolutionalEncode, toneCosts, viterbiDecode } from './convolutional';
 import { detectFskSymbol, toneScore, windowPowerDbfs } from './fsk-detector';
 import { SymbolTimingLoop } from './symbol-timing';
 import { cancelEcho, estimateEchoTaps } from './echo-canceller';
@@ -102,9 +103,9 @@ const LEVEL_TRACK = 0.1;
 const LEVEL_CONFIDENT_RATIO = 2;
 
 /** Sync symbols whose bits are fully determined by the sync bytes (drops a mixed tail symbol). */
-function syncSymbolTemplate(bitsPerSymbol: number): number[] {
+function syncSymbolTemplate(bitsPerSymbol: number, sync: readonly number[] = SYNC): number[] {
   const bits: number[] = [];
-  for (const byte of SYNC) for (let bit = 7; bit >= 0; bit--) bits.push((byte >>> bit) & 1);
+  for (const byte of sync) for (let bit = 7; bit >= 0; bit--) bits.push((byte >>> bit) & 1);
   const template: number[] = [];
   for (let index = 0; index + bitsPerSymbol <= bits.length; index += bitsPerSymbol) {
     let value = 0;
@@ -131,6 +132,11 @@ export interface FskStreamPacket {
   tails?: number[];
   /** Each tone's measured level when sent, in dB relative to the strongest (NaN if never measured); absent when nothing was measured. */
   levelsDb?: number[];
+  /** The frame was convolutionally coded and decoded by soft-decision Viterbi; `symbols` are still the raw tone decisions. */
+  fec?: boolean;
+  /** Coded frames: symbols whose raw tone decision the decoded path overrode, of `fecSymbols` coded symbols — the channel's health. */
+  fecCorrected?: number;
+  fecSymbols?: number;
 }
 
 /**
@@ -148,6 +154,11 @@ export interface FskStreamFrame {
   tails?: number[];
   /** Each tone's measured level when sent, in dB relative to the strongest (NaN if never measured); absent when nothing was measured. */
   levelsDb?: number[];
+  /** The frame was convolutionally coded and decoded by soft-decision Viterbi; `symbols` are still the raw tone decisions. */
+  fec?: boolean;
+  /** Coded frames: symbols whose raw tone decision the decoded path overrode, of `fecSymbols` coded symbols — the channel's health. */
+  fecCorrected?: number;
+  fecSymbols?: number;
   /** From the address bytes; unverified when the CRC failed. */
   sender: number;
   seq: number;
@@ -217,8 +228,14 @@ export class FskStreamDecoder {
   private candidateLevelDbfs = -Infinity;
   /** Per-tone score vectors by absolute offset, shared across overlapping sync-search trials. */
   private readonly syncScanCache = new Map<number, Float32Array>();
-  /** Expected tone index per sync symbol for the matched-filter search. */
-  private readonly syncTemplate: number[];
+  /** Expected tone index per sync symbol for the matched-filter search: the template of the sync last accepted. */
+  private syncTemplate: number[];
+  /** Every sync the receiver listens for: the plain marker, and the coded one when a symbol carries two bits. */
+  private readonly syncTemplates: { coded: boolean; symbols: number[] }[];
+  /** The candidate frame's header and body are convolutionally coded. */
+  private candidateCoded = false;
+  /** The decoded header of the coded candidate, once its block has been read. */
+  private codedHeader?: Uint8Array;
 
   constructor(
     private readonly config: FskConfig,
@@ -232,7 +249,10 @@ export class FskStreamDecoder {
     this.samplesPerSymbol = Math.round(config.sampleRate / config.symbolRate);
     this.windowSamples = fskToneSamples(config);
     this.phaseStep = Math.max(1, Math.floor(this.samplesPerSymbol / 8));
-    this.syncTemplate = syncSymbolTemplate(this.bitsPerSymbol);
+    this.syncTemplates = [{ coded: false, symbols: syncSymbolTemplate(this.bitsPerSymbol) }];
+    // Coded frames put one trellis step in each symbol, which needs exactly two bits per symbol.
+    if (this.bitsPerSymbol === 2) this.syncTemplates.push({ coded: true, symbols: syncSymbolTemplate(this.bitsPerSymbol, FEC_SYNC_BYTES) });
+    this.syncTemplate = this.syncTemplates[0].symbols;
     this.resetTiming();
   }
 
@@ -306,15 +326,15 @@ export class FskStreamDecoder {
    * With four or more tones the max over the other tones already biases noise
    * and steady interferers negative, so the plain margin stands.
    */
-  private syncScoreAt(searchOffset: number): number {
+  private syncScoreAt(searchOffset: number, template = this.syncTemplate): number {
     const absolute = this.streamPosition + searchOffset;
-    const count = this.syncTemplate.length;
+    const count = template.length;
     if (this.config.frequencies.length === 2) {
       let sumDiff = 0, sumSigned = 0, signTotal = 0;
       for (let index = 0; index < count; index++) {
         const scores = this.scanScoresAt(absolute + index * this.samplesPerSymbol);
         const diff = scores[0] - scores[1];
-        const sign = this.syncTemplate[index] === 0 ? 1 : -1;
+        const sign = template[index] === 0 ? 1 : -1;
         sumDiff += diff; sumSigned += sign * diff; signTotal += sign;
       }
       return (sumSigned - (signTotal / count) * sumDiff) / count;
@@ -322,7 +342,7 @@ export class FskStreamDecoder {
     let sum = 0;
     for (let index = 0; index < count; index++) {
       const scores = this.scanScoresAt(absolute + index * this.samplesPerSymbol);
-      const expected = this.syncTemplate[index];
+      const expected = template[index];
       let other = 0;
       for (let tone = 0; tone < scores.length; tone++) {
         if (tone !== expected) other = Math.max(other, scores[tone]);
@@ -333,14 +353,14 @@ export class FskStreamDecoder {
   }
 
   /** Sum of expected-tone scores at a trial offset; sharp in alignment, cheap to evaluate. */
-  private syncAlignmentScore(offset: number): number {
+  private syncAlignmentScore(offset: number, template = this.syncTemplate): number {
     let sum = 0;
-    for (let index = 0; index < this.syncTemplate.length; index++) {
+    for (let index = 0; index < template.length; index++) {
       const start = offset + index * this.samplesPerSymbol;
       sum += toneScore(
         this.samples.subarray(start, start + this.windowSamples),
         this.config.sampleRate,
-        this.config.frequencies[this.syncTemplate[index]]
+        this.config.frequencies[template[index]]
       );
     }
     return sum;
@@ -372,23 +392,31 @@ export class FskStreamDecoder {
     // offsets past the coarse match without running off the buffer.
     while (this.searchOffset + required + this.samplesPerSymbol + this.phaseStep <= this.sampleCount) {
       // The soft score is only a cheap prefilter; the hard per-symbol check at
-      // the refined alignment is what actually establishes sync.
-      if (this.syncScoreAt(this.searchOffset) >= SYNC_DETECT_MARGIN) {
-        const refined = this.refineSyncPhase(this.searchOffset);
-        const mismatches = this.syncMismatches(refined);
-        const margin = this.syncScoreAt(refined);
+      // the refined alignment is what actually establishes sync. Each sync marker is tried; the one that fits best
+      // says whether the frame is coded.
+      let best = this.syncTemplates[0], bestMargin = -Infinity;
+      for (const candidate of this.syncTemplates) {
+        const margin = this.syncScoreAt(this.searchOffset, candidate.symbols);
+        if (margin > bestMargin) { bestMargin = margin; best = candidate; }
+      }
+      if (bestMargin >= SYNC_DETECT_MARGIN) {
+        const template = best.symbols;
+        const refined = this.refineSyncPhase(this.searchOffset, template);
+        const mismatches = this.syncMismatches(refined, template);
+        const margin = this.syncScoreAt(refined, template);
         const accepted = mismatches <= SYNC_VERIFY_MAX_MISMATCHES ||
           (margin >= SYNC_STRONG_MARGIN && mismatches <= SYNC_REVERB_MAX_MISMATCHES);
         if (!accepted) {
           if (margin >= SYNC_STRONG_MARGIN) {
             // Unmistakably a sync, and unreadable at the best alignment within a symbol: report it once and move on.
-            this.progress.push({ type: 'sync-unreadable', mismatches, of: this.syncTemplate.length,
+            this.progress.push({ type: 'sync-unreadable', mismatches, of: template.length,
               position: this.frameBytePosition(refined, SYNC.length) });
             this.searchOffset = refined + this.samplesPerSymbol;
           } else this.searchOffset += this.phaseStep;
           continue;
         }
         this.candidateOffset = refined;
+        this.syncTemplate = template; this.candidateCoded = best.coded; this.codedHeader = undefined;
         this.reportedPayloadBytes = 0;
         this.reportedLength = false; this.reportedAddress = false;
         this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
@@ -413,9 +441,9 @@ export class FskStreamDecoder {
   }
 
   /** Hard sync check: how many symbols at the refined alignment decode to a tone other than the expected one. */
-  private syncMismatches(offset: number): number {
+  private syncMismatches(offset: number, template = this.syncTemplate): number {
     let mismatches = 0;
-    for (let index = 0; index < this.syncTemplate.length; index++) {
+    for (let index = 0; index < template.length; index++) {
       const start = offset + index * this.samplesPerSymbol;
       const decision = detectFskSymbol(
         this.samples.subarray(start, start + this.windowSamples),
@@ -424,7 +452,7 @@ export class FskStreamDecoder {
       for (let tone = 1; tone < decision.scores.length; tone++) {
         if (decision.scores[tone] > decision.scores[winner]) winner = tone;
       }
-      if (winner !== this.syncTemplate[index]) mismatches++;
+      if (winner !== template[index]) mismatches++;
     }
     return mismatches;
   }
@@ -492,14 +520,14 @@ export class FskStreamDecoder {
   }
 
   /** Locks sync timing to the sample by maximizing the matched-filter alignment score. */
-  private refineSyncPhase(start: number): number {
-    const span = this.syncTemplate.length * this.samplesPerSymbol;
+  private refineSyncPhase(start: number, template = this.syncTemplate): number {
+    const span = template.length * this.samplesPerSymbol;
     const trial = (offset: number, best: { offset: number; score: number }) => {
       if (offset < 0 || offset === best.offset || offset + span > this.sampleCount) return;
-      const score = this.syncAlignmentScore(offset);
+      const score = this.syncAlignmentScore(offset, template);
       if (score > best.score) { best.offset = offset; best.score = score; }
     };
-    const best = { offset: start, score: this.syncAlignmentScore(start) };
+    const best = { offset: start, score: this.syncAlignmentScore(start, template) };
     for (let offset = start + this.phaseStep; offset < start + this.samplesPerSymbol; offset += this.phaseStep) {
       trial(offset, best);
     }
@@ -515,7 +543,116 @@ export class FskStreamDecoder {
   }
 
   /** undefined means incomplete, null means rejected, and a value is a valid packet. */
+  /**
+   * Watches an incomplete frame for a collapsed carrier — several consecutive symbol windows far below the level
+   * this frame has been arriving at, with no tone dominant — and abandons it, returning true, rather than decoding
+   * background noise for up to a minute on the strength of a corrupted length. The level is tracked, so a fading
+   * transmitter keeps its frame (CARRIER_LEVEL_TRACK), and a quiet tone is not silence (CARRIER_TONE_SCORE).
+   */
+  private carrierLost(start: number): boolean {
+    const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
+    while (this.candidateScannedSymbols < availableSymbols) {
+      const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
+      const window = this.samples.subarray(windowStart, windowStart + this.windowSamples);
+      const power = windowPowerDbfs(window);
+      const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB &&
+        Math.max(...detectFskSymbol(window, this.config.sampleRate, this.config.frequencies).scores) < CARRIER_TONE_SCORE;
+      this.candidateSilentRun = lost ? this.candidateSilentRun + 1 : 0;
+      if (!lost) this.candidateLevelDbfs += (power - this.candidateLevelDbfs) * CARRIER_LEVEL_TRACK;
+      this.candidateScannedSymbols++;
+      if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
+        this.progress.push({ type: 'crc-error', position: this.streamPosition + windowStart + this.samplesPerSymbol });
+        this.rejectCandidate(this.syncTemplate.length * this.samplesPerSymbol);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Absolute stream sample index `symbols` symbol periods after the candidate start. */
+  private symbolPosition(start: number, symbols: number): number {
+    return this.streamPosition + start + symbols * this.samplesPerSymbol;
+  }
+
+  /**
+   * Viterbi-decodes the candidate's symbols [from, to) as one terminated block of `bytes` bytes. Re-encoding the
+   * result gives the tone each symbol should have carried, and the number of raw tone decisions the path overrode
+   * is how hard the code had to work — the frame's channel-health figure.
+   */
+  private decodeCodedBlock(from: number, to: number, bytes: number): { bytes: Uint8Array; cost: number; corrected: number } {
+    const costs = this.candidateToneScores.slice(from, to).map(scores => toneCosts(scores));
+    const decoded = viterbiDecode(costs, bytes * 8);
+    const coded = convolutionalEncode(decoded.bits);
+    let corrected = 0;
+    for (let step = 0; from + step < to; step++) {
+      if (this.candidateSymbols[from + step] !== ((coded[2 * step] << 1) | coded[2 * step + 1])) corrected++;
+    }
+    return { bytes: bitsToBytes(decoded.bits).slice(0, bytes), cost: decoded.cost, corrected };
+  }
+
+  /**
+   * A coded frame: the sync, then a terminated block carrying length and address, then one carrying payload and
+   * CRC. The header decodes as soon as its block is in, so the frame is sized from a corrected length; the body
+   * is decoded whole, by soft-decision Viterbi over the tone shares, and the CRC still has the last word.
+   */
+  private readCodedCandidate(): FskStreamPacket | null | undefined {
+    const start = this.candidateOffset!, syncSymbols = this.syncTemplate.length;
+    const headerEnd = syncSymbols + codedSteps(FEC_HEADER_BYTES * 8);
+    if (start + headerEnd * this.samplesPerSymbol > this.sampleCount) return this.carrierLost(start) ? null : undefined;
+    this.decodeCandidateSymbols(headerEnd);
+    const headerBlock = this.decodeCodedBlock(syncSymbols, headerEnd, FEC_HEADER_BYTES);
+    this.codedHeader ??= headerBlock.bytes;
+    const header = this.codedHeader, payloadLength = decodeFrameLength(header, 0);
+    const maxPayload = Math.min(MAX_LIVE_PAYLOAD_BYTES, Math.floor((MAX_LIVE_FRAME_SECONDS * this.config.symbolRate - headerEnd - 8) / 8) - TRAILER_BYTES);
+    if (payloadLength > Math.max(0, maxPayload)) {
+      this.progress.push({ type: 'crc-error', position: this.symbolPosition(start, headerEnd) });
+      this.rejectCandidate(syncSymbols * this.samplesPerSymbol);
+      return null;
+    }
+    if (!this.reportedLength) {
+      this.reportedLength = true; this.reportedAddress = true;
+      const address = readFrameAddress(header, LENGTH_BYTES);
+      this.progress.push({ type: 'length', length: payloadLength, position: this.symbolPosition(start, headerEnd) });
+      this.progress.push({ type: 'address', sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested,
+        position: this.symbolPosition(start, headerEnd) });
+    }
+    const frameSymbols = headerEnd + codedSteps((payloadLength + TRAILER_BYTES) * 8);
+    if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) return this.carrierLost(start) ? null : undefined;
+    this.decodeCandidateSymbols(frameSymbols);
+    const body = this.decodeCodedBlock(headerEnd, frameSymbols, payloadLength + TRAILER_BYTES);
+    const bytes = new Uint8Array(SYNC.length + header.length + body.bytes.length);
+    bytes.set(SYNC, 0); bytes.set(header, SYNC.length); bytes.set(body.bytes, SYNC.length + header.length);
+    for (let index = 0; index < payloadLength; index++) {
+      this.progress.push({ type: 'byte', byte: body.bytes[index], position: this.symbolPosition(start, headerEnd + codedSteps((index + 1) * 8)) });
+    }
+    const tails = this.candidateTails.length ? this.candidateTails : undefined, levelsDb = this.levelsDb();
+    const parsed = unframe(bytes), framePosition = this.symbolPosition(start, frameSymbols);
+    const address = readFrameAddress(bytes, ADDRESS_OFFSET);
+    let confidence = 0;
+    for (let index = 0; index < frameSymbols; index++) confidence += this.candidateConfidences[index];
+    confidence /= Math.max(1, frameSymbols);
+    const fecCorrected = headerBlock.corrected + body.corrected, fecSymbols = frameSymbols - syncSymbols;
+    this.frames.push({ crcOk: !!parsed.payload, sender: address.sender, seq: address.seq, frameType: address.type, ackRequested: address.ackRequested, payloadLength,
+      symbols: this.candidateSymbols.slice(0, frameSymbols), scores: this.candidateScores.slice(0, frameSymbols), tails, levelsDb, fec: true, fecCorrected, fecSymbols,
+      confidence, startPosition: this.streamPosition + start, endPosition: framePosition, timingOffset: this.timing.offset });
+    if (!parsed.payload) {
+      this.progress.push({ type: 'crc-error', position: framePosition });
+      this.rejectCandidate(syncSymbols * this.samplesPerSymbol);
+      return null;
+    }
+    this.progress.push({ type: 'crc-confirm', position: framePosition });
+    const startPosition = this.streamPosition + start;
+    this.discard(Math.min(start + frameSymbols * this.samplesPerSymbol, this.sampleCount));
+    this.searchOffset = 0; this.candidateOffset = undefined; this.codedHeader = undefined;
+    this.reportedPayloadBytes = 0; this.reportedLength = false; this.reportedAddress = false;
+    this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
+    this.candidateScannedSymbols = 0; this.candidateSilentRun = 0;
+    return { payload: parsed.payload, sender: parsed.sender!, seq: parsed.seq!, frameType: parsed.type!, ackRequested: parsed.ackRequested!,
+      confidence, startPosition, endPosition: framePosition, tails, levelsDb, fec: true, fecCorrected, fecSymbols };
+  }
+
   private readCandidate(): FskStreamPacket | null | undefined {
+    if (this.candidateCoded) return this.readCodedCandidate();
     const start = this.candidateOffset!;
     const headerSymbols = Math.ceil((HEADER_BYTES * 8) / this.bitsPerSymbol);
     if (start + headerSymbols * this.samplesPerSymbol > this.sampleCount) return undefined;
@@ -562,29 +699,7 @@ export class FskStreamDecoder {
     // so a stream that ends exactly with the frame would otherwise never complete.
     // One phase step of slack truncates at most 1/8 of the final symbol's window.
     if (start + frameSymbols * this.samplesPerSymbol > this.sampleCount + this.phaseStep) {
-      // A corrupted length field can promise a frame lasting up to a minute. If the
-      // carrier collapses mid-frame — several consecutive symbol windows far below
-      // the level this frame has been arriving at — abandon it instead of decoding
-      // background noise. The level is tracked rather than fixed, so a transmitter
-      // that merely fades (see CARRIER_LEVEL_TRACK) keeps its frame.
-      const availableSymbols = Math.floor((this.sampleCount - start) / this.samplesPerSymbol);
-      while (this.candidateScannedSymbols < availableSymbols) {
-        const windowStart = start + this.candidateScannedSymbols * this.samplesPerSymbol;
-        const window = this.samples.subarray(windowStart, windowStart + this.windowSamples);
-        const power = windowPowerDbfs(window);
-        const lost = power < this.candidateLevelDbfs - CARRIER_LOSS_DROP_DB &&
-          Math.max(...detectFskSymbol(window, this.config.sampleRate, this.config.frequencies).scores) < CARRIER_TONE_SCORE;
-        this.candidateSilentRun = lost ? this.candidateSilentRun + 1 : 0;
-        if (!lost) this.candidateLevelDbfs += (power - this.candidateLevelDbfs) * CARRIER_LEVEL_TRACK;
-        this.candidateScannedSymbols++;
-        if (this.candidateSilentRun >= CARRIER_LOSS_ABORT_SYMBOLS) {
-          this.progress.push({ type: 'crc-error',
-            position: this.streamPosition + windowStart + this.samplesPerSymbol });
-          this.rejectCandidate(Math.ceil((SYNC.length * 8) / this.bitsPerSymbol) * this.samplesPerSymbol);
-          return null;
-        }
-      }
-      return undefined;
+      return this.carrierLost(start) ? null : undefined;
     }
 
     const decoded = this.decodeCandidateBytes(frameBytes);
@@ -630,7 +745,7 @@ export class FskStreamDecoder {
 
   private rejectCandidate(skip = this.phaseStep): void {
     this.searchOffset = this.candidateOffset! + skip;
-    this.candidateOffset = undefined;
+    this.candidateOffset = undefined; this.codedHeader = undefined;
     this.reportedPayloadBytes = 0;
     this.reportedLength = false; this.reportedAddress = false;
     this.candidateSymbols = []; this.candidateConfidences = []; this.candidateScores = []; this.candidateToneScores = []; this.candidateTails = []; this.candidatePowers = []; this.candidateLevels = []; this.resetTiming();
@@ -686,8 +801,22 @@ export class FskStreamDecoder {
 
   /** Decodes the candidate's first `count` bytes, reusing symbols decoded on earlier calls. */
   private decodeCandidateBytes(count: number): { bytes: Uint8Array; confidence: number } {
-    const start = this.candidateOffset!;
     const symbolCount = Math.ceil((count * 8) / this.bitsPerSymbol);
+    this.decodeCandidateSymbols(symbolCount);
+    const bits: number[] = [];
+    let confidence = 0;
+    for (let index = 0; index < symbolCount; index++) {
+      confidence += this.candidateConfidences[index];
+      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
+        bits.push((this.candidateSymbols[index] >>> bit) & 1);
+      }
+    }
+    return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };
+  }
+
+  /** Decides the candidate's symbols up to `symbolCount`, reusing those decided on earlier calls. */
+  private decodeCandidateSymbols(symbolCount: number): void {
+    const start = this.candidateOffset!;
     const buffered = this.samples.subarray(0, this.sampleCount);
     while (this.candidateSymbols.length < symbolCount) {
       const at = this.timing.at(this.candidateSymbols.length);
@@ -735,15 +864,6 @@ export class FskStreamDecoder {
       this.candidatePowers.push(raw);
       this.timing.observe(buffered, start, symbol, at);
     }
-    const bits: number[] = [];
-    let confidence = 0;
-    for (let index = 0; index < symbolCount; index++) {
-      confidence += this.candidateConfidences[index];
-      for (let bit = this.bitsPerSymbol - 1; bit >= 0; bit--) {
-        bits.push((this.candidateSymbols[index] >>> bit) & 1);
-      }
-    }
-    return { bytes: bitsToBytes(bits).slice(0, count), confidence: confidence / Math.max(1, symbolCount) };
   }
 
   private trim(): void {

@@ -99,7 +99,7 @@ Recordings preserve the acoustic conditions of a particular transmission. They a
 - [x] Detect FSK packet timing in the continuous microphone stream using sync-word phase acquisition.
 - [ ] Estimate frequency/sample-clock offset and track packet timing. *(After the experimental baseline; see FSK optimization above.)*
 - [x] Decode live FSK packets, verify CRC, and display valid UTF-8 payloads and confidence.
-- [ ] Add forward error correction (e.g. convolutional or Reed-Solomon coding with interleaving against burst errors), so payloads survive symbol errors that currently fail the whole frame's CRC.
+- [x] Add forward error correction to the control link: rate-½ K=7 convolutional coding with soft-decision Viterbi, one trellis step per 4-tone symbol, branch metrics from the calibrated tone shares. Marked by a complementary sync word; header and body coded as separate terminated blocks so the length is protected; test packets stay raw. *(Interleaving and coding for test packets remain open.)*
 - [ ] Add automatic multi-mode detection.
 - [ ] Add overlapping-user detection and successive decoding experiments.
 

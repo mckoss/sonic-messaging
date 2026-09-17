@@ -91,6 +91,8 @@ Lessons taken from UDP:
 - **Reliability sits just above the frame.** As in TFTP, the application keeps its own trial numbers, but ACKs, retries and duplicate suppression are handled once, for every protocol on top.
 - **Headers stay small.** At 100 baud 4-FSK every byte is 40 ms of air, so there is no destination field yet; every frame is effectively broadcast. The header and CRC add 12 bytes to any payload.
 
+**Coded frames.** Control frames and ACKs are convolutionally coded — rate ½, constraint length 7, the 171/133 code, decoded by soft-decision Viterbi — and announce it with a different sync marker: the bitwise complement `E5 30 03 E2`, which shares no sync symbol with the plain one. The header (length + address) and the body (payload + CRC) are coded as separate terminated blocks, so the receiver sizes the frame from a *corrected* length. With 4 tones a symbol carries exactly one trellis step, and each step's branch metric is how unlikely its tone is given the calibrated tone shares the detector measured — the decoder never makes hard symbol decisions. Test packets stay uncoded, because they exist to measure the raw channel. Coding roughly doubles a control frame's air time.
+
 A frame is surrounded by 0.5 s of silence. The Receive tab labels the sender as `FROM 9F04` in its RX lane and shows it with each decoded message.
 
 ### Control protocol
